@@ -146,6 +146,13 @@ Every minute it also prints a one-line `SCREEN` summary in the terminal:
 how many checks it ran, which filter is doing most of the rejecting, and how
 many tokens matched versus were actually bought.
 
+**"Bad token" when you click Start.** The dashboard mints a fresh security
+token every time the bot starts, and the page you have open is holding the old
+one. It means the bot restarted while that tab stayed open — nothing is broken.
+Reload the page (Ctrl-Shift-R, or Cmd-Shift-R on a Mac); the page now notices
+this and reloads itself. Nothing appears in the terminal because a rejected
+token is an ordinary HTTP response, not a crash.
+
 **Two things that look like bugs and are not:**
 
 1. **It only sees coins that launch after you start it.** If a coin was already

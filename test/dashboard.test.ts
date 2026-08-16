@@ -616,6 +616,19 @@ describe('page render', () => {
     expect(card.slice(0, card.indexOf('function srow'))).toContain('w.label');
   });
 
+  it('reloads itself when its token is from a previous run', () => {
+    // The token is minted per run and baked into the page, so a tab left open
+    // across a restart answers "bad token" on every button — and nothing shows
+    // in the terminal, because a 403 is a normal response. Reloading is the
+    // only recovery that does not hand the page a token out of band.
+    const script = /<script>\n([\s\S]*?)<\/script>/.exec(renderPage('t'))![1]!;
+    const post = script.slice(script.indexOf('function post('), script.indexOf('// ---- equity'));
+    expect(post).toContain('r.status === 403');
+    expect(post).toContain('location.reload()');
+    // Guarded, or a persistent 403 turns into a reload loop.
+    expect(post).toContain('!reloading');
+  });
+
   it('does not rebuild the settings form on every refresh', () => {
     // Rebuilding replaces every input node, which ejects the caret mid-typing —
     // the box becomes impossible to fill in. The form is built once per tab and

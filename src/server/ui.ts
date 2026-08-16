@@ -347,6 +347,11 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
 .wallet-pnl { text-align: right; white-space: nowrap; }
 .wallet-net { font-size: 12.5px; font-weight: 600; }
 .wallet-note { font-size: 11px; color: var(--muted); }
+.stale-banner {
+  position: fixed; left: 50%; transform: translateX(-50%); top: 14px; z-index: 50;
+  padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 550;
+  color: #fff; background: var(--series); box-shadow: var(--shadow);
+}
 .hidden { display: none !important; }
 .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 </style>
@@ -552,11 +557,28 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
            String(d.getMinutes()).padStart(2, '0') + ':' +
            String(d.getSeconds()).padStart(2, '0');
   }
+  // The token is minted per RUN and baked into the page. So a tab left open
+  // across a restart holds a token the new process has never heard of, and
+  // every button answers "bad token" — with nothing in the terminal, because a
+  // 403 is a normal response rather than an error. The page cannot be handed a
+  // new token without weakening the CSRF guard the token exists for, so it
+  // fetches itself again instead, which is what mints one.
+  var reloading = false;
   function post(path, body) {
     return fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Sniper-Token': TOKEN },
       body: JSON.stringify(body || {})
+    }).then(function (r) {
+      if (r.status === 403 && !reloading) {
+        reloading = true;
+        var b = document.createElement('div');
+        b.className = 'stale-banner';
+        b.textContent = 'This page is from an earlier run of the bot. Reloading\u2026';
+        document.body.appendChild(b);
+        setTimeout(function () { location.reload(); }, 900);
+      }
+      return r;
     });
   }
 
