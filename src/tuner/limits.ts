@@ -107,6 +107,31 @@ export const TUNABLES: Tunable[] = [
     'How many tokens are watched at once. Higher covers more launches and costs RPC.'),
   n('ENTRY_QUEUE_MAX_WAIT_SECONDS', 'screener', 2, 120, 60,
     'How long a matched token waits behind another entry before it is dropped as stale.'),
+  // --- Flow signals. Off at 0; each reads state already collected. -----
+  n('SCREEN_MAX_SECONDS_SINCE_TRADE', 'screener', 0, 600, 100,
+    'Reject if nothing has traded for this long. Catches a wave that already stalled.'),
+  n('SCREEN_MAX_DRAWDOWN_PCT', 'screener', 0, 90, 100,
+    'Reject if price is this far below its high. Refuses the second half of a move.'),
+  n('SCREEN_MIN_BUYER_ACCEL', 'screener', 0, 10, 100,
+    'Buyers in the last 60s over the 60s before. Above 1 means the wave is still building.'),
+  n('SCREEN_MIN_NET_FLOW_SOL', 'screener', 0, 100, 100,
+    'Buy volume minus sell volume. A ratio hides whether that is 0.2 SOL or 20.'),
+  n('SCREEN_MIN_AVG_BUY_SOL', 'screener', 0, 20, 100,
+    'Floor on average buy size — filters dust-sized participation.'),
+  n('SCREEN_MAX_AVG_BUY_SOL', 'screener', 0, 100, 100,
+    'Ceiling on average buy size — catches one whale posing as a crowd.'),
+  n('SCREEN_MIN_LARGEST_BUY_SOL', 'screener', 0, 100, 100,
+    'Largest single buy. Someone taking real size is a different signal from many small ones.'),
+  n('SCREEN_MIN_REPEAT_BUYERS', 'screener', 0, 100, 100,
+    'Wallets that bought twice. Conviction rather than a glance.'),
+  n('SCREEN_MIN_CURVE_PROGRESS_PCT', 'screener', 0, 95, 100,
+    'Progress toward graduating off the bonding curve, 0-100.'),
+  n('SCREEN_MAX_CURVE_PROGRESS_PCT', 'screener', 0, 100, 100,
+    'Upper bound on curve progress; 0 disables.'),
+  n('SCREEN_MIN_COPY_HOLDERS', 'screener', 0, 10, 100,
+    'Require this many tracked copy wallets to be holding it. Free signal, and one ' +
+      'nobody screening the same public data has. Needs the copy bot running with wallets.'),
+
   e('SCREEN_ON_SOCIALS_UNAVAILABLE', 'screener', ['allow', 'deny'],
     'What to do when metadata cannot be read: allow the entry or block it.'),
   e('SCREEN_DATA_SOURCE', 'screener', ['both', 'curve', 'feed'],
@@ -158,6 +183,17 @@ export const TUNABLES: Tunable[] = [
   n('SNIPER_MAX_CONCURRENT_CHECKS', 'sniper', 1, 32, 50,
     'Safety batteries run at once. Higher covers more launches and risks RPC rate limits.'),
   b('REQUIRE_SOCIALS', 'sniper', 'Whether a launch must declare socials to pass.'),
+
+  // --- Provenance. Each costs an RPC call on the entry path. ------------
+  n('MIN_HOLDERS', 'sniper', 0, 20, 100,
+    'Distinct holders required. Free — reuses a read the concentration check already makes.'),
+  n('MIN_CREATOR_AGE_MINUTES', 'sniper', 0, 10_080, 100,
+    'Minimum age of the deployer wallet. Catches a funded throwaway. One RPC call.'),
+  n('MAX_LAUNCH_BUNDLE_TXS', 'sniper', 0, 40, 100,
+    'Reject when more than this many transactions landed in the creation slot — a bundled ' +
+      'launch whose first buyers are the deployer. One RPC call.'),
+  b('REJECT_IF_DEPLOYER_EXITED', 'sniper',
+    'Reject when the deployer has already sold out of their own token. One RPC call.'),
 
   // === Copy trader =====================================================
   n('COPY_MIN_BUY_SOL', 'copy', 0.05, 25, 50,

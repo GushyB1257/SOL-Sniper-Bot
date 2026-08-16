@@ -208,6 +208,35 @@ const schema = z.object({
   REQUIRE_SOCIALS: bool.default('true'),
   DUPLICATE_NAME_WINDOW_MINUTES: num(0, 1440).default(60),
 
+  // --- Provenance checks. All OFF by default; each costs an RPC call on the
+  // entry path, and the sniper is already the heaviest RPC consumer. ------
+  /**
+   * Distinct holders required. FREE — reuses the largest-accounts read the
+   * concentration check already makes. Capped at 20 by what the RPC returns.
+   */
+  MIN_HOLDERS: num(0, 20).default(0),
+  /**
+   * Reject when the deployer has already sold out of their own token.
+   *
+   * MAX_DEV_BUY_PCT asks what they took at creation; this asks whether they
+   * are still in it, which is invisible to any check that only reads the
+   * creation transaction. One RPC call per candidate.
+   */
+  REJECT_IF_DEPLOYER_EXITED: bool.default('false'),
+  /**
+   * Minimum age of the deployer's wallet, in minutes. Catches a funded
+   * throwaway, which a balance check alone does not. One RPC call.
+   */
+  MIN_CREATOR_AGE_MINUTES: num(0, 525_600).default(0),
+  /**
+   * Reject when more than this many transactions landed in the creation slot.
+   *
+   * Organic interest arrives across slots; a bundle lands together, which is
+   * the signature of a launch whose first buyers are the deployer's own
+   * wallets. One RPC call, signatures only. 0 disables.
+   */
+  MAX_LAUNCH_BUNDLE_TXS: num(0, 100).default(0),
+
   DAILY_LOSS_LIMIT_SOL: num(0, 1000).default(1.5),
   MAX_CONSECUTIVE_LOSSES: num(1, 100).default(6),
   BREAKER_COOLDOWN_SECONDS: num(0, 86400).default(900),
@@ -324,6 +353,39 @@ const schema = z.object({
    * reason as the cap ceiling: it is a tightener, not part of the filter.
    */
   SCREEN_MIN_BUYERS: num(0, 10_000).default(0),
+
+  // --- Flow filters. All OFF by default: 0 disables each one. -------------
+  //
+  // These read signals the bot already collects but never filtered on. A
+  // volume threshold cannot tell a token still moving from one that stopped,
+  // fifty buyers from one whale, or the start of a move from its second half.
+  /** Reject if nothing has traded for this long. Catches a stalled wave. */
+  SCREEN_MAX_SECONDS_SINCE_TRADE: num(0, 3600).default(0),
+  /** Reject if price is more than this far below its high since we saw it. */
+  SCREEN_MAX_DRAWDOWN_PCT: num(0, 99).default(0),
+  /** Buyers in the last 60s over the 60s before. Above 1 = still building. */
+  SCREEN_MIN_BUYER_ACCEL: num(0, 100).default(0),
+  /** Buy volume minus sell volume, in SOL. A ratio hides the size. */
+  SCREEN_MIN_NET_FLOW_SOL: num(0, 10_000).default(0),
+  /** Average SOL per buy — a floor filters out dust-sized participation. */
+  SCREEN_MIN_AVG_BUY_SOL: num(0, 1000).default(0),
+  /** A ceiling on the average catches one whale posing as a crowd. */
+  SCREEN_MAX_AVG_BUY_SOL: num(0, 1000).default(0),
+  /** Largest single buy. Someone taking real size is a different signal. */
+  SCREEN_MIN_LARGEST_BUY_SOL: num(0, 10_000).default(0),
+  /** Wallets that bought twice. Conviction rather than a glance. */
+  SCREEN_MIN_REPEAT_BUYERS: num(0, 1000).default(0),
+  /** Progress toward graduating off the curve, 0-100. */
+  SCREEN_MIN_CURVE_PROGRESS_PCT: num(0, 100).default(0),
+  SCREEN_MAX_CURVE_PROGRESS_PCT: num(0, 100).default(0),
+  /**
+   * Require this many of the wallets the copy trader tracks to be holding.
+   *
+   * The copy bot reads those balances every second anyway, so this is free —
+   * and it is the one signal here that is not available to anyone else
+   * screening the same public data. Needs the copy bot running with wallets.
+   */
+  SCREEN_MIN_COPY_HOLDERS: num(0, 100).default(0),
   /**
    * Where the screener gets market cap and volume.
    *

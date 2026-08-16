@@ -93,6 +93,14 @@ export interface OrchestratorDeps {
   solPrice?: { readonly usd: number; readonly isLive: boolean };
   /** RPC connection for reading bonding curves. Omitted in tests. */
   connection?: Connection;
+  /**
+   * How many tracked copy wallets hold this mint.
+   *
+   * The copy bot polls those balances every second regardless, so reading them
+   * here costs nothing — and a wallet you follow being in a token your screener
+   * is looking at is a signal nobody screening the same public data has.
+   */
+  copyHolders?: (mint: string) => number;
 }
 
 /**
@@ -273,7 +281,8 @@ export class AiOrchestrator {
     const token = this.watchlist.get(mint);
     if (!token || token.analysed) return;
 
-    const verdict = screenerSignal(token, this.deps.cfg, this.solPrice.usd, at);
+    const holders = this.deps.copyHolders?.(mint) ?? 0;
+    const verdict = screenerSignal(token, this.deps.cfg, this.solPrice.usd, at, holders);
 
     if (verdict.outcome === 'needs-socials') {
       // Everything measurable already passed; the only unknown is one HTTP

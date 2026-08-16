@@ -87,6 +87,9 @@ class Supervisor {
       prices,
       connection: conn,
       walletBalance: () => this.walletBalance(),
+      // Late-bound on purpose: the copy bot does not exist yet when this object
+      // is built, and the screener only calls it once trades are flowing.
+      copyHolders: (mint: string) => this.bots.get('copy')?.watcher?.holdersOf(mint) ?? 0,
       killSwitchPath: KILL_SWITCH_PATH,
       solPrice: this.solPrice,
       trackTrades: (mints: string[]) => this.feed?.trackTrades(mints),

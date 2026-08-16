@@ -84,6 +84,15 @@ export interface TrackedToken {
   deployerSold: boolean;
   deployerSoldSol: number;
 
+  /** Largest single buy seen, in SOL. One whale reads nothing like a crowd. */
+  largestBuySol: number;
+  /**
+   * Buys per wallet. A wallet coming back for a second buy is expressing
+   * conviction in a way a first buy cannot — the ratio of repeat buyers to
+   * total buyers separates a wave with participants from one with tourists.
+   */
+  buysPerWallet: Map<string, number>;
+
   /** Set once this token has been sent to the analyst, so it is not re-sent. */
   analysed: boolean;
 }
@@ -114,6 +123,23 @@ export interface TractionMetrics {
   deployerSoldSol: number;
   /** Average SOL per buy — large averages mean few whales, not a crowd. */
   avgBuySizeSol: number;
+  /** Largest single buy, in SOL. */
+  largestBuySol: number;
+  /** Wallets that have bought more than once. Conviction, not just interest. */
+  repeatBuyers: number;
+  /** Seconds since the last trade of any kind. Volume with no flow is dying. */
+  secondsSinceTrade: number;
+  /**
+   * Buy volume minus sell volume. The ratio says 2:1 whether that is 0.2 SOL
+   * or 20; the difference between those two is the whole trade.
+   */
+  netFlowSol: number;
+  /**
+   * Buyers in the last 60s over buyers in the 60s before, so a wave that is
+   * still building reads differently from one that has already broken.
+   * Infinity when the previous window was empty.
+   */
+  buyerAcceleration: number;
   /** Market cap in SOL. */
   marketCapSol: number;
   /** All traded volume since launch, both sides, including the creation buy. */
@@ -131,6 +157,13 @@ export interface TractionMetrics {
 export function volumeOf(t: TrackedToken): number {
   const fromFeed = t.seedVolumeSol + t.buyVolumeSol + t.sellVolumeSol;
   return Math.max(fromFeed, t.curveVolumeSol);
+}
+
+/** Wallets that bought more than once. */
+function countRepeatBuyers(t: TrackedToken): number {
+  let n = 0;
+  for (const count of t.buysPerWallet.values()) if (count > 1) n += 1;
+  return n;
 }
 
 const GRADUATION_VSOL = 85;
@@ -228,6 +261,8 @@ export class Watchlist {
       curveMissing: false,
       deployerSold: false,
       deployerSoldSol: 0,
+      largestBuySol: 0,
+      buysPerWallet: new Map(),
       analysed: false,
     });
     return true;
@@ -289,6 +324,8 @@ export class Watchlist {
       t.buyCount += 1;
       t.buyVolumeSol += trade.solAmount;
       t.uniqueBuyers.add(trade.trader);
+      if (trade.solAmount > t.largestBuySol) t.largestBuySol = trade.solAmount;
+      t.buysPerWallet.set(trade.trader, (t.buysPerWallet.get(trade.trader) ?? 0) + 1);
       t.recentBuyers.push({ trader: trade.trader, at: trade.at });
       // Two windows' worth is all the trend calculation needs.
       const cutoff = trade.at - RECENT_WINDOW_MS * 2;
@@ -426,6 +463,11 @@ export class Watchlist {
       deployerSold: t.deployerSold,
       deployerSoldSol: t.deployerSoldSol,
       avgBuySizeSol: t.buyCount > 0 ? t.buyVolumeSol / t.buyCount : 0,
+      largestBuySol: t.largestBuySol,
+      repeatBuyers: countRepeatBuyers(t),
+      secondsSinceTrade: t.lastTradeAt > 0 ? (now - t.lastTradeAt) / 1000 : ageSeconds,
+      netFlowSol: t.buyVolumeSol - t.sellVolumeSol,
+      buyerAcceleration: prev.size > 0 ? recent.size / prev.size : recent.size > 0 ? Infinity : 0,
       marketCapSol: t.latestMarketCapSol,
       volumeSol: volumeOf(t),
     };

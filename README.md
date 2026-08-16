@@ -450,6 +450,38 @@ without the bot running.
 
 At the default 6-hour interval this costs a few cents a day in API credit.
 
+### What it reads about a coin
+
+Beyond venue, age, market cap, volume, socials and the safety battery, the
+screener now reads nine more signals — all computed from state it already
+collects, so none of them costs an RPC call. Every one defaults to **off**.
+
+| Signal | What a volume filter cannot tell you |
+|---|---|
+| Seconds since last trade | Whether the token is still moving or stopped an hour ago. Volume with no flow behind it looks identical on a volume threshold. |
+| Drawdown from peak | Whether you are buying the move or its second half. |
+| Buyer acceleration | Buyers in the last 60s over the 60s before — a wave still building versus one that already broke. |
+| Net SOL flow | 2:1 is the same ratio on 0.2 SOL and on 20. The difference is the trade. |
+| Average buy size | A floor filters dust participation; a ceiling catches one whale posing as a crowd. |
+| Largest single buy | Someone taking real size is a different signal from fifty people nibbling. |
+| Repeat buyers | Wallets that came back for a second buy. Conviction, not a glance. |
+| Curve progress | How close to graduating — a genuine regime marker. |
+| **Tracked wallets holding** | Whether one of the wallets your copy bot follows is already in it. The copy bot reads those balances every second anyway, so this is free — and it is the one signal here that nobody screening the same public data has. |
+
+The sniper gains four **provenance** checks, which ask where a launch came from
+rather than what it looks like. All off by default; all but the first cost an
+RPC call on the entry path, and the sniper is already the heaviest consumer.
+
+| Check | Why |
+|---|---|
+| `MIN_HOLDERS` | Distinct holders. Free — reuses the read the concentration check already makes. |
+| `REJECT_IF_DEPLOYER_EXITED` | `MAX_DEV_BUY_PCT` asks what the deployer took at creation. This asks whether they are **still in it**, which no check reading only the creation transaction can see. |
+| `MIN_CREATOR_AGE_MINUTES` | Catches a *funded* throwaway wallet, which a balance check alone does not. |
+| `MAX_LAUNCH_BUNDLE_TXS` | Organic interest arrives across slots; a bundle lands together — the signature of a launch whose first buyers are the deployer's own wallets. |
+
+All thirteen are tunable, so the auto-tuner can find thresholds for them from
+your own trade history rather than you guessing.
+
 ### Tuning it with data instead of opinion
 
 Every threshold is adjustable and every default is a guess until you have paper
@@ -872,7 +904,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 383 tests
+npm test           # 405 tests
 npm run typecheck
 npm run build
 ```

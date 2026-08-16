@@ -22,6 +22,12 @@ import {
   metadataSanityCheck,
   socialsCheck,
 } from './checks/metadata.js';
+import {
+  creatorAgeCheck,
+  deployerStillHoldsCheck,
+  holderCountCheck,
+  launchBundleCheck,
+} from './checks/provenance.js';
 
 const log = logger('safety');
 
@@ -31,6 +37,11 @@ export const DEFAULT_CHECKS: readonly Check[] = [
   mintAuthorityCheck,
   devBuyCheck,
   deployerHistoryCheck,
+  // Provenance: who launched it, whether they are still in it, and whether the
+  // first buys were bundled. Each is inert until its threshold is set, because
+  // each costs an RPC call on the entry path.
+  deployerStillHoldsCheck,
+  launchBundleCheck,
   // Scored.
   deployerBalanceCheck,
   deployerSpamCheck,
@@ -39,6 +50,8 @@ export const DEFAULT_CHECKS: readonly Check[] = [
   duplicateNameCheck,
   curveSanityCheck,
   holderConcentrationCheck,
+  holderCountCheck,
+  creatorAgeCheck,
 ];
 
 /**

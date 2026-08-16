@@ -328,3 +328,101 @@ describe('screener config validation', () => {
     expect(() => config({ ENTRY_MODE: 'screener', EXIT_MODE: 'ladder' })).toThrow(/EXIT_MODE|ladder/);
   });
 });
+
+describe('flow signals', () => {
+  const M = CANDIDATE.mint;
+  /** Everything else passing, so each test isolates one new filter. */
+  const base = { SCREEN_MIN_MCAP_USD: '0', SCREEN_MIN_VOLUME_USD: '0', SCREEN_MIN_SOCIALS: '0' };
+
+  function fire(over: Record<string, string> = {}, copyHolders = 0) {
+    return screenerSignal(wl.get(M)!, config({ ...base, ...over }), SOL_USD, Date.now(), copyHolders);
+  }
+
+  it('adds nothing to the filter until a threshold is set', () => {
+    // Every new signal defaults to off, so a running bot's behaviour did not
+    // change the moment these landed.
+    trade(M, { buyers: 3, solEach: 1, vSol: 40 });
+    expect(fire().outcome).toBe('fire');
+  });
+
+  it('rejects a token that has gone quiet', () => {
+    // Volume with no flow behind it looks identical to a live token on a
+    // volume filter, and is the most common way to buy something already dead.
+    const old = Date.now() - 120_000;
+    trade(M, { buyers: 3, solEach: 1, vSol: 40, at: old });
+    expect(fire({ SCREEN_MAX_SECONDS_SINCE_TRADE: '30' }).reason).toMatch(/no trade for/);
+    expect(fire({ SCREEN_MAX_SECONDS_SINCE_TRADE: '300' }).outcome).toBe('fire');
+  });
+
+  it('refuses to buy the second half of a move', () => {
+    trade(M, { buyers: 2, solEach: 1, vSol: 60 }); // peak
+    trade(M, { buyers: 1, solEach: 1, vSol: 40, side: 'sell' }); // well off it
+    const s = screenSnapshot(wl.get(M)!, SOL_USD);
+    expect(s.drawdownFromPeakPct).toBeLessThan(-40);
+    expect(fire({ SCREEN_MAX_DRAWDOWN_PCT: '30' }).reason).toMatch(/off peak/);
+    expect(fire({ SCREEN_MAX_DRAWDOWN_PCT: '80' }).outcome).toBe('fire');
+  });
+
+  it('separates net flow from the buy/sell ratio', () => {
+    // 2:1 on 0.2 SOL and 2:1 on 20 SOL are the same ratio and different trades.
+    trade(M, { buyers: 1, solEach: 0.2, vSol: 31 });
+    trade(M, { buyers: 1, solEach: 0.1, vSol: 31, side: 'sell' });
+    expect(fire({ SCREEN_MIN_NET_FLOW_SOL: '5' }).reason).toMatch(/net flow/);
+    expect(fire({ SCREEN_MIN_NET_FLOW_SOL: '0.05' }).outcome).toBe('fire');
+  });
+
+  it('tells one whale from a crowd', () => {
+    trade(M, { buyers: 1, solEach: 20, vSol: 60 });
+    const s = screenSnapshot(wl.get(M)!, SOL_USD);
+    expect(s.avgBuySol).toBeCloseTo(20, 4);
+    expect(s.largestBuySol).toBeCloseTo(20, 4);
+    // A ceiling on the average catches the whale the ratio cannot see.
+    expect(fire({ SCREEN_MAX_AVG_BUY_SOL: '5' }).reason).toMatch(/avg buy/);
+    expect(fire({ SCREEN_MIN_LARGEST_BUY_SOL: '50' }).reason).toMatch(/largest buy/);
+    expect(fire({ SCREEN_MIN_LARGEST_BUY_SOL: '10' }).outcome).toBe('fire');
+  });
+
+  it('counts wallets that came back for a second buy', () => {
+    wl.recordTrade({ mint: M, trader: 'keen', side: 'buy', solAmount: 1, tokenAmount: 10, vSolInCurve: 35, at: Date.now() });
+    wl.recordTrade({ mint: M, trader: 'keen', side: 'buy', solAmount: 1, tokenAmount: 10, vSolInCurve: 40, at: Date.now() });
+    wl.recordTrade({ mint: M, trader: 'once', side: 'buy', solAmount: 1, tokenAmount: 10, vSolInCurve: 45, at: Date.now() });
+
+    const s = screenSnapshot(wl.get(M)!, SOL_USD);
+    expect(s.buyers).toBe(2);
+    expect(s.repeatBuyers).toBe(1);
+    expect(fire({ SCREEN_MIN_REPEAT_BUYERS: '2' }).reason).toMatch(/repeat buyers/);
+    expect(fire({ SCREEN_MIN_REPEAT_BUYERS: '1' }).outcome).toBe('fire');
+  });
+
+  it('measures whether the wave is still building', () => {
+    const now = Date.now();
+    // Two buyers in the older window, four in the newer: accelerating.
+    trade(M, { buyers: 2, solEach: 1, vSol: 35, at: now - 90_000 });
+    for (let i = 0; i < 4; i++) {
+      wl.recordTrade({ mint: M, trader: `new-${i}`, side: 'buy', solAmount: 1, tokenAmount: 10, vSolInCurve: 45, at: now - 5000 });
+    }
+    const s = screenSnapshot(wl.get(M)!, SOL_USD, now);
+    expect(s.buyerAcceleration).toBeCloseTo(2, 4);
+    expect(fire({ SCREEN_MIN_BUYER_ACCEL: '3' }).reason).toMatch(/acceleration/);
+    expect(fire({ SCREEN_MIN_BUYER_ACCEL: '1.5' }).outcome).toBe('fire');
+  });
+
+  it('bounds where on the curve it will buy', () => {
+    trade(M, { buyers: 2, solEach: 1, vSol: 68 }); // 80% of the way to graduation
+    const s = screenSnapshot(wl.get(M)!, SOL_USD);
+    expect(s.curveProgressPct).toBeCloseTo(80, 0);
+    expect(fire({ SCREEN_MAX_CURVE_PROGRESS_PCT: '50' }).reason).toMatch(/curve/);
+    expect(fire({ SCREEN_MIN_CURVE_PROGRESS_PCT: '90' }).reason).toMatch(/curve/);
+    expect(fire({ SCREEN_MIN_CURVE_PROGRESS_PCT: '50', SCREEN_MAX_CURVE_PROGRESS_PCT: '90' }).outcome).toBe('fire');
+  });
+
+  it('can require a wallet you follow to be holding it', () => {
+    // The one signal here that is not available to anyone screening the same
+    // public data — the copy bot already reads those balances every second.
+    trade(M, { buyers: 2, solEach: 1, vSol: 40 });
+    expect(fire({ SCREEN_MIN_COPY_HOLDERS: '1' }, 0).reason).toMatch(/tracked wallets/);
+    const hit = fire({ SCREEN_MIN_COPY_HOLDERS: '1' }, 2);
+    expect(hit.outcome).toBe('fire');
+    expect(hit.reason).toMatch(/2 tracked wallet/);
+  });
+});

@@ -32,6 +32,8 @@ export interface BotDeps {
   prices: PriceSource;
   connection: Connection;
   walletBalance: () => Promise<number>;
+  /** Cross-bot: how many tracked copy wallets hold a mint. See the screener. */
+  copyHolders?: (mint: string) => number;
   killSwitchPath: string;
   /**
    * Shared live SOL/USD. One feed for the whole process, so the screener's
@@ -97,6 +99,7 @@ export class TradingBot {
         untrackTrades: deps.untrackTrades,
         connection: deps.connection,
         solPrice: deps.solPrice,
+        copyHolders: deps.copyHolders,
       });
     } else if (id === 'sniper') {
       this.safety = new SafetyEngine(cfg, deps.connection, this.store);

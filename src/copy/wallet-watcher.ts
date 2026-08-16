@@ -73,6 +73,21 @@ export class WalletWatcher {
     return { ...this.stats, tracking: this.cfg.COPY_WALLETS.length };
   }
 
+  /**
+   * How many tracked wallets currently hold this mint.
+   *
+   * Read by the screener: a wallet you follow being in a token the filter is
+   * looking at is a signal that costs nothing, because these balances are
+   * polled every second anyway.
+   */
+  holdersOf(mint: string): number {
+    let n = 0;
+    for (const st of this.state.values()) {
+      if ((st.balances.get(mint) ?? 0) > 0) n += 1;
+    }
+    return n;
+  }
+
   /** Current holdings of a tracked wallet, for the dashboard. */
   holdingsOf(wallet: string): Array<{ mint: string; balance: number }> {
     const st = this.state.get(wallet);
