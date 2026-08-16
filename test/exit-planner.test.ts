@@ -14,7 +14,7 @@ const BASE_ENV = {
   MODE: 'paper',
   ANTHROPIC_API_KEY: 'sk-ant-test',
   ENTRY_MODE: 'fast',
-  SCALP_MODE: 'false',
+  EXIT_MODE: 'ladder',
 } as unknown as NodeJS.ProcessEnv;
 
 function cfg(overrides: Record<string, string> = {}) {

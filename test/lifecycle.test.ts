@@ -17,7 +17,7 @@ const BASE_ENV = {
   MODE: 'paper',
   ANTHROPIC_API_KEY: 'sk-ant-test',
   ENTRY_MODE: 'fast',
-  SCALP_MODE: 'false',
+  EXIT_MODE: 'ladder',
   BUY_AMOUNT_SOL: '0.05',
   EXIT_LADDER: '60:40,150:30,400:20',
 } as unknown as NodeJS.ProcessEnv;

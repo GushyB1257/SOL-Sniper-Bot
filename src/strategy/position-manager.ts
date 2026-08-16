@@ -11,7 +11,7 @@ import type { Store } from '../state/store.js';
 import type { RiskManager } from '../risk/risk-manager.js';
 import { logger } from '../logger.js';
 import { KeyedMutex, errMessage } from '../util/async.js';
-import { buildLadder, decideExit, positionPnl } from './exit-planner.js';
+import { buildLadder, checkpointElapsed, decideExit, positionPnl } from './exit-planner.js';
 import { pctChange } from '../util/solana.js';
 
 const log = logger('positions');
@@ -61,6 +61,9 @@ export class PositionManager {
       ladder: buildLadder(this.cfg),
       moonbagArmed: false,
       realizedSol: 0,
+      checkpointAt: now,
+      checkpointPrice: fill.price,
+      costRecovered: false,
       safetyScore,
       notes: [`entry ${fill.spentSol.toFixed(5)} SOL @ ${fill.price.toExponential(3)}`],
     };
@@ -117,7 +120,18 @@ export class PositionManager {
         return;
       }
 
-      const order = decideExit({ position: p, price, cfg: this.cfg, now: Date.now() });
+      const now = Date.now();
+      const order = decideExit({ position: p, price, cfg: this.cfg, now });
+
+      // The ratchet's window advances AFTER the decision, so the planner always
+      // judges the window that just closed. Doing it before would compare the
+      // price against itself and nothing would ever stall out.
+      const advance = this.cfg.EXIT_MODE === 'ratchet' && checkpointElapsed(p, this.cfg, now);
+      if (advance) {
+        p.checkpointAt = now;
+        p.checkpointPrice = price;
+      }
+
       if (!order) {
         this.store.savePosition(p);
         return;
@@ -207,6 +221,21 @@ export class PositionManager {
             `with a ${this.cfg.MOONBAG_TRAILING_STOP_PCT}% trailing stop`,
         );
       }
+    }
+
+    // The stake is back. From here the position cannot lose money, so the
+    // ratchet stops asking whether it is profitable and only asks whether it is
+    // still going up. The window restarts so the moonbag gets a clean run
+    // rather than being judged against a price from before the sell.
+    if (order.reason === 'cost_recovery' && p.remainingQty > 0) {
+      p.costRecovered = true;
+      p.moonbagArmed = true;
+      p.checkpointAt = Date.now();
+      p.checkpointPrice = result.price;
+      log.info(
+        `DE-RISKED ${label}: ${p.realizedSol.toFixed(5)} SOL banked against a ` +
+          `${p.costSol.toFixed(5)} SOL stake — ${p.remainingQty.toFixed(0)} tokens now ride free`,
+      );
     }
 
     p.notes.push(

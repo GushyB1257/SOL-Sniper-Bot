@@ -41,6 +41,14 @@ export interface PositionView {
   trailPrice: number | null;
   /** How far price must fall, in percent, before the nearest stop triggers. */
   distanceToStopPct: number;
+  /** True when no price-based stop exists at all (EXIT_MODE=ratchet). */
+  noStopLoss: boolean;
+  /** Seconds until the next ratchet checkpoint, or null outside that mode. */
+  nextCheckpointSeconds: number | null;
+  /** Price the next checkpoint has to beat, or null outside that mode. */
+  checkpointPrice: number | null;
+  /** True once the stake has been taken back out and the rest is house money. */
+  costRecovered: boolean;
   notes: string[];
 }
 
@@ -185,18 +193,25 @@ const CONFIG_GROUPS: Record<string, string[]> = {
     'JITO_TIP_SOL',
     'MAX_CANDIDATE_AGE_MS',
   ],
+  Exit: ['EXIT_MODE'],
+  Ratchet: [
+    'CHECKPOINT_SECONDS',
+    'RECOVER_AT_GAIN_PCT',
+    'MOONBAG_TRIM_PCT',
+    'RATCHET_MIN_PROGRESS_PCT',
+    'RATCHET_STOP_LOSS_PCT',
+    'PROGRAM_FEE_PCT',
+    'ROUTER_FEE_PCT',
+  ],
   'Scalp exit': [
-    'SCALP_MODE',
     'SCALP_TARGET_NET_PCT',
     'SCALP_STOP_LOSS_PCT',
     'SCALP_GIVEBACK_PCT',
     'SCALP_TIME_STOP_SECONDS',
     'SCALP_RUNNER_PCT',
     'SCALP_RUNNER_TRAILING_STOP_PCT',
-    'PROGRAM_FEE_PCT',
-    'ROUTER_FEE_PCT',
   ],
-  Exits: [
+  'Ladder exit': [
     'EXIT_LADDER',
     'STOP_LOSS_PCT',
     'TRAILING_STOP_PCT',
@@ -257,13 +272,20 @@ function view(p: Position, cfg: Config, now: number): PositionView {
   const unrealized = p.remainingQty * price;
   const pnlSol = p.realizedSol + unrealized - p.costSol;
 
-  const stopPrice = p.entryPrice * (1 - cfg.STOP_LOSS_PCT / 100);
+  // In ratchet mode there is deliberately no price-based stop. Rendering one
+  // anyway would put a number on the screen that nothing in the bot will act
+  // on, which is worse than showing nothing.
+  const ratchet = cfg.EXIT_MODE === 'ratchet';
+  const stopPct = ratchet ? cfg.RATCHET_STOP_LOSS_PCT : cfg.STOP_LOSS_PCT;
+  const stopPrice = stopPct > 0 ? p.entryPrice * (1 - stopPct / 100) : 0;
   const anyFilled = p.ladder.some((t) => t.filled);
-  const trailPct = p.moonbagArmed
-    ? cfg.MOONBAG_TRAILING_STOP_PCT
-    : anyFilled
-      ? cfg.TRAILING_STOP_PCT
-      : null;
+  const trailPct = ratchet
+    ? null
+    : p.moonbagArmed
+      ? cfg.MOONBAG_TRAILING_STOP_PCT
+      : anyFilled
+        ? cfg.TRAILING_STOP_PCT
+        : null;
   const trailPrice = trailPct === null ? null : p.peakPrice * (1 - trailPct / 100);
 
   // Whichever stop is nearest is the one that will actually fire.
@@ -300,7 +322,14 @@ function view(p: Position, cfg: Config, now: number): PositionView {
     trailPrice,
     // Negative: how far price has to fall to hit the nearest stop. Clamped at
     // 0 for the moment where the stop is already breached and about to fire.
-    distanceToStopPct: price > 0 ? Math.min(0, pctChange(price, nearestStop)) : 0,
+    distanceToStopPct:
+      price > 0 && stopPrice > 0 ? Math.min(0, pctChange(price, nearestStop)) : 0,
+    noStopLoss: ratchet && cfg.RATCHET_STOP_LOSS_PCT === 0,
+    nextCheckpointSeconds: ratchet
+      ? Math.max(0, cfg.CHECKPOINT_SECONDS - (now - (p.checkpointAt ?? p.openedAt)) / 1000)
+      : null,
+    checkpointPrice: ratchet ? (p.checkpointPrice ?? p.entryPrice) : null,
+    costRecovered: p.costRecovered === true,
     notes: p.notes.slice(-6),
   };
 }

@@ -1,7 +1,7 @@
 import type { ExitOrder, LadderTier, Position } from '../types.js';
 import type { Config } from '../config.js';
 import { pctChange } from '../util/solana.js';
-import { breakevenGrossPct, costModel, targetGrossPct } from './costs.js';
+import { breakevenGrossPct, costModel, targetGrossPct, type CostModel } from './costs.js';
 
 /**
  * Builds the ladder for a new position from config.
@@ -46,7 +46,8 @@ export function decideExit(ctx: ExitContext): ExitOrder | null {
   if (p.remainingQty <= 0) return null;
   if (!Number.isFinite(price) || price <= 0) return null;
 
-  if (cfg.SCALP_MODE) return decideScalpExit(ctx);
+  if (cfg.EXIT_MODE === 'ratchet') return decideRatchetExit(ctx);
+  if (cfg.EXIT_MODE === 'scalp') return decideScalpExit(ctx);
 
   const gainPct = pctChange(p.entryPrice, price);
   const drawdownFromPeak = p.peakPrice > 0 ? pctChange(p.peakPrice, price) : 0;
@@ -268,4 +269,171 @@ export function decideScalpExit(ctx: ExitContext): ExitOrder | null {
   }
 
   return null;
+}
+
+/**
+ * Quantity that has to be sold at `price` to get the original stake back.
+ *
+ * Sizing this by eye — "sell half at 2x" — leaves the stake short by the fees
+ * on both legs, so the position is not actually de-risked and the moonbag is
+ * quietly funded out of capital. Solving it properly:
+ *
+ *   net proceeds = qty x price x (1 - f) - priorityFee  >=  outstanding cost
+ *
+ * gives the quantity below. At a clean 2x that works out to a little over half
+ * the position, and what remains is genuinely free.
+ */
+export function costRecoveryQty(p: Position, price: number, m: CostModel): number {
+  const outstanding = Math.max(0, p.costSol - p.realizedSol);
+  if (outstanding <= 0 || price <= 0) return 0;
+  const denom = price * (1 - m.perSideFee);
+  if (denom <= 0) return Infinity;
+  return (outstanding + m.priorityFeeSol) / denom;
+}
+
+/** True when the current ratchet window has run its course. */
+export function checkpointElapsed(p: Position, cfg: Config, now: number): boolean {
+  const startedAt = p.checkpointAt ?? p.openedAt;
+  return (now - startedAt) / 1000 >= cfg.CHECKPOINT_SECONDS;
+}
+
+/**
+ * The ratchet exit: no stop loss, one question on a timer.
+ *
+ * A stop loss cuts a position at its worst moment, which on a token that then
+ * recovers is the most expensive possible time to sell. This replaces it with a
+ * deadline instead of a price: every CHECKPOINT_SECONDS the position has to be
+ * higher than it was at the last checkpoint, or it is over. A token that dumps
+ * and comes back within the window is held; a token that dumps and stays down
+ * is sold at the checkpoint rather than at the bottom of the wick.
+ *
+ * The trade-off is explicit and worth stating plainly: **the most a losing
+ * trade can now cost is the entire position**, because nothing sells on price.
+ * What pays for that is the recovery rule — on a double, exactly enough is sold
+ * to return the stake, and everything held after that is house money. So the
+ * strategy needs a real rate of doubles to work; it is not free.
+ *
+ * Four rules, first match wins:
+ *
+ *   1. Recover the stake the moment the position doubles (not on the timer —
+ *      a 2x can happen inside one window and giving it back is the failure
+ *      this whole design exists to avoid).
+ *   2. At a checkpoint, before recovery: below breakeven, it has not worked.
+ *   3. At a checkpoint, either phase: no new high, the move is over.
+ *   4. At a checkpoint, after recovery and still climbing: skim a slice and
+ *      let the rest run.
+ */
+export function decideRatchetExit(ctx: ExitContext): ExitOrder | null {
+  const { position: p, price, cfg, now } = ctx;
+
+  const model = costModel(cfg, p.notionalSol ?? p.costSol);
+  const breakeven = breakevenGrossPct(model);
+  const gainPct = pctChange(p.entryPrice, price);
+  const heldSeconds = (now - p.openedAt) / 1000;
+  const recovered = p.costRecovered === true;
+  const checkpointPrice = p.checkpointPrice ?? p.entryPrice;
+
+  const closeAll = (reason: ExitOrder['reason'], detail: string): ExitOrder => ({
+    mint: p.mint,
+    positionId: p.id,
+    qty: p.remainingQty,
+    reason,
+    closeAll: true,
+    tierIndexes: [],
+    detail,
+  });
+
+  // Opt-in stop, off by default. Present so a stop can be restored from config
+  // rather than by editing this file.
+  if (cfg.RATCHET_STOP_LOSS_PCT > 0 && gainPct <= -cfg.RATCHET_STOP_LOSS_PCT) {
+    return closeAll('stop_loss', `down ${gainPct.toFixed(1)}% (stop ${-cfg.RATCHET_STOP_LOSS_PCT}%)`);
+  }
+
+  // Absolute backstop. The checkpoint rule already terminates every position —
+  // nothing rises forever — but this catches a price feed frozen at a high.
+  if (heldSeconds >= cfg.MAX_HOLD_SECONDS) {
+    return closeAll('max_hold', `held ${Math.round(heldSeconds)}s (max ${cfg.MAX_HOLD_SECONDS}s)`);
+  }
+
+  // 1. Recovery. Deliberately NOT gated on the checkpoint: the entire point is
+  //    that once this fires the trade can no longer lose money, so it should
+  //    fire the instant it can.
+  if (!recovered && gainPct >= cfg.RECOVER_AT_GAIN_PCT) {
+    const qty = costRecoveryQty(p, price, model);
+    if (qty >= p.remainingQty) {
+      // Cannot cover the stake out of what is left — take everything rather
+      // than pretend the position is de-risked.
+      return closeAll(
+        'cost_recovery',
+        `+${gainPct.toFixed(0)}% but the remainder cannot cover the stake — closing out`,
+      );
+    }
+    const keptPct = ((p.remainingQty - qty) / p.originalQty) * 100;
+    return {
+      mint: p.mint,
+      positionId: p.id,
+      qty,
+      reason: 'cost_recovery',
+      closeAll: false,
+      tierIndexes: [],
+      detail:
+        `+${gainPct.toFixed(0)}% — taking ${p.costSol.toFixed(4)} SOL stake back, ` +
+        `${keptPct.toFixed(0)}% of the position rides free from here`,
+    };
+  }
+
+  // Nothing else happens between checkpoints. This is what stops the bot
+  // reacting to a wick.
+  if (!checkpointElapsed(p, cfg, now)) return null;
+
+  const required = checkpointPrice * (1 + cfg.RATCHET_MIN_PROGRESS_PCT / 100);
+  const sinceCheckpointPct = pctChange(checkpointPrice, price);
+
+  if (!recovered) {
+    // 2. Sixty seconds in and still not actually in profit once fees are
+    //    counted. Being green on the chart is not the test — clearing the
+    //    round trip is.
+    if (gainPct < breakeven) {
+      return closeAll(
+        'time_stop',
+        `${gainPct.toFixed(1)}% after ${Math.round(heldSeconds)}s, below the ` +
+          `${breakeven.toFixed(1)}% needed to cover fees`,
+      );
+    }
+    // 3. Green, but it stopped going up.
+    if (price <= required) {
+      return closeAll(
+        'ratchet_stall',
+        `+${gainPct.toFixed(1)}% but ${sinceCheckpointPct.toFixed(1)}% over the last ` +
+          `${cfg.CHECKPOINT_SECONDS}s — banking it`,
+      );
+    }
+    // Still climbing and the stake is still at risk: hold all of it and let the
+    // recovery rule do the de-risking.
+    return null;
+  }
+
+  // 3 (moonbag phase). The free ride ended.
+  if (price <= required) {
+    return closeAll(
+      'ratchet_stall',
+      `moonbag ${sinceCheckpointPct.toFixed(1)}% over the last ${cfg.CHECKPOINT_SECONDS}s — closing`,
+    );
+  }
+
+  // 4. Still climbing on house money: skim and let the rest run.
+  const trim = p.remainingQty * (cfg.MOONBAG_TRIM_PCT / 100);
+  if (trim <= 0) return null;
+  const dust = (p.remainingQty - trim) / p.originalQty < 0.005;
+  return {
+    mint: p.mint,
+    positionId: p.id,
+    qty: dust ? p.remainingQty : trim,
+    reason: 'moonbag_trim',
+    closeAll: dust,
+    tierIndexes: [],
+    detail:
+      `moonbag +${sinceCheckpointPct.toFixed(1)}% over ${cfg.CHECKPOINT_SECONDS}s ` +
+      `(+${gainPct.toFixed(0)}% overall) — skimming ${cfg.MOONBAG_TRIM_PCT}%`,
+  };
 }

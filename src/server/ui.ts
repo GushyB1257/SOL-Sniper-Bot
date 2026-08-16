@@ -585,6 +585,13 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
   function renderPositions(list) {
     var body = $('posBody');
     body.innerHTML = '';
+    // Header follows the exit mode, so the column never lies about what the
+    // number underneath it means.
+    var th = $('thStopCol');
+    if (th) {
+      th.textContent =
+        list && list.length && list[0].nextCheckpointSeconds !== null ? 'Checkpoint' : 'To stop';
+    }
     if (!list || list.length === 0) {
       var tr = el('tr');
       var td = el('td', 'empty', 'No open positions.');

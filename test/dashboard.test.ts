@@ -22,7 +22,7 @@ function env(dir: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv
     MODE: 'paper',
   ANTHROPIC_API_KEY: 'sk-ant-test',
   ENTRY_MODE: 'fast',
-  SCALP_MODE: 'false',
+  EXIT_MODE: 'ladder',
     DATA_DIR: dir,
     WALLET_PRIVATE_KEY: SECRET,
     DASHBOARD_PORT: '0',

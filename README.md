@@ -181,14 +181,38 @@ filters are doing the rejecting, how many matched, how many were bought — and 
 `CHAIN` line for how many curves were read. If either source is dead, the
 summary names it rather than saying nothing is happening.
 
-**The exit is fee-aware, not a round number.** You name a NET target and the bot
-computes the gross move that delivers it after both program fees, both router
-fees and both priority fees. Underneath it sits a **give-back floor**
-(`SCALP_GIVEBACK_PCT`, default 40%): once a trade is meaningfully green, it exits
-if it hands back that share of its peak gain. A position that peaked at +30% is
-cut near +18% rather than being allowed to ride back to flat. For tokens that
-spike and then roll over inside a minute, that single parameter matters more
-than the entry filter does.
+### The exit: a deadline, not a stop loss
+
+A stop loss sells at the worst possible moment — the bottom of a wick — and on
+a token that then recovers, that is the most expensive trade available. So
+`EXIT_MODE=ratchet` (the default) has **no stop loss at all**. It replaces the
+price question with a time question:
+
+> Every 60 seconds, is this higher than it was at the last check?
+
+Four rules, first match wins:
+
+| | Rule | What it does |
+|---|---|---|
+| 1 | **Recover** | The moment it doubles, sell exactly enough to return the stake. Not on the timer — a 2x can happen inside one window and giving it back is the failure this design exists to avoid. |
+| 2 | **Prove it** | At a checkpoint, before recovery: below the fee breakeven, it has not worked. Sell all. |
+| 3 | **Stall** | At a checkpoint, either phase: not higher than last time, the move is over. Sell all. |
+| 4 | **Skim** | At a checkpoint, after recovery and still climbing: trim 25% and let the rest run. |
+
+A token that dumps 70% and recovers inside the window is **held**. A token that
+dumps and stays down is sold at the checkpoint, not at the bottom of the wick.
+
+The recovery quantity is solved from the fee model rather than eyeballed as
+"sell half at 2x" — half leaves the stake short by the fees on both legs, so the
+position is not actually de-risked and the moonbag is quietly funded out of
+capital. Past that point the trade cannot lose money.
+
+**The cost, stated plainly.** Nothing sells on price, so the most a losing trade
+can cost is the **entire position**. A rug completes in seconds, well inside one
+checkpoint. What pays for that is the recovery rule — but only on trades that
+actually double, and most will not. `DAILY_LOSS_LIMIT_SOL` is what bounds a bad
+day; `npm run doctor` prints how many total losses that allows. Set
+`RATCHET_STOP_LOSS_PCT` to put a stop back if the paper results say you want one.
 
 **Position size is the parameter people get wrong.** The priority fee is fixed
 per transaction, so it is a far larger share of a small position. At 0.05 SOL
@@ -517,7 +541,17 @@ Screener entries:
 | Stop buying tops | Lower `SCREEN_MAX_MCAP_USD` |
 | Include migrated coins | `SCREEN_ALLOWED_POOLS=pump,pump-amm` |
 
-Screener exits:
+Ratchet exits (`EXIT_MODE=ratchet`):
+
+| Want | Change |
+|---|---|
+| De-risk sooner, smaller moonbag | Lower `RECOVER_AT_GAIN_PCT` (60–80) |
+| Turn capital over faster | Lower `CHECKPOINT_SECONDS` (30–45) |
+| Cut drifters faster | Raise `RATCHET_MIN_PROGRESS_PCT` (3–5) |
+| Hold a bigger runner | Lower `MOONBAG_TRIM_PCT` |
+| Bound the downside again | Set `RATCHET_STOP_LOSS_PCT` (50–70 keeps the recovery upside) |
+
+Scalp exits (`EXIT_MODE=scalp`):
 
 | Want | Change |
 |---|---|
@@ -526,7 +560,7 @@ Screener exits:
 | Turn capital over faster | Lower `SCALP_TIME_STOP_SECONDS` |
 | Make small targets viable | Raise `BUY_AMOUNT_SOL`; lower `PRIORITY_FEE_SOL` |
 
-Ladder strategy (`SCALP_MODE=false`):
+Ladder exits (`EXIT_MODE=ladder`):
 
 | Want | Change |
 |---|---|
@@ -538,8 +572,8 @@ Ladder strategy (`SCALP_MODE=false`):
 The config loader rejects incoherent settings at boot rather than letting them
 silently mis-size a position: non-ascending rungs, ladders selling >100%,
 ladders leaving no moonbag, a trailing stop tighter than the hard stop, an
-unknown venue in `SCREEN_ALLOWED_POOLS`, a screener band nothing can pass, or
-`ENTRY_MODE=screener` paired with the long ladder.
+unknown venue in `SCREEN_ALLOWED_POOLS`, a screener band nothing can pass, a
+moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 
 ## Operating
 
@@ -553,7 +587,7 @@ unknown venue in `SCREEN_ALLOWED_POOLS`, a screener band nothing can pass, or
 ## Development
 
 ```bash
-npm test           # 214 tests
+npm test           # 243 tests
 npm run typecheck
 npm run build
 ```

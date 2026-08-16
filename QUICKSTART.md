@@ -225,10 +225,11 @@ earned:
 
 | Mostly | What it means | Try |
 |---|---|---|
-| `time_stop` | You are buying tokens that go nowhere | Tighten `SCREEN_MIN_VOLUME_USD`, narrow `SCREEN_MAX_AGE_SECONDS` |
-| `stop_loss` | You are buying the top of the pop | Lower `SCREEN_MAX_MCAP_USD` |
-| `trailing_stop` with positive P&L | Working as designed — the give-back floor is banking gains | Nothing |
-| `ladder` | Hitting the full target | Consider raising `SCALP_TARGET_NET_PCT` |
+| `time_stop` | Not profitable 60s in — you are buying tokens that go nowhere | Raise `SCREEN_MIN_VOLUME_USD`, narrow `SCREEN_MAX_AGE_SECONDS` |
+| `ratchet_stall` with positive P&L | Working as designed — banking moves that stopped moving | Nothing |
+| `ratchet_stall` with negative P&L | You are buying the top of the pop | Set `SCREEN_MAX_MCAP_USD` |
+| `cost_recovery` then `moonbag_trim` | The good case: stake back, profit riding | Consider raising `RECOVER_AT_GAIN_PCT` |
+| Very few `cost_recovery` at all | Almost nothing doubles, which is what pays for having no stop loss | Set `RATCHET_STOP_LOSS_PCT`, or lower `RECOVER_AT_GAIN_PCT` |
 
 **The entry breakdowns** — the report splits your closed trades by entry market
 cap, entry volume, age at entry, socials and hold time. This is the tuning loop:
@@ -249,10 +250,18 @@ tells you nothing about which one helped.
 The settings worth trying first, roughly in order of how much they move the
 result:
 
-1. `SCALP_GIVEBACK_PCT` — 30 banks sooner and more often, 60 lets winners run.
-2. `SCREEN_MAX_AGE_SECONDS=60` — only trade the first minute after launch.
-3. `SCREEN_MAX_MCAP_USD` — lower stops you buying the top of the move.
-4. `SCALP_TIME_STOP_SECONDS` — how long a flat position keeps its slot.
+1. `RECOVER_AT_GAIN_PCT` — 100 waits for a double; 60–80 de-risks far more
+   often at the cost of a smaller moonbag. This is the one to test first,
+   because it decides how often a trade becomes risk-free at all.
+2. `CHECKPOINT_SECONDS` — 30–45 turns capital over faster and cuts dying
+   positions sooner; 90–120 gives a slow starter room to work.
+3. `RATCHET_MIN_PROGRESS_PCT` — 3–5 cuts tokens that are only drifting sideways.
+4. `SCREEN_MAX_AGE_SECONDS=60` — only trade the first minute after launch.
+
+**The one to watch closely: `RATCHET_STOP_LOSS_PCT=0`.** With no stop, one
+rugged trade costs the whole position. If the report shows a handful of −95%
+trades wiping out a long run of small wins, put a stop back at 50–70 — wide
+enough that it will not cut a dip that recovers, tight enough to survive a rug.
 
 ### Step 11: Decide
 
@@ -326,6 +335,10 @@ MAX_CONCURRENT_POSITIONS=3
 HOURLY_SPEND_CAP_SOL=1.5
 DAILY_LOSS_LIMIT_SOL=1
 ```
+
+With `EXIT_MODE=ratchet` there is no stop loss, so `DAILY_LOSS_LIMIT_SOL` is
+your only real backstop. At 0.25 SOL a position, a 1 SOL daily limit is four
+total losses before the bot stops for the day. Decide that number deliberately.
 
 ### Step 15: Pre-flight, then go
 

@@ -112,6 +112,20 @@ export interface Position {
   /** Epoch ms before which no further sell should be attempted. */
   nextExitAttemptAt?: number;
 
+  /**
+   * Ratchet bookkeeping. The exit asks one question every CHECKPOINT_SECONDS:
+   * is the price higher than it was at the last checkpoint? These record where
+   * the current window started so that question has an answer after a restart.
+   */
+  checkpointAt?: number;
+  checkpointPrice?: number;
+  /**
+   * True once enough has been sold to return the original stake. Everything
+   * still held after that is house money, which is what lets the ratchet drop
+   * the stop entirely.
+   */
+  costRecovered?: boolean;
+
   /** Analyst's expected upside, when the AI strategy opened this position. */
   aiTargetGainPct?: number;
   /**
@@ -133,7 +147,13 @@ export type ExitReason =
   | 'manual'
   | 'ai_exit'
   | 'ai_trim'
-  | 'shutdown';
+  | 'shutdown'
+  /** Sold just enough to return the original stake. The rest rides free. */
+  | 'cost_recovery'
+  /** Skimmed a slice off a moonbag that is still climbing. */
+  | 'moonbag_trim'
+  /** A checkpoint passed without a new high, so the move is over. */
+  | 'ratchet_stall';
 
 /** An instruction produced by the strategy for the executor to carry out. */
 export interface ExitOrder {

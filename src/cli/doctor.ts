@@ -164,7 +164,31 @@ async function main(): Promise<void> {
   // --- fee arithmetic ----------------------------------------------------
   // The single most decisive number for a quick in-and-out strategy, and the
   // one most people never compute.
-  if (cfg.SCALP_MODE) {
+  if (cfg.EXIT_MODE === 'ratchet') {
+    const m = costModel(cfg);
+    const be = breakevenGrossPct(m);
+    console.log('');
+    ok(`exit: no stop loss — every ${cfg.CHECKPOINT_SECONDS}s it must beat the last check`);
+    ok(
+      `first check needs > +${be.toFixed(1)}% (round-trip fees at ${cfg.BUY_AMOUNT_SOL} SOL) ` +
+        'or the position is closed',
+    );
+    ok(
+      `at +${cfg.RECOVER_AT_GAIN_PCT}% it sells ~${(100 / (1 + cfg.RECOVER_AT_GAIN_PCT / 100) / (1 - m.perSideFee)).toFixed(0)}% ` +
+        'of the position to return the stake; the remainder is house money',
+    );
+
+    // The cost of removing the stop, stated in the units that matter.
+    const worst = cfg.BUY_AMOUNT_SOL * cfg.MAX_CONCURRENT_POSITIONS;
+    warn(
+      `no stop loss means the worst case per trade is the FULL ${cfg.BUY_AMOUNT_SOL} SOL, ` +
+        `and ${worst.toFixed(2)} SOL across ${cfg.MAX_CONCURRENT_POSITIONS} concurrent positions. ` +
+        `A rug completes well inside ${cfg.CHECKPOINT_SECONDS}s, so nothing will stop it. ` +
+        `DAILY_LOSS_LIMIT_SOL=${cfg.DAILY_LOSS_LIMIT_SOL} is what bounds a bad day — ` +
+        `that is ${Math.floor(cfg.DAILY_LOSS_LIMIT_SOL / cfg.BUY_AMOUNT_SOL)} total losses.`,
+    );
+    ok('the payoff for that: every trade past a double can only make money');
+  } else if (cfg.EXIT_MODE === 'scalp') {
     const m = costModel(cfg);
     const be = breakevenGrossPct(m);
     const target = targetGrossPct(m, cfg.SCALP_TARGET_NET_PCT);
@@ -198,7 +222,7 @@ async function main(): Promise<void> {
   }
 
   // --- ladder sanity (long-hold strategy only) ---------------------------
-  if (cfg.SCALP_MODE) {
+  if (cfg.EXIT_MODE !== 'ladder') {
     console.log(
       fatal === 0
         ? '\n\x1b[32mReady.\x1b[0m Start in paper mode and let it gather trades before judging it.\n'

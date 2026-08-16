@@ -232,9 +232,40 @@ const schema = z.object({
   PROGRAM_FEE_PCT: num(0, 10).default(1),
   ROUTER_FEE_PCT: num(0, 10).default(0.5),
 
-  // === Scalp exit ===
-  /** true: exit on a fee-aware net target instead of the long ladder. */
-  SCALP_MODE: bool.default('true'),
+  // === Exit ===
+  /**
+   * ratchet : no stop loss. Every CHECKPOINT_SECONDS the price must be higher
+   *           than it was at the last checkpoint, or the position closes. On a
+   *           double, sell exactly enough to return the stake and let the rest
+   *           ride as house money.
+   * scalp   : fee-aware net target with a give-back floor and a hard stop.
+   * ladder  : the original multi-rung take-profit with trailing stops.
+   */
+  EXIT_MODE: z.enum(['ratchet', 'scalp', 'ladder']).default('ratchet'),
+
+  // === Ratchet exit (EXIT_MODE=ratchet) ===
+  /** How often the "is it higher than last time?" question gets asked. */
+  CHECKPOINT_SECONDS: num(5, 3600).default(60),
+  /**
+   * Gain at which the original stake comes back off the table. 100 = a double.
+   * Everything still held past this point is pure profit, which is what makes
+   * running with no stop loss defensible.
+   */
+  RECOVER_AT_GAIN_PCT: num(10, 10_000).default(100),
+  /** Share of the remaining moonbag skimmed at each checkpoint it survives. */
+  MOONBAG_TRIM_PCT: num(0, 90).default(25),
+  /**
+   * How much higher than the last checkpoint counts as "still going". 0 means
+   * any new high survives; raise it to cut tokens that are merely drifting.
+   */
+  RATCHET_MIN_PROGRESS_PCT: num(0, 100).default(0),
+  /**
+   * Optional hard stop, OFF by default. A stop is precisely what cuts a
+   * position that then recovers, so the ratchet replaces it with a time-boxed
+   * "prove it" test. Set a percentage to put one back.
+   */
+  RATCHET_STOP_LOSS_PCT: num(0, 99).default(0),
+  // === Scalp exit (EXIT_MODE=scalp) ===
   /** Net profit target as a percent of the SOL committed, AFTER all fees. */
   SCALP_TARGET_NET_PCT: num(0.1, 1000).default(8),
   SCALP_STOP_LOSS_PCT: num(0.5, 95).default(18),
@@ -336,7 +367,7 @@ function crossValidate(cfg: Config): string[] {
     );
   }
 
-  if (cfg.SCALP_MODE && cfg.SCALP_RUNNER_PCT >= 100) {
+  if (cfg.EXIT_MODE === 'scalp' && cfg.SCALP_RUNNER_PCT >= 100) {
     errors.push('SCALP_RUNNER_PCT must be below 100 — something has to be sold at the target');
   }
 
@@ -366,13 +397,20 @@ function crossValidate(cfg: Config): string[] {
   }
 
   // The screener is a stopwatch on a filter, not a judgment call — pairing it
-  // with the long ladder means holding a scalp entry for hours.
-  if (cfg.ENTRY_MODE === 'screener' && !cfg.SCALP_MODE) {
+  // with the long ladder means holding a fast entry against hour-long stops.
+  if (cfg.ENTRY_MODE === 'screener' && cfg.EXIT_MODE === 'ladder') {
     errors.push(
-      'ENTRY_MODE=screener enters on a filter crossing, which is a scalp setup. ' +
-        'Running it with SCALP_MODE=false holds those entries against the long ' +
-        'ladder instead. Set SCALP_MODE=true, or pick a different ENTRY_MODE.',
+      'ENTRY_MODE=screener enters on a filter crossing, which plays out in ' +
+        'minutes. EXIT_MODE=ladder holds those entries against +60/+150/+400% ' +
+        'rungs. Use EXIT_MODE=ratchet (or scalp), or pick a different ENTRY_MODE.',
     );
+  }
+
+  // The ratchet's whole safety argument is that a doubled position has already
+  // returned its stake. Trimming everything at that point leaves no moonbag and
+  // no upside; keeping nothing back makes the rule pointless.
+  if (cfg.EXIT_MODE === 'ratchet' && cfg.MOONBAG_TRIM_PCT >= 100) {
+    errors.push('MOONBAG_TRIM_PCT must be below 100 — the moonbag is the entire point');
   }
 
   if (cfg.WATCH_MIN_AGE_SECONDS >= cfg.WATCH_MAX_AGE_SECONDS) {

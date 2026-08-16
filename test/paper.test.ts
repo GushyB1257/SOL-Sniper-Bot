@@ -55,7 +55,10 @@ beforeEach(() => {
     RPC_HTTP_URL: 'https://rpc.example.com',
     RPC_WS_URL: 'wss://rpc.example.com',
     MODE: 'paper',
-  ANTHROPIC_API_KEY: 'sk-ant-test',
+    ANTHROPIC_API_KEY: 'sk-ant-test',
+    // These exercise executor and position-manager mechanics, so they pin the
+    // exit policy rather than inheriting whichever one is currently default.
+    EXIT_MODE: 'scalp',
     DATA_DIR: dir,
   } as unknown as NodeJS.ProcessEnv);
   prices = new StubPrices();
@@ -176,6 +179,47 @@ describe('paper sells are priced off the live curve', () => {
 });
 
 describe('paper mode tracks a real rug to the floor', () => {
+  it('holds a drained curve to the checkpoint when there is no stop loss', async () => {
+    // The cost of EXIT_MODE=ratchet, stated as a test rather than a caveat: a
+    // rug completes in seconds and nothing sells on price, so the position is
+    // carried to the checkpoint and closed near zero. That is the trade made
+    // in exchange for never being stopped out of a trade that recovers.
+    const ratchet = loadConfig({
+      RPC_HTTP_URL: 'https://rpc.example.com',
+      RPC_WS_URL: 'wss://rpc.example.com',
+      MODE: 'paper',
+      ANTHROPIC_API_KEY: 'sk-ant-test',
+      EXIT_MODE: 'ratchet',
+      DATA_DIR: dir,
+    } as unknown as NodeJS.ProcessEnv);
+    const store = new Store(dir);
+    const risk = new RiskManager(ratchet, store, join(dir, 'nostop'));
+    const manager = new PositionManager(ratchet, store, exec, risk);
+
+    const fill = await exec.buy(CANDIDATE, 0.05);
+    const p = manager.open(CANDIDATE, fill, 90);
+
+    const k0 = prices.vSol * prices.vTokens;
+    prices.vSol = Math.sqrt(p.entryPrice * 0.02 * k0);
+    prices.vTokens = k0 / prices.vSol;
+
+    // Inside the window: held, despite being down 98%.
+    await manager.tick();
+    expect(store.getPosition(p.id)!.status).toBe('open');
+
+    // Past the checkpoint: closed, and the loss is near total.
+    const cur = store.getPosition(p.id)!;
+    cur.openedAt -= (ratchet.CHECKPOINT_SECONDS + 5) * 1000;
+    cur.checkpointAt = cur.openedAt;
+    store.savePosition(cur);
+    await manager.tick();
+
+    const closed = store.getPosition(p.id)!;
+    expect(closed.status).toBe('closed');
+    expect(closed.closeReason).toMatch(/time_stop/);
+    expect(store.journal()[0]!.pnlPct).toBeLessThan(-80);
+  });
+
   it('stops out when the curve is drained, and books the loss', async () => {
     const store = new Store(dir);
     const risk = new RiskManager(cfg, store, join(dir, 'nostop'));

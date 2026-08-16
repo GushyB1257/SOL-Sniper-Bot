@@ -325,6 +325,6 @@ describe('screener config validation', () => {
   });
 
   it('refuses to hold screener entries against the long ladder', () => {
-    expect(() => config({ ENTRY_MODE: 'screener', SCALP_MODE: 'false' })).toThrow(/SCALP_MODE/);
+    expect(() => config({ ENTRY_MODE: 'screener', EXIT_MODE: 'ladder' })).toThrow(/EXIT_MODE|ladder/);
   });
 });

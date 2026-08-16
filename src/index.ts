@@ -226,7 +226,22 @@ class SniperBot {
       log.info(`  AI budget   ${c.AI_MAX_CALLS_PER_HOUR} calls/h, $${c.AI_DAILY_BUDGET_USD}/day, review every ${c.AI_REVIEW_INTERVAL_SECONDS}s`);
     }
     log.info(`  Size        ${c.BUY_AMOUNT_SOL} SOL/position, max ${c.MAX_CONCURRENT_POSITIONS} concurrent`);
-    if (c.SCALP_MODE) {
+    if (c.EXIT_MODE === 'ratchet') {
+      const be = breakevenGrossPct(costModel(c, c.BUY_AMOUNT_SOL));
+      log.info(
+        `  Exit        every ${c.CHECKPOINT_SECONDS}s it must be higher than the last check, ` +
+          `or it is sold`,
+      );
+      log.info(
+        `  De-risk     at +${c.RECOVER_AT_GAIN_PCT}% the ${c.BUY_AMOUNT_SOL} SOL stake comes back out; ` +
+          `the rest rides free, trimmed ${c.MOONBAG_TRIM_PCT}% per surviving check`,
+      );
+      log.info(
+        `  Stop loss   NONE${c.RATCHET_STOP_LOSS_PCT > 0 ? ` (override -${c.RATCHET_STOP_LOSS_PCT}%)` : ''} — ` +
+          `worst case per trade is the full ${c.BUY_AMOUNT_SOL} SOL. First check needs ` +
+          `> +${be.toFixed(1)}% just to cover fees.`,
+      );
+    } else if (c.EXIT_MODE === 'scalp') {
       const model = costModel(c, c.BUY_AMOUNT_SOL);
       const be = breakevenGrossPct(model);
       const tgt = targetGrossPct(model, c.SCALP_TARGET_NET_PCT);
