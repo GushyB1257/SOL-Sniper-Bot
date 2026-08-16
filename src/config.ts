@@ -500,6 +500,30 @@ const schema = z.object({
   // 0.0.0.0 hands that to anyone who can reach the port.
   DASHBOARD_HOST: z.string().default('127.0.0.1'),
 
+  // === Auto-tuning ===
+  /**
+   * Let Claude adjust the bots' strategy parameters from their own results.
+   *
+   * OFF by default and deliberately so: it spends API credit on a schedule and
+   * it edits the settings you are trading on. What it may touch is fixed in
+   * src/tuner/limits.ts — strategy knobs only, never position size and never a
+   * risk limit — and every change is measured against the window before it and
+   * reverted automatically if it does not beat it.
+   */
+  AUTO_TUNE_ENABLED: bool.default('false'),
+  /** How often the tuner looks. Hours, not minutes: it needs closed trades. */
+  TUNER_INTERVAL_MINUTES: num(15, 10_080).default(360),
+  /**
+   * Closed trades required before anything moves, and again before a change is
+   * judged. Under a few dozen, memecoin P&L is one or two outliers and any
+   * change can be justified from the noise.
+   */
+  TUNER_MIN_TRADES: num(10, 5000).default(40),
+  /** Parameters that may move in one round. One coherent idea at a time. */
+  TUNER_MAX_CHANGES_PER_ROUND: num(1, 8).default(2),
+  /** Largest single-round move for any parameter, as a share of its value. */
+  TUNER_MAX_STEP_PCT: num(1, 100).default(30),
+
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   DATA_DIR: z.string().default('./data'),
 });

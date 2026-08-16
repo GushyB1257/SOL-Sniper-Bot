@@ -338,6 +338,58 @@ guaranteed loss however well it is timed. At 0.25 SOL it is **3.7%**. That is
 why `BUY_AMOUNT_SOL` defaults to 0.25. `npm run doctor` prints the arithmetic
 for whatever you set, including the win rate your target and stop require.
 
+### Auto-tuning (`AUTO_TUNE_ENABLED=true`)
+
+The loop above, run by Claude on a schedule, so the bots improve the longer you
+run them without you feeding data back by hand.
+
+Off by default: it spends API credit on a timer and it edits the settings you
+are trading on.
+
+**What it can touch is fixed in code**, in `src/tuner/limits.ts`, not in config:
+
+| Can change | Never changes |
+|---|---|
+| Entry filters (volume, mcap, age, socials, buyers) | Position size |
+| Safety score threshold | Concurrent positions |
+| Exit timing (checkpoints, recovery, give-back, trimming) | Daily loss limit, hourly spend cap |
+| Copy-trade filters and sell multiplier | Loss-streak breaker, wallet reserve |
+| | Slippage, stop loss, mode, executor |
+
+Position size is on the right-hand side even though it is one of the strongest
+levers on profitability, because *"the analysis said to bet more"* is the
+failure mode that ends accounts. If the tuner concludes size is the problem it
+writes a note for you to read, and you type the number in yourself.
+
+**How it avoids fooling itself.** The naive version of this feature — feed the
+journal to a model every few minutes and apply whatever comes back — does not
+learn anything. It changes something, the next batch of trades reflects a blend
+of every setting tried so far, nothing can be attributed to anything, and the
+parameters random-walk while the log fills with confident explanations. So:
+
+- **One experiment at a time per bot.** A change is made, then held still.
+- **Every change is measured.** Expectancy over the trades that follow is
+  compared against the window before it. A change that does not beat its
+  baseline is **reverted automatically** — a neutral result reverts too, because
+  the previous setting is the one with more evidence behind it.
+- **Nothing moves under `TUNER_MIN_TRADES`** (default 40) closed trades. Below
+  that, memecoin P&L is one or two outliers and any change can be justified
+  from the noise.
+- **A reverted change cannot be proposed again.** The model is told what has
+  been tried and what happened; the code enforces it regardless.
+- **Hard ranges and a per-round step cap** on every parameter, tighter than the
+  config schema allows. This is what stops a series of individually reasonable
+  rounds walking a setting somewhere no single round would have proposed.
+- **Every change is applied through the same validation** a human typing in the
+  dashboard goes through. A patch that would produce an invalid config is
+  refused whole.
+
+The **Auto-tune tab** is the audit trail: every change, the reason the model
+gave, whether the proposal had to be clamped, and the verdict when it was
+measured. Same data in `data/tuning.json`, readable without the bot running.
+
+At the default 6-hour interval this costs a few cents a day in API credit.
+
 ### Tuning it with data instead of opinion
 
 Every threshold is adjustable and every default is a guess until you have paper
@@ -760,7 +812,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 339 tests
+npm test           # 361 tests
 npm run typecheck
 npm run build
 ```

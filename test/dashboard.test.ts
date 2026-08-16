@@ -616,6 +616,21 @@ describe('page render', () => {
     expect(card.slice(0, card.indexOf('function srow'))).toContain('w.label');
   });
 
+  it('gives the auto-tuner its own audit tab', () => {
+    // Software that edits its own trading settings has to show its working
+    // somewhere the user will actually look.
+    const html = renderPage('t');
+    expect(html).toContain('data-tab="tuner"');
+    expect(html).toContain('id="tab-tuner"');
+    const script = /<script>\n([\s\S]*?)<\/script>/.exec(html)![1]!;
+    expect(script).toContain('renderTuner(s.tuner)');
+    const panel = script.slice(script.indexOf('function renderTuner'));
+    // The reason and the verdict are the whole point of the trail.
+    expect(panel).toContain('c.why');
+    expect(panel).toContain('e.verdict');
+    expect(panel).toContain('e.notes');
+  });
+
   it('reloads itself when its token is from a previous run', () => {
     // The token is minted per run and baked into the page, so a tab left open
     // across a restart answers "bad token" on every button — and nothing shows

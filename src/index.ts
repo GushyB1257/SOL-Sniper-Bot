@@ -9,6 +9,7 @@ import { AxiomExecutor } from './execution/axiom.js';
 import { Dashboard } from './server/dashboard.js';
 import { TradingBot, type BotId } from './bots/bot.js';
 import { RuntimeSettings } from './settings/runtime.js';
+import { AutoTuner } from './tuner/auto-tuner.js';
 import { SolPrice } from './util/solprice.js';
 import type { Discovery, Executor, TokenCandidate } from './types.js';
 import type { Keypair } from '@solana/web3.js';
@@ -54,6 +55,8 @@ class Supervisor {
 
   private tickTimer: NodeJS.Timeout | null = null;
   private strategyTimer: NodeJS.Timeout | null = null;
+  private tunerTimer: NodeJS.Timeout | null = null;
+  private readonly tuner: AutoTuner;
   private shuttingDown = false;
   private readonly startedAt = Date.now();
   /** Cached SOL balance, so the risk check does not cost a round trip per buy. */
@@ -97,6 +100,13 @@ class Supervisor {
       this.bots.set(id, new TradingBot(id, BOT_NAMES[id], deps));
     }
 
+    this.tuner = new AutoTuner({
+      cfg,
+      settings: this.settings,
+      stores: new Map([...this.bots].map(([id, bot]) => [id, bot.store])),
+      dataDir: cfg.DATA_DIR,
+    });
+
     this.dashboard = cfg.DASHBOARD_ENABLED
       ? new Dashboard({
           cfg,
@@ -108,6 +118,7 @@ class Supervisor {
           killSwitchPath: KILL_SWITCH_PATH,
           solPrice: this.solPrice,
           setBotEnabled: (id: BotId, on: boolean) => this.setBotEnabled(id, on),
+          tuner: this.tuner,
         })
       : null;
   }
@@ -200,6 +211,22 @@ class Supervisor {
         );
       }
     }, STRATEGY_TICK_INTERVAL_MS);
+
+    // The tuner paces itself off TUNER_INTERVAL_MINUTES; this only gives it a
+    // chance to look. Checking every minute keeps the timer cheap and means an
+    // interval change from the dashboard takes effect without a restart.
+    this.tunerTimer = setInterval(() => {
+      void this.tuner.tick().catch((err) => log.error(`Tuner failed: ${errMessage(err)}`));
+    }, 60_000);
+    this.tunerTimer.unref?.();
+    if (this.cfg.AUTO_TUNE_ENABLED) {
+      log.warn(
+        `Auto-tuning is ON: Claude may change strategy settings every ` +
+          `${this.cfg.TUNER_INTERVAL_MINUTES} minutes once a bot has ` +
+          `${this.cfg.TUNER_MIN_TRADES}+ closed trades. Every change is measured and reverted ` +
+          'if it does not beat its baseline. History is in data/tuning.json and on the dashboard.',
+      );
+    }
 
     for (const [id, bot] of this.bots) {
       if (this.enabled(id)) bot.start();
@@ -325,6 +352,7 @@ class Supervisor {
 
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.strategyTimer) clearInterval(this.strategyTimer);
+    if (this.tunerTimer) clearInterval(this.tunerTimer);
     for (const bot of this.bots.values()) bot.stop();
     await this.discovery.stop();
     await this.dashboard?.stop();

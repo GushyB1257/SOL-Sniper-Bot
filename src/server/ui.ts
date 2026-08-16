@@ -347,6 +347,29 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
 .wallet-pnl { text-align: right; white-space: nowrap; }
 .wallet-net { font-size: 12.5px; font-weight: 600; }
 .wallet-note { font-size: 11px; color: var(--muted); }
+.tuner-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 4px 0 12px; }
+.tuner-err { color: var(--critical); font-size: 12.5px; padding-bottom: 10px; }
+.exp {
+  border: 1px solid var(--grid); border-left-width: 3px; border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 10px; background: var(--surface);
+}
+.exp-running  { border-left-color: var(--warning); }
+.exp-kept     { border-left-color: var(--good); }
+.exp-reverted { border-left-color: var(--muted); }
+.exp-abandoned{ border-left-color: var(--critical); }
+.exp-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.exp-bot { font-weight: 620; text-transform: capitalize; }
+.exp-status { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 6px;
+  border-radius: 999px; border: 1px solid var(--grid); color: var(--ink-2); }
+.exp-status.kept { color: var(--good); border-color: var(--good); }
+.exp-status.reverted { color: var(--muted); }
+.exp-status.running { color: var(--warning); border-color: var(--warning); }
+.exp-change { padding: 4px 0; }
+.exp-why { font-size: 12px; color: var(--ink-2); padding-top: 2px; }
+.exp-clamp { font-size: 11.5px; color: var(--warning); padding-top: 2px; }
+.exp-verdict { font-size: 12px; color: var(--ink-2); padding-top: 6px; border-top: 1px solid var(--grid); margin-top: 6px; }
+.exp-notes { font-size: 12px; color: var(--ink-2); padding-top: 6px; }
+.exp-notes-h { font-weight: 550; color: var(--ink); padding-bottom: 2px; }
 .stale-banner {
   position: fixed; left: 50%; transform: translateX(-50%); top: 14px; z-index: 50;
   padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 550;
@@ -461,6 +484,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" data-tab="trades" aria-selected="true">Trades</button>
         <button class="tab" role="tab" data-tab="settings" aria-selected="false">Settings</button>
+        <button class="tab" role="tab" data-tab="tuner" aria-selected="false">Auto-tune</button>
         <button class="tab" role="tab" data-tab="config" aria-selected="false">All config</button>
         <button class="tab" role="tab" data-tab="log" aria-selected="false">Activity</button>
       </div>
@@ -482,6 +506,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
           <span class="set-msg" id="setMsg"></span>
         </div>
       </div>
+      <div id="tab-tuner" class="hidden"></div>
       <div id="tab-config" class="hidden"></div>
       <div id="tab-log" class="hidden"><div class="log" id="logBody"></div></div>
     </div>
@@ -941,6 +966,76 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       v.appendChild(pnl);
       row.appendChild(v);
       host.appendChild(row);
+    });
+  }
+
+  // ---- auto-tuner ------------------------------------------------------
+  // This is an audit trail for software that edits its own trading settings.
+  // Every change, the reason given, and whether it survived measurement.
+  function renderTuner(t) {
+    var host = $('tab-tuner');
+    host.innerHTML = '';
+
+    if (!t) {
+      host.appendChild(el('div', 'empty', 'Auto-tuning is not wired up in this build.'));
+      return;
+    }
+
+    var head = el('div', 'tuner-head');
+    var pill = el('span', 'badge ' + (t.enabled ? 'live' : 'paper'), t.enabled ? 'ON' : 'OFF');
+    head.appendChild(pill);
+    head.appendChild(el('span', 'meta',
+      t.enabled
+        ? 'Reviews every ' + t.intervalMinutes + ' min once a bot has ' + t.minTrades +
+          '+ closed trades since its last change. Spent so far: $' + t.costUsd.toFixed(2)
+        : 'Set AUTO_TUNE_ENABLED=true to let Claude tune the strategies from their own results.'));
+    host.appendChild(head);
+
+    if (t.lastError) {
+      host.appendChild(el('div', 'tuner-err', 'Last error: ' + t.lastError));
+    }
+
+    if (!t.experiments.length) {
+      host.appendChild(el('div', 'empty',
+        t.enabled
+          ? 'Nothing changed yet — waiting for ' + t.minTrades + ' closed trades on a bot.'
+          : 'No changes have ever been made.'));
+      return;
+    }
+
+    t.experiments.forEach(function (e) {
+      var card = el('div', 'exp exp-' + e.status);
+      var top = el('div', 'exp-top');
+      top.appendChild(el('span', 'exp-bot', e.bot));
+      top.appendChild(el('span', 'exp-status ' + e.status, e.status));
+      top.appendChild(el('span', 'mint-t', new Date(e.startedAt).toLocaleString()));
+      card.appendChild(top);
+
+      e.changes.forEach(function (c) {
+        var row = el('div', 'exp-change');
+        row.appendChild(el('span', 'mono', c.key + ': ' + c.from + ' \u2192 ' + c.to));
+        row.appendChild(el('div', 'exp-why', c.why));
+        if (c.clamped) row.appendChild(el('div', 'exp-clamp', 'limits applied \u2014 ' + c.clamped));
+        card.appendChild(row);
+      });
+
+      var verdict = el('div', 'exp-verdict');
+      if (e.status === 'running') {
+        verdict.textContent =
+          'Measuring. Baseline ' + e.baselineExpectancy.toFixed(5) +
+          ' SOL/trade — reverts automatically if it does not beat that.';
+      } else {
+        verdict.textContent = e.verdict || '';
+      }
+      card.appendChild(verdict);
+
+      if (e.notes && e.notes.length) {
+        var n = el('div', 'exp-notes');
+        n.appendChild(el('div', 'exp-notes-h', 'Wanted, but not allowed to change:'));
+        e.notes.forEach(function (x) { n.appendChild(el('div', null, '\u2022 ' + x)); });
+        card.appendChild(n);
+      }
+      host.appendChild(card);
     });
   }
 
@@ -1483,6 +1578,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     renderMeters(b.risk);
     renderPositions(b.positions);
     renderTrades(b.trades);
+    renderTuner(s.tuner);
     renderReasons(b.exitReasons);
     renderConfig(s.config);
     renderLog(s.log);

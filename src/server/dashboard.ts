@@ -9,7 +9,15 @@ import { FIELDS } from '../settings/runtime.js';
 import type { SolPrice } from '../util/solprice.js';
 import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
-import { buildSnapshot, walletPnl, type AiView, type CopyView, type Snapshot } from './snapshot.js';
+import {
+  buildSnapshot,
+  walletPnl,
+  type AiView,
+  type CopyView,
+  type Snapshot,
+  type TunerView,
+} from './snapshot.js';
+import type { AutoTuner } from '../tuner/auto-tuner.js';
 import { renderPage } from './ui.js';
 
 const log = logger('dashboard');
@@ -24,6 +32,8 @@ export interface DashboardDeps {
   killSwitchPath: string;
   solPrice: SolPrice;
   setBotEnabled: (id: BotId, on: boolean) => { ok: boolean; error?: string };
+  /** Optional: absent when auto-tuning was never constructed (tests). */
+  tuner?: AutoTuner;
 }
 
 /** Push interval for connected browsers. */
@@ -308,6 +318,7 @@ export class Dashboard {
       solUsd: this.deps.solPrice.usd,
       solPriceLive: this.deps.solPrice.isLive,
       settings: { fields: FIELDS, values: this.deps.settings.values() },
+      tuner: this.tunerView(),
       bots: [...this.deps.bots.values()].map((bot) => ({
         id: bot.id,
         name: bot.name,
@@ -352,6 +363,34 @@ export class Dashboard {
       screenRejects: s.screenRejects,
       solUsd: bot.ai.solUsd,
       solPriceLive: bot.ai.solPriceIsLive,
+    };
+  }
+
+  private tunerView(): TunerView | null {
+    const t = this.deps.tuner;
+    if (!t) return null;
+    const { cfg } = this.deps;
+    const s = t.status;
+    return {
+      enabled: cfg.AUTO_TUNE_ENABLED,
+      intervalMinutes: cfg.TUNER_INTERVAL_MINUTES,
+      minTrades: cfg.TUNER_MIN_TRADES,
+      lastRunAt: s.lastRunAt,
+      lastError: s.lastError,
+      costUsd: s.usage.estimatedCostUsd,
+      // Newest first, and capped: this is an audit trail, not a data source.
+      experiments: [...t.history].slice(-40).reverse().map((e) => ({
+        id: e.id,
+        bot: e.bot,
+        startedAt: e.startedAt,
+        status: e.status,
+        changes: e.changes,
+        baselineExpectancy: e.baselineExpectancy,
+        resultExpectancy: e.resultExpectancy,
+        resultTrades: e.resultTrades,
+        verdict: e.verdict,
+        notes: e.notes,
+      })),
     };
   }
 

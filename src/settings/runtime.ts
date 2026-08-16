@@ -152,6 +152,21 @@ export const FIELDS: FieldSpec[] = [
     kind: 'number', min: 300, max: 60_000, step: 100,
     help: 'How late you are to their trades. Wallets are polled in parallel, so this is the whole lag. Under ~800ms most RPC endpoints rate-limit.' },
 
+  // --- Auto-tuning -----------------------------------------------------
+  { key: 'AUTO_TUNE_ENABLED', label: 'Auto-tune strategies', bot: 'shared', group: 'Auto-tune',
+    kind: 'boolean',
+    help: 'Let Claude adjust strategy settings from each bot\'s own results. Never touches position size or a risk limit. Every change is measured and reverted if it does not beat its baseline.' },
+  { key: 'TUNER_INTERVAL_MINUTES', label: 'Review every', bot: 'shared', group: 'Auto-tune',
+    kind: 'number', min: 15, max: 10_080, step: 15, help: 'Minutes between reviews.' },
+  { key: 'TUNER_MIN_TRADES', label: 'Trades before acting', bot: 'shared', group: 'Auto-tune',
+    kind: 'number', min: 10, max: 5000, step: 5,
+    help: 'Closed trades needed before anything moves, and again before a change is judged.' },
+  { key: 'TUNER_MAX_CHANGES_PER_ROUND', label: 'Changes per round', bot: 'shared', group: 'Auto-tune',
+    kind: 'number', min: 1, max: 8, step: 1,
+    help: 'Keep low — changing several things at once makes the result unattributable.' },
+  { key: 'TUNER_MAX_STEP_PCT', label: 'Max step', bot: 'shared', group: 'Auto-tune',
+    kind: 'number', min: 1, max: 100, step: 5, help: '% a parameter may move in one round.' },
+
   // --- Shared ----------------------------------------------------------
   { key: 'BUY_AMOUNT_SOL', label: 'Position size', bot: 'shared', group: 'Sizing',
     kind: 'number', min: 0.0001, max: 100, step: 0.05,

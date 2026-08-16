@@ -183,6 +183,28 @@ export interface AiView {
   solPriceLive: boolean;
 }
 
+/** The auto-tuner's audit trail, newest first. */
+export interface TunerView {
+  enabled: boolean;
+  intervalMinutes: number;
+  minTrades: number;
+  lastRunAt: number;
+  lastError?: string;
+  costUsd: number;
+  experiments: Array<{
+    id: string;
+    bot: string;
+    startedAt: number;
+    status: string;
+    changes: Array<{ key: string; from: number; to: number; why: string; clamped?: string }>;
+    baselineExpectancy: number;
+    resultExpectancy?: number;
+    resultTrades?: number;
+    verdict?: string;
+    notes?: string[];
+  }>;
+}
+
 /** What the copy bot is doing, for its tab. */
 export interface CopyView {
   /**
@@ -241,6 +263,8 @@ export interface Snapshot {
   solUsd: number;
   solPriceLive: boolean;
   bots: BotView[];
+  /** What the auto-tuner has changed, and whether it worked. Null when off. */
+  tuner: TunerView | null;
   /** RPC health. Non-zero rate limiting is the thing worth seeing at a glance. */
   rpc: { requests: number; rateLimited: number; retries: number; givenUp: number };
   /** Read-only view of everything the bot is running with. */
@@ -592,6 +616,8 @@ export interface BotInput {
 
 export interface SnapshotInput {
   cfg: Config;
+  /** Absent when auto-tuning was never constructed. */
+  tuner?: TunerView | null;
   bots: BotInput[];
   startedAt: number;
   discovery: string;
@@ -684,6 +710,7 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
       view.risk.walletBalanceSol = input.walletBalanceSol;
       return view;
     }),
+    tuner: input.tuner ?? null,
     rpc: (({ requests, rateLimited, retries, givenUp }) => ({
       requests,
       rateLimited,
