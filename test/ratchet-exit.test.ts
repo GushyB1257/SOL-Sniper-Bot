@@ -63,8 +63,31 @@ describe('no stop loss', () => {
     // The behaviour the whole redesign is for: a stop would have sold here.
     const p = position();
     expect(decide(p, 0.4, 10)).toBeNull();
-    expect(decide(p, 0.2, 30)).toBeNull();
-    expect(decide(p, 0.05, 59)).toBeNull();
+    expect(decide(p, 0.2, 20)).toBeNull();
+    expect(decide(p, 0.05, 29)).toBeNull();
+  });
+
+  it('asks the first question sooner than the ones after it', () => {
+    // A launch going nowhere pays for the whole first window before anything
+    // can cut it, and most of the damage lands in the first thirty seconds.
+    // Later windows keep the full length so a working position is not rushed.
+    expect(C.RATCHET_FIRST_CHECKPOINT_SECONDS).toBeLessThan(C.CHECKPOINT_SECONDS);
+
+    const fresh = position();
+    expect(decide(fresh, 0.5, C.RATCHET_FIRST_CHECKPOINT_SECONDS - 1)).toBeNull();
+    expect(decide(fresh, 0.5, C.RATCHET_FIRST_CHECKPOINT_SECONDS + 1)?.reason).toBe('time_stop');
+
+    // Second window onwards: the full CHECKPOINT_SECONDS.
+    const later = position({ checkpointAt: at(40), checkpointPrice: ENTRY });
+    expect(decide(later, 0.5, 40 + C.CHECKPOINT_SECONDS - 1)).toBeNull();
+    expect(decide(later, 0.5, 40 + C.CHECKPOINT_SECONDS + 1)?.reason).toBe('time_stop');
+  });
+
+  it('can be put back to one window length for both', () => {
+    const c = cfg({ RATCHET_FIRST_CHECKPOINT_SECONDS: '60' });
+    const p = position();
+    expect(decide(p, 0.5, 59, c)).toBeNull();
+    expect(decide(p, 0.5, 61, c)?.reason).toBe('time_stop');
   });
 
   it('holds a position that dumps and recovers within the window', () => {
@@ -118,16 +141,76 @@ describe('the 60-second checkpoint', () => {
   });
 
   it('decides nothing between checkpoints', () => {
-    const p = position({ checkpointPrice: ENTRY * 2, checkpointAt: NOW });
+    const p = position({ checkpointPrice: ENTRY * 2, checkpointAt: at(5) });
     // Below the last checkpoint AND unprofitable, but the window is still open.
-    expect(decide(p, 1.01, 59)).toBeNull();
+    expect(decide(p, 1.01, 5 + C.CHECKPOINT_SECONDS - 1)).toBeNull();
   });
 
   it('can require real progress rather than any new high', () => {
-    const c = cfg({ RATCHET_MIN_PROGRESS_PCT: '10' });
-    const p = position({ checkpointPrice: ENTRY * 1.5, checkpointAt: NOW });
-    expect(decide(p, 1.55, 61, c)?.reason).toBe('ratchet_stall'); // only +3%
-    expect(decide(p, 1.7, 61, c)).toBeNull(); // +13%
+    // Recovery off, so the stall rule is the only thing that can fire here.
+    const c = cfg({
+      RATCHET_MIN_PROGRESS_PCT: '10',
+      RATCHET_GIVEBACK_PCT: '0',
+      RECOVER_AT_GAIN_PCT: '500',
+    });
+    const p = position({ checkpointPrice: ENTRY * 1.5, checkpointAt: at(5), peakPrice: ENTRY * 1.7 });
+    expect(decide(p, 1.55, 66, c)?.reason).toBe('ratchet_stall'); // only +3%
+    expect(decide(p, 1.7, 66, c)).toBeNull(); // +13%
+  });
+});
+
+describe('giving back a move', () => {
+  it('closes a position that round-trips its gain before the window closes', () => {
+    // The ratchet's biggest leak: the checkpoint only looks up once a window,
+    // so a position could run to +90%, hand every bit of it back, and still be
+    // holding when the window finally closed.
+    const p = position({ peakPrice: ENTRY * 1.9 });
+    const order = decide(p, 1.1, 15); // +90% peak, now +10%
+    expect(order?.reason).toBe('trailing_stop');
+    expect(order?.closeAll).toBe(true);
+    expect(order?.detail).toMatch(/gave back/);
+  });
+
+  it('leaves a normal pullback alone', () => {
+    // Peaked at +50%, now +35% — a third of the move given back, inside the
+    // limit, and still below the recovery threshold so nothing else fires.
+    const p = position({ peakPrice: ENTRY * 1.5 });
+    expect(decide(p, 1.35, 15)).toBeNull();
+  });
+
+  it('cannot fire on a position that is down, however far', () => {
+    // It measures the GAIN given back, so a position with no gain has nothing
+    // to give back. This is what keeps it from becoming the stop loss that was
+    // deliberately removed.
+    const p = position({ peakPrice: ENTRY });
+    expect(decide(p, 0.1, 10)).toBeNull();
+    expect(decide(p, 0.01, 20)).toBeNull();
+  });
+
+  it('ignores noise around entry rather than closing on a wobble', () => {
+    // A peak barely above entry is not a move, and treating it as one would
+    // close positions in the first seconds of every launch.
+    const p = position({ peakPrice: ENTRY * 1.05 });
+    expect(decide(p, 1.0, 10)).toBeNull();
+  });
+
+  it('protects a recovered moonbag too', () => {
+    const p = position({
+      costRecovered: true,
+      moonbagArmed: true,
+      realizedSol: 0.25,
+      remainingQty: 2_400_000,
+      peakPrice: ENTRY * 5,
+      checkpointPrice: ENTRY * 4,
+      checkpointAt: NOW,
+    });
+    expect(decide(p, 2, 10)?.reason).toBe('trailing_stop');
+  });
+
+  it('can be turned off', () => {
+    const c = cfg({ RATCHET_GIVEBACK_PCT: '0' });
+    const p = position({ peakPrice: ENTRY * 1.9 });
+    expect(decide(p, 1.1, 15, c)).toBeNull();
   });
 });
 
@@ -175,7 +258,8 @@ describe('cost recovery on a double', () => {
   it('recovers at a configurable multiple', () => {
     const c = cfg({ RECOVER_AT_GAIN_PCT: '50' });
     expect(decide(position(), 1.6, 5, c)?.reason).toBe('cost_recovery');
-    expect(decide(position(), 1.6, 5)).toBeNull(); // default needs 2x
+    // Raise the bar and the same move is not enough.
+    expect(decide(position(), 1.6, 5, cfg({ RECOVER_AT_GAIN_PCT: '100' }))).toBeNull();
   });
 });
 
@@ -213,7 +297,7 @@ describe('the moonbag after recovery', () => {
   });
 
   it('has no stop loss on the moonbag either', () => {
-    expect(decide(recovered(), 0.01, 30)).toBeNull();
+    expect(decide(recovered(), 0.01, C.RATCHET_FIRST_CHECKPOINT_SECONDS - 1)).toBeNull();
   });
 
   it('closes out instead of leaving dust', () => {
@@ -247,8 +331,9 @@ describe('safety rails that remain', () => {
 describe('helpers', () => {
   it('checkpointElapsed falls back to the open time for older positions', () => {
     const p = position({ checkpointAt: undefined });
-    expect(checkpointElapsed(p, C, at(59))).toBe(false);
-    expect(checkpointElapsed(p, C, at(60))).toBe(true);
+    const w = C.RATCHET_FIRST_CHECKPOINT_SECONDS;
+    expect(checkpointElapsed(p, C, at(w - 1))).toBe(false);
+    expect(checkpointElapsed(p, C, at(w))).toBe(true);
   });
 
   it('costRecoveryQty wants nothing once the stake is already back', () => {

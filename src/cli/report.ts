@@ -1,11 +1,27 @@
 /**
  * Trade journal report.
  *
- *   npm run report
+ *   npm run report            every bot
+ *   npm run report screener   just one
+ *
+ * This used to read only `state.json`, which is the screener's file — so the
+ * sniper's and the copy trader's results were invisible no matter how long they
+ * ran. Each bot keeps its own journal precisely so they can be compared, and a
+ * report that shows one of them defeats the point.
  */
 import { config } from '../config.js';
 import { Store } from '../state/store.js';
+import {
+  breakevenGrossPct,
+  costModel,
+  netPnlSol,
+  roundTripCostSol,
+} from '../strategy/costs.js';
+import type { Config } from '../config.js';
 import type { TradeJournalEntry } from '../types.js';
+
+const BOTS = ['screener', 'sniper', 'copy'] as const;
+type BotId = (typeof BOTS)[number];
 
 function pad(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s.padEnd(n);
@@ -64,15 +80,109 @@ function bucketReport(
   }
 }
 
-function main(): void {
-  const cfg = config();
-  const store = new Store(cfg.DATA_DIR);
+/**
+ * Where the money actually went.
+ *
+ * A strategy that loses money can lose it two very different ways: it picks
+ * badly, or it picks fine and hands the edge to fees. Those need opposite
+ * fixes — one is a filter change, the other is a size or hold-time change —
+ * and the blended P&L cannot tell them apart. This splits them.
+ */
+function feeReport(journal: readonly TradeJournalEntry[], cfg: Config): void {
+  const fees = journal.reduce(
+    (a, t) => a + roundTripCostSol(costModel(cfg, t.costSol)),
+    0,
+  );
+  const net = journal.reduce((a, t) => a + t.pnlSol, 0);
+  const gross = net + fees;
+
+  // A trade whose price move cleared the fee bar but whose net was still
+  // negative was killed by costs, not by the entry.
+  let feeKilled = 0;
+  for (const t of journal) {
+    const model = costModel(cfg, t.costSol);
+    if (t.pnlSol <= 0 && t.pnlSol + roundTripCostSol(model) > 0) feeKilled += 1;
+  }
+
+  const avgSize = journal.reduce((a, t) => a + t.costSol, 0) / journal.length;
+  const be = breakevenGrossPct(costModel(cfg, avgSize));
+
+  console.log('\nWhat fees cost:');
+  console.log(`  Round trips        ${journal.length} at an average ${avgSize.toFixed(4)} SOL`);
+  console.log(`  Breakeven move     ${be.toFixed(2)}% gross at that size`);
+  console.log(`  Paid in fees       ${fees.toFixed(5)} SOL`);
+  console.log(
+    `  Before fees        ${gross >= 0 ? '+' : ''}${gross.toFixed(5)} SOL` +
+      `   after fees ${net >= 0 ? '+' : ''}${net.toFixed(5)} SOL`,
+  );
+  if (feeKilled > 0) {
+    console.log(
+      `  Losses that were wins before fees: ${feeKilled}` +
+        `  (${((feeKilled / journal.length) * 100).toFixed(0)}% of all trades)`,
+    );
+  }
+  if (gross > 0 && net <= 0) {
+    console.log(
+      '\n  \x1b[33mThe entries are not the problem — the size is.\x1b[0m Price moves were net\n' +
+        '  positive and fees took all of it. Raising position size lowers the fee\n' +
+        `  drag (the fixed priority fee stops dominating): at 0.5 SOL breakeven is\n` +
+        `  ${breakevenGrossPct(costModel(cfg, 0.5)).toFixed(2)}%, at 1 SOL it is ` +
+        `${breakevenGrossPct(costModel(cfg, 1)).toFixed(2)}%. Holding for larger moves does\n` +
+        '  the same job without risking more per trade.',
+    );
+  } else if (gross <= 0) {
+    console.log(
+      '\n  \x1b[33mFees are not the problem — the entries are.\x1b[0m The trades lost money\n' +
+        '  before a single fee was charged. Tighten the entry filter using the\n' +
+        '  buckets above; no amount of sizing fixes a negative gross edge.',
+    );
+  }
+
+  // What the average winner and loser look like, in the cost model's terms.
+  const wins = journal.filter((t) => t.pnlSol > 0);
+  const losses = journal.filter((t) => t.pnlSol <= 0);
+  if (wins.length > 0 && losses.length > 0) {
+    const avgWinPct = wins.reduce((a, t) => a + t.pnlPct, 0) / wins.length;
+    const avgLossPct = losses.reduce((a, t) => a + t.pnlPct, 0) / losses.length;
+    const needed = (-avgLossPct / (avgWinPct - avgLossPct)) * 100;
+    const actual = (wins.length / journal.length) * 100;
+    console.log(
+      `\n  Average winner ${avgWinPct >= 0 ? '+' : ''}${avgWinPct.toFixed(1)}%, ` +
+        `average loser ${avgLossPct.toFixed(1)}%`,
+    );
+    console.log(
+      `  Win rate needed for that pair to break even: ${needed.toFixed(1)}%  ` +
+        `(actual ${actual.toFixed(1)}%)`,
+    );
+    console.log(
+      actual >= needed
+        ? '  The shape works. Anything above this line is edge.'
+        : '  \x1b[31mThe shape does not work.\x1b[0m Either winners must run further before the\n' +
+            '  exit closes them, or losers must be cut sooner. Changing the entry filter\n' +
+            '  alone will not close a gap this size.',
+    );
+  }
+}
+
+function reportOne(bot: BotId, cfg: Config): boolean {
+  const store = new Store(cfg.DATA_DIR, bot);
   const journal = [...store.journal()];
+
+  console.log(`\n\n${'█'.repeat(88)}`);
+  console.log(`  ${bot.toUpperCase()}`);
+  console.log('█'.repeat(88));
 
   if (journal.length === 0) {
     console.log('\nNo closed trades yet.\n');
-    return;
+    store.close();
+    return false;
   }
+  reportJournal(journal, cfg);
+  store.close();
+  return true;
+}
+
+function reportJournal(journal: readonly TradeJournalEntry[], cfg: Config): void {
 
   console.log(`\n${pad('SYMBOL', 12)}${pad('PNL SOL', 12)}${pad('PNL %', 10)}${pad('HELD', 9)}REASON`);
   console.log('─'.repeat(88));
@@ -150,11 +260,19 @@ function main(): void {
   });
   bucketReport('Hold time', journal, (t) => band(t.holdSeconds, [15, 45, 120], 's'));
 
+  feeReport(journal, cfg);
+
   // --- the part that actually answers "is this working" -------------------
 
-  // A position only reaches these exits after clearing the first rung, so this
-  // is the share of entries that went anywhere at all.
-  const REACHED = ['ladder', 'trailing_stop', 'moonbag_trailing_stop', 'max_hold'];
+  // The share of entries that went anywhere at all. Which exits count depends
+  // on the mode: under the ladder it is clearing the first rung, under the
+  // ratchet it is getting far enough to bank something. Reporting the ladder's
+  // reasons while running the ratchet prints 0% forever and reads as a
+  // catastrophe when it only means the metric is the wrong one.
+  const ratchet = cfg.EXIT_MODE === 'ratchet';
+  const REACHED = ratchet
+    ? ['cost_recovery', 'moonbag_trim', 'ratchet_stall', 'trailing_stop']
+    : ['ladder', 'trailing_stop', 'moonbag_trailing_stop', 'max_hold'];
   const reached = journal.filter((t) =>
     REACHED.some((r) => t.closeReason.startsWith(r)),
   ).length;
@@ -164,11 +282,15 @@ function main(): void {
   console.log('VERDICT');
   console.log('═'.repeat(88));
   console.log(
-    `Reached the first rung   ${reachedPct.toFixed(1)}% of entries (${reached}/${journal.length})`,
+    `${ratchet ? 'Got into profit        ' : 'Reached the first rung '}  ` +
+      `${reachedPct.toFixed(1)}% of entries (${reached}/${journal.length})`,
   );
   console.log(
-    '  This is the number the whole strategy rests on. The ladder only pays if\n' +
-      '  enough entries survive to the first take-profit.',
+    ratchet
+      ? '  Everything else was cut at a checkpoint for not clearing fees. This is\n' +
+        '  the number the whole strategy rests on.'
+      : '  This is the number the whole strategy rests on. The ladder only pays if\n' +
+        '  enough entries survive to the first take-profit.',
   );
 
   // Sample size. A handful of trades tells you nothing: memecoin returns are
@@ -205,6 +327,29 @@ function main(): void {
     console.log('                         If you go live, start at the smallest size you can.');
   }
   console.log();
+}
+
+function main(): void {
+  const cfg = config();
+  const asked = process.argv[2]?.toLowerCase();
+
+  if (asked && !BOTS.includes(asked as BotId)) {
+    console.log(`\nUnknown bot "${asked}". Use one of: ${BOTS.join(', ')}\n`);
+    return;
+  }
+
+  const wanted = asked ? [asked as BotId] : BOTS;
+  let any = false;
+  for (const bot of wanted) any = reportOne(bot, cfg) || any;
+
+  if (!any) {
+    console.log(
+      '\nNothing has closed yet on any bot. Run for a while, then come back.\n' +
+        'Journals live in ' +
+        cfg.DATA_DIR +
+        ' (state.json = screener, state-sniper.json, state-copy.json).\n',
+    );
+  }
 }
 
 main();

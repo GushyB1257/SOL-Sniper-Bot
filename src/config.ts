@@ -149,6 +149,31 @@ const schema = z.object({
   RPC_HTTP_URL: z.string().url(),
   RPC_WS_URL: z.string().url(),
 
+  /**
+   * Sustained RPC requests per second, across every caller. 0 disables the cap.
+   *
+   * The sniper is the reason this exists: it runs the safety battery on every
+   * launch off the feed, four RPC calls apiece, and pump.fun launches several
+   * tokens a second at peak. Left uncapped that alone will rate-limit a
+   * consumer endpoint. Set this to your provider's documented limit — 10 for a
+   * typical free tier, higher on a paid plan.
+   */
+  RPC_MAX_REQUESTS_PER_SEC: num(0, 10_000).default(20),
+  /**
+   * Maximum RPC requests in flight at once. A burst can breach a per-second
+   * limit even when the average is comfortably inside it.
+   */
+  RPC_MAX_CONCURRENT: num(1, 256).default(8),
+  /** Retries for a 429 or a 5xx, with exponential backoff and jitter. */
+  RPC_MAX_RETRIES: num(0, 10).default(4),
+  /**
+   * How many launches the sniper runs the safety battery on at once. Beyond
+   * this, candidates are dropped rather than queued: a launch that has been
+   * waiting in line is one we are too late to buy anyway, and queueing them
+   * converts a burst into a backlog that never drains.
+   */
+  SNIPER_MAX_CONCURRENT_CHECKS: num(1, 64).default(4),
+
   WALLET_PRIVATE_KEY: z.string().default(''),
 
   /**
@@ -362,11 +387,37 @@ const schema = z.object({
   /** How often the "is it higher than last time?" question gets asked. */
   CHECKPOINT_SECONDS: num(5, 3600).default(60),
   /**
-   * Gain at which the original stake comes back off the table. 100 = a double.
-   * Everything still held past this point is pure profit, which is what makes
-   * running with no stop loss defensible.
+   * Length of the FIRST window only, before the first checkpoint fires.
+   *
+   * Every position that goes nowhere pays for the full first window before
+   * anything can cut it, and on a launch that has already turned over, most of
+   * the damage happens in the first thirty seconds. Shortening only the first
+   * window cuts the dead entries sooner without shortening the leash on a
+   * position that is working. Set it equal to CHECKPOINT_SECONDS for the
+   * original behaviour.
    */
-  RECOVER_AT_GAIN_PCT: num(10, 10_000).default(100),
+  RATCHET_FIRST_CHECKPOINT_SECONDS: num(5, 3600).default(30),
+  /**
+   * Gain at which the original stake comes back off the table.
+   *
+   * A double is the intuitive number but it is a high bar: a position has to
+   * survive several checkpoints to get there, and everything that stalls at
+   * +40% or +70% along the way is still carrying full downside when it turns.
+   * Recovering earlier converts far more trades into risk-free ones, and the
+   * moonbag still catches the rare token that keeps going.
+   */
+  RECOVER_AT_GAIN_PCT: num(10, 10_000).default(60),
+  /**
+   * Close the position if it hands back this share of its best GAIN.
+   *
+   * This is not a stop loss and cannot act like one: it is measured against the
+   * gain above entry, so it can only ever fire on a position that is in profit,
+   * and it does nothing at all to one that is down. It plugs the ratchet's
+   * biggest leak — between checkpoints, a position that ran to +90% could give
+   * every bit of it back and still be holding when the window finally closed.
+   * 0 disables it.
+   */
+  RATCHET_GIVEBACK_PCT: num(0, 100).default(40),
   /** Share of the remaining moonbag skimmed at each checkpoint it survives. */
   MOONBAG_TRIM_PCT: num(0, 90).default(25),
   /**

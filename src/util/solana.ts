@@ -1,6 +1,7 @@
 import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import bs58 from 'bs58';
 import type { Config } from '../config.js';
+import { createThrottledFetch } from './rpc-throttle.js';
 
 export { LAMPORTS_PER_SOL };
 
@@ -13,6 +14,14 @@ export function connection(cfg: Config): Connection {
       wsEndpoint: cfg.RPC_WS_URL,
       // Snipes are worthless if confirmed late; fail fast and move on.
       confirmTransactionInitialTimeout: 30_000,
+      // Every RPC call in the process goes through this, which is the only
+      // place that can see the whole load. Rate limiting one caller just moves
+      // the 429 to the next one.
+      fetch: createThrottledFetch({
+        maxConcurrent: cfg.RPC_MAX_CONCURRENT,
+        maxPerSecond: cfg.RPC_MAX_REQUESTS_PER_SEC,
+        maxRetries: cfg.RPC_MAX_RETRIES,
+      }),
     });
   }
   return conn;

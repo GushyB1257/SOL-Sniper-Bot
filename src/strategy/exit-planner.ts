@@ -300,7 +300,11 @@ export function costRecoveryQty(p: Position, price: number, m: CostModel): numbe
 /** True when the current ratchet window has run its course. */
 export function checkpointElapsed(p: Position, cfg: Config, now: number): boolean {
   const startedAt = p.checkpointAt ?? p.openedAt;
-  return (now - startedAt) / 1000 >= cfg.CHECKPOINT_SECONDS;
+  // The first window is its own length: a launch that is going nowhere should
+  // not get the same leash as one that has already proved something.
+  const first = startedAt <= p.openedAt;
+  const window = first ? cfg.RATCHET_FIRST_CHECKPOINT_SECONDS : cfg.CHECKPOINT_SECONDS;
+  return (now - startedAt) / 1000 >= window;
 }
 
 /**
@@ -386,6 +390,32 @@ export function decideRatchetExit(ctx: ExitContext): ExitOrder | null {
         `+${gainPct.toFixed(0)}% — taking ${p.costSol.toFixed(4)} SOL stake back, ` +
         `${keptPct.toFixed(0)}% of the position rides free from here`,
     };
+  }
+
+  // 1b. Give-back guard, checked BETWEEN checkpoints.
+  //
+  //     The checkpoint rule only looks up every window, so a position could run
+  //     to +90%, round-trip the entire move, and still be holding when the
+  //     window finally closed — the single largest leak in the design. This is
+  //     measured against the GAIN above entry, never against entry itself, so
+  //     it cannot behave like a stop loss: a position that is down has no gain
+  //     to give back and this can never fire on it.
+  if (cfg.RATCHET_GIVEBACK_PCT > 0) {
+    const peakGainPct = pctChange(p.entryPrice, p.peakPrice);
+    // Only once the peak was a real gain — otherwise noise around entry, where
+    // every launch wobbles, would close positions before they started.
+    if (peakGainPct > Math.max(breakeven * 2, 10)) {
+      const givenBack = peakGainPct - gainPct;
+      const allowed = peakGainPct * (cfg.RATCHET_GIVEBACK_PCT / 100);
+      if (givenBack >= allowed) {
+        return closeAll(
+          'trailing_stop',
+          `peaked at +${peakGainPct.toFixed(0)}%, now +${gainPct.toFixed(0)}% — ` +
+            `gave back ${((givenBack / peakGainPct) * 100).toFixed(0)}% of the move ` +
+            `(limit ${cfg.RATCHET_GIVEBACK_PCT}%)`,
+        );
+      }
+    }
   }
 
   // Nothing else happens between checkpoints. This is what stops the bot

@@ -2,7 +2,7 @@
   "name": "sol-sniper-bot",
   "version": "0.1.0",
   "private": true,
-  "description": "Solana memecoin sniper with layered rug-detection and laddered exits",
+  "description": "GushyB's SOL Moneymaker — Solana memecoin screener, sniper and copy trader",
   "type": "module",
   "engines": {
     "node": ">=20.10"

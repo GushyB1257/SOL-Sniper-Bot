@@ -1,4 +1,4 @@
-# Quickstart
+# GushyB's SOL Moneymaker — Quickstart
 
 Step by step, assuming you have never run a Node project before.
 

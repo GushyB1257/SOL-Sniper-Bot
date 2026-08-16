@@ -1,4 +1,4 @@
-# SOL Trader Bot
+# GushyB's SOL Moneymaker
 
 An AI-driven Solana memecoin trader. It watches every pump.fun launch, tracks
 which ones develop real buying interest, and has **Claude judge the survivors**
@@ -348,7 +348,19 @@ trades behind it. Two instruments make the loop empirical:
   you back — and if nothing is trading, this tells you why in one glance.
 - **`npm run report`** breaks closed trades down by entry market cap, entry
   volume, age at entry, socials and hold time. Move the threshold whose worst
-  bucket is both large and losing money.
+  bucket is both large and losing money. It covers **all three bots** — pass a
+  name (`npm run report sniper`) for one of them.
+- **The fee section of that report** answers the question the blended P&L
+  cannot: whether the entries are bad or the *sizing* is. It prints what the
+  trades made before fees and after them. Positive before, negative after, means
+  the picks were fine and the round-trip cost ate them — a size or hold-time
+  problem, not a filter problem. Negative before fees means the entries lost
+  money before a single fee was charged, and no amount of sizing fixes that.
+- **The win rate you need vs. the one you have.** From the average winner and
+  average loser it computes the break-even hit rate for that pair. If your
+  actual rate is below it, the *shape* of the strategy is wrong — winners must
+  run further or losers must be cut sooner — and moving entry filters will not
+  close the gap.
 
 Under ~30 trades, none of it means anything; the report says so rather than
 letting a lucky run look like an edge.
@@ -675,6 +687,42 @@ Ratchet exits (`EXIT_MODE=ratchet`):
 | Cut drifters faster | Raise `RATCHET_MIN_PROGRESS_PCT` (3–5) |
 | Hold a bigger runner | Lower `MOONBAG_TRIM_PCT` |
 | Bound the downside again | Set `RATCHET_STOP_LOSS_PCT` (50–70 keeps the recovery upside) |
+| Cut dead entries faster | Lower `RATCHET_FIRST_CHECKPOINT_SECONDS` (20–30) |
+| Keep more of a move you already had | Lower `RATCHET_GIVEBACK_PCT` (25–35) |
+| Let a runner breathe | Raise `RATCHET_GIVEBACK_PCT` (55–70), or 0 to disable |
+
+**The give-back rule is not a stop loss.** It measures how much of the *gain
+above entry* a position has handed back, so a position that is down has no gain
+to give back and it can never fire. It exists because the checkpoint only looks
+up once a window: without it, a position could run to +90%, round-trip the whole
+move, and still be holding when the window finally closed. That was the single
+largest leak in the design.
+
+### If you are getting 429 errors
+
+The sniper is the usual cause. It runs the safety battery on every launch off
+the feed — four RPC calls apiece — and pump.fun deploys several tokens a second
+at peak, which is enough on its own to rate-limit a consumer endpoint. The 429s
+then land on position pricing and *sells*, not just on the checks that caused
+them, which is how a rate limit turns into a position you cannot exit.
+
+Three things now handle it, in order of where they act:
+
+1. Every RPC call passes through one throttle — a token bucket for sustained
+   rate (`RPC_MAX_REQUESTS_PER_SEC`) and a semaphore for burst
+   (`RPC_MAX_CONCURRENT`). One caller cannot starve another.
+2. A 429 or a 5xx is retried with exponential backoff and jitter
+   (`RPC_MAX_RETRIES`), honouring `Retry-After` when the provider sends one.
+   Jitter matters: without it every queued caller retries on the same beat and
+   recreates the burst.
+3. The sniper evaluates at most `SNIPER_MAX_CONCURRENT_CHECKS` launches at once
+   and **drops** the rest rather than queueing them. A launch that had to wait
+   in line is one you are too late to buy anyway.
+
+If the dashboard still shows the amber **RPC throttled** chip climbing, lower
+`RPC_MAX_REQUESTS_PER_SEC` to your provider's documented limit — 10 on most free
+tiers. A free public endpoint will rate-limit this workload no matter what the
+settings say; a paid endpoint is the real fix.
 
 Scalp exits (`EXIT_MODE=scalp`):
 
@@ -712,7 +760,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 324 tests
+npm test           # 339 tests
 npm run typecheck
 npm run build
 ```

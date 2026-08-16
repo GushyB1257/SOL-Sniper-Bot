@@ -16,7 +16,8 @@ export function renderPage(token: string): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>SOL Sniper — Dashboard</title>
+<title>GushyB's SOL Moneymaker</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%228%22%20fill%3D%22%230b0b0b%22%2F%3E%3Cpath%20d%3D%22M6%2025l3-7h5l-3%207z%22%20fill%3D%22%232a78d6%22%20opacity%3D%22.55%22%2F%3E%3Cpath%20d%3D%22M13%2025l3-12h5l-3%2012z%22%20fill%3D%22%232a78d6%22%20opacity%3D%22.8%22%2F%3E%3Cpath%20d%3D%22M20%2025l3-17h5l-3%2017z%22%20fill%3D%22%232a78d6%22%2F%3E%3C%2Fsvg%3E">
 <style>
 /* ---- Palette -----------------------------------------------------------
    Light values on :root; dark redefined under both the OS media query and an
@@ -102,7 +103,16 @@ body {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 10px; box-shadow: var(--shadow);
 }
-.brand { font-weight: 650; letter-spacing: -0.01em; margin-right: 4px; }
+.brand { display: flex; align-items: center; gap: 8px; margin-right: 4px; }
+.brand-text { font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; }
+.brand-owner { color: var(--muted); font-weight: 550; }
+/* Three ascending bars in Solana's slant. Everything is painted from the
+   palette variables, so the mark follows the theme rather than fighting it. */
+.logo { width: 26px; height: 26px; flex: none; display: block; }
+.logo-plate { fill: var(--series); opacity: 0.12; }
+.logo-bar { fill: var(--series); }
+.logo-bar.b1 { opacity: 0.5; }
+.logo-bar.b2 { opacity: 0.75; }
 .spacer { flex: 1 1 auto; }
 .badge {
   display: inline-flex; align-items: center; gap: 6px;
@@ -112,6 +122,7 @@ body {
 }
 .badge.live   { color: #fff; background: var(--critical); border-color: transparent; }
 .badge.paper  { color: var(--ink-2); background: transparent; }
+.badge.warn   { color: var(--warning); border-color: var(--warning); }
 .meta { color: var(--muted); font-size: 12.5px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot.on  { background: var(--good); }
@@ -344,9 +355,18 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
 <div class="wrap">
 
   <div class="top">
-    <span class="brand">SOL Sniper</span>
+    <span class="brand">
+      <svg class="logo" viewBox="0 0 32 32" role="img" aria-label="GushyB's SOL Moneymaker">
+        <rect x="1" y="1" width="30" height="30" rx="8" class="logo-plate"/>
+        <path d="M6 25l3-7h5l-3 7z" class="logo-bar b1"/>
+        <path d="M13 25l3-12h5l-3 12z" class="logo-bar b2"/>
+        <path d="M20 25l3-17h5l-3 17z" class="logo-bar b3"/>
+      </svg>
+      <span class="brand-text"><span class="brand-owner">GushyB's</span> SOL Moneymaker</span>
+    </span>
     <span class="badge" id="modeBadge">—</span>
     <span class="meta" id="topMeta"></span>
+    <span class="badge warn hidden" id="rpcBadge"></span>
     <span class="spacer"></span>
     <span class="dot" id="connDot" title="connection"></span>
     <span class="meta" id="connText">connecting…</span>
@@ -1367,6 +1387,21 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     var badge = $('modeBadge');
     badge.textContent = s.mode === 'live' ? 'LIVE — REAL FUNDS' : 'PAPER';
     badge.className = 'badge ' + (s.mode === 'live' ? 'live' : 'paper');
+
+    // Rate limiting is invisible until it costs you a sell, so it gets a chip
+    // the moment it starts happening rather than a line in the log.
+    var rpcBadge = $('rpcBadge');
+    if (s.rpc && s.rpc.rateLimited > 0) {
+      rpcBadge.classList.remove('hidden');
+      rpcBadge.textContent = 'RPC throttled \u00d7' + s.rpc.rateLimited;
+      rpcBadge.title =
+        s.rpc.rateLimited + ' rate-limited responses out of ' + s.rpc.requests + ' requests, ' +
+        s.rpc.retries + ' retried' +
+        (s.rpc.givenUp > 0 ? ', ' + s.rpc.givenUp + ' gave up after every retry' : '') +
+        '.\\nLower RPC_MAX_REQUESTS_PER_SEC to your provider tier if this keeps climbing.';
+    } else {
+      rpcBadge.classList.add('hidden');
+    }
 
     $('topMeta').textContent =
       s.executor + ' · ' + s.discovery + ' · up ' + dur(s.uptimeSeconds) +

@@ -144,7 +144,7 @@ describe('dashboard serving', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toMatch(/text\/html/);
     const html = await res.text();
-    expect(html).toContain('SOL Sniper');
+    expect(html).toContain('SOL Moneymaker');
     expect(html).toContain('Equity curve');
   });
 

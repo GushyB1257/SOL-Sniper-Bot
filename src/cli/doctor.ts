@@ -21,7 +21,7 @@ const bad = (m: string) => console.log(`  \x1b[31m✗\x1b[0m ${m}`);
 const warn = (m: string) => console.log(`  \x1b[33m!\x1b[0m ${m}`);
 
 async function main(): Promise<void> {
-  console.log('\nSOL Sniper — pre-flight\n');
+  console.log("\nGushyB's SOL Moneymaker — pre-flight\n");
   let fatal = 0;
 
   const cfg = (() => {

@@ -2,6 +2,7 @@ import { walletLabel, type Config } from '../config.js';
 import type { Store } from '../state/store.js';
 import type { Position, TradeJournalEntry } from '../types.js';
 import { recentLogs, type LogEntry } from '../logger.js';
+import { rpcStats } from '../util/rpc-throttle.js';
 import { pctChange } from '../util/solana.js';
 
 export interface SessionStats {
@@ -240,6 +241,8 @@ export interface Snapshot {
   solUsd: number;
   solPriceLive: boolean;
   bots: BotView[];
+  /** RPC health. Non-zero rate limiting is the thing worth seeing at a glance. */
+  rpc: { requests: number; rateLimited: number; retries: number; givenUp: number };
   /** Read-only view of everything the bot is running with. */
   config: ConfigRow[];
   /** Editable settings: the field specs and their current values. */
@@ -681,6 +684,12 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
       view.risk.walletBalanceSol = input.walletBalanceSol;
       return view;
     }),
+    rpc: (({ requests, rateLimited, retries, givenUp }) => ({
+      requests,
+      rateLimited,
+      retries,
+      givenUp,
+    }))(rpcStats()),
     config: configRows(input.cfg),
     settings: input.settings,
     log: [...recentLogs(150)].reverse(),

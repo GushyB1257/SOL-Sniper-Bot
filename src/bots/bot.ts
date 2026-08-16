@@ -70,6 +70,9 @@ export class TradingBot {
 
   private stats: BotStats = { seen: 0, evaluated: 0, rejected: 0, bought: 0, skipped: 0 };
   private entryInFlight = false;
+  /** Safety batteries running right now. Bounded — see considerCandidate. */
+  private checksInFlight = 0;
+  private shedAt = 0;
   private started = false;
 
   constructor(
@@ -186,6 +189,25 @@ export class TradingBot {
       return;
     }
 
+    // Shed load rather than queue it. The safety battery is four RPC calls per
+    // launch and pump.fun deploys several tokens a second at peak, which is
+    // enough on its own to rate-limit a consumer endpoint — and the 429s land
+    // on the position ticks and sells too, not just on the checks that caused
+    // them. A candidate that had to wait its turn is one we are too late to buy
+    // anyway, so dropping it costs nothing that queueing would have saved.
+    if (this.checksInFlight >= cfg.SNIPER_MAX_CONCURRENT_CHECKS) {
+      this.stats.skipped += 1;
+      const now = Date.now();
+      if (now - this.shedAt > 30_000) {
+        this.shedAt = now;
+        log.info(
+          `${this.name}: shedding launches — ${cfg.SNIPER_MAX_CONCURRENT_CHECKS} safety checks ` +
+            'already running. Raise SNIPER_MAX_CONCURRENT_CHECKS if your RPC can take it.',
+        );
+      }
+      return;
+    }
+
     const risk = this.risk.canOpen(await this.deps.walletBalance());
     if (!risk.allowed) {
       this.stats.skipped += 1;
@@ -196,7 +218,14 @@ export class TradingBot {
     this.store.recordCreatorLaunch(candidate.creator, candidate.mint);
     this.stats.evaluated += 1;
 
-    const verdict = await this.safety!.evaluate(candidate);
+    let verdict;
+    this.checksInFlight += 1;
+    try {
+      verdict = await this.safety!.evaluate(candidate);
+    } finally {
+      this.checksInFlight -= 1;
+    }
+
     if (!verdict.passed) {
       this.stats.rejected += 1;
       log.info(`REJECT ${label} — ${formatVerdict(verdict)} (${verdict.elapsedMs}ms)`);
