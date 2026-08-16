@@ -45,9 +45,13 @@ from becoming a catastrophic one, and a paper mode that lets you find out what
 your results actually look like before any money is involved.
 
 **Run it in paper mode for at least a few days and read `npm run report` before
-you even consider going live.** If the profit factor is below 1.0 on paper, it
-will be worse live — paper mode cannot simulate losing the race or getting no
-bid on the way out.
+you even consider going live.** Paper mode tracks real prices on real launches,
+so the answer it gives is meaningful — but it assumes every buy landed and every
+sell found a bid, so it is a ceiling. If the profit factor is below 1.0 there,
+live will be worse, and that result is decisive.
+
+Start with **[QUICKSTART.md](QUICKSTART.md)** if you have not run a Node project
+before.
 
 ---
 
@@ -168,6 +172,14 @@ books **+177%**, because the ladder banked it on the way up.
 
 ### 5. Execution (`src/execution/`)
 
+Price comes from one place for both real and paper trading
+(`src/execution/pricing.ts`): while a token is on the bonding curve, its price
+is a pure function of the curve's reserves, so a single account read gives an
+exact price with no oracle and no third party. After graduation the reserves
+freeze and it falls back to a Jupiter quote. Paper and live differ only in
+whether a transaction is actually signed and sent.
+
+
 `onchain` builds the swap via PumpPortal's `trade-local` endpoint, then **signs
 locally and broadcasts through your own RPC**. The key never leaves your
 machine.
@@ -254,10 +266,21 @@ npm run sniper     # runs the strategy against live launches, zero transactions
 npm run report     # same numbers in the terminal, if you prefer
 ```
 
-Paper mode simulates fills against the same constant-product curve pump.fun
-uses, so slippage and price impact behave realistically. It **cannot** simulate
-whether your transaction would have landed first, or whether there would have
-been a bid when you sold. Read paper results as a generous upper bound.
+Paper mode is a **forward test, not a simulation**. Real launches, real safety
+checks, and real prices read live from each token's own bonding curve on every
+tick — if a token you paper-bought rugs, your paper position rugs with it. Fills
+use the same constant-product maths the pump.fun program runs, against the
+reserves that actually existed at that moment, so slippage and price impact are
+modelled properly.
+
+Three things it cannot know, and **all three flatter the result**: whether your
+buy would have won the race, whether anyone would have bought your exit (the
+curve always quotes; a real rug has no bid), and your own market impact. So
+paper is a **ceiling**, not an estimate — which is what makes a losing paper
+result decisive.
+
+**New to this? Follow [QUICKSTART.md](QUICKSTART.md)** — step by step from
+installing Node through to deciding whether the results justify real money.
 
 ### Going live
 
@@ -316,7 +339,7 @@ ladders leaving no moonbag, or a trailing stop tighter than the hard stop.
 ## Development
 
 ```bash
-npm test           # 80 tests
+npm test           # 92 tests
 npm run typecheck
 npm run build
 ```

@@ -8,6 +8,7 @@ import { PumpPortalDiscovery } from './discovery/pumpportal.js';
 import { RpcDiscovery } from './discovery/rpc.js';
 import { PaperExecutor } from './execution/paper.js';
 import { OnchainExecutor } from './execution/onchain.js';
+import { ChainPriceSource } from './execution/pricing.js';
 import { AxiomExecutor } from './execution/axiom.js';
 import { Dashboard } from './server/dashboard.js';
 import type { Discovery, Executor, TokenCandidate } from './types.js';
@@ -66,11 +67,19 @@ class SniperBot {
   }
 
   private buildExecutor(cfg: Config): Executor {
+    // Both real and paper execution read the same live prices; the only
+    // difference is whether a transaction is actually signed and sent.
+    const prices = new ChainPriceSource(connection(cfg), cfg);
     switch (cfg.EXECUTOR) {
       case 'paper':
-        return new PaperExecutor(cfg);
+        return new PaperExecutor(cfg, prices);
       case 'onchain':
-        return new OnchainExecutor(cfg, connection(cfg), loadKeypair(cfg.WALLET_PRIVATE_KEY));
+        return new OnchainExecutor(
+          cfg,
+          connection(cfg),
+          loadKeypair(cfg.WALLET_PRIVATE_KEY),
+          prices,
+        );
       case 'axiom':
         return new AxiomExecutor();
     }
@@ -101,9 +110,6 @@ class SniperBot {
     await this.discovery.start((c) => this.onCandidate(c));
 
     this.tickTimer = setInterval(() => {
-      if (this.cfg.MODE === 'paper') {
-        (this.executor as PaperExecutor).tickSimulation?.();
-      }
       void this.positions.tick().catch((err) => log.error(`Tick failed: ${errMessage(err)}`));
     }, TICK_INTERVAL_MS);
 

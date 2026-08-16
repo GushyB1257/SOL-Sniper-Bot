@@ -73,6 +73,61 @@ function main(): void {
   for (const [reason, v] of [...byReason].sort((a, b) => b[1].n - a[1].n)) {
     console.log(`  ${pad(reason, 24)}${String(v.n).padStart(4)}  ${v.pnl >= 0 ? '+' : ''}${v.pnl.toFixed(4)} SOL`);
   }
+
+  // --- the part that actually answers "is this working" -------------------
+
+  // A position only reaches these exits after clearing the first rung, so this
+  // is the share of entries that went anywhere at all.
+  const REACHED = ['ladder', 'trailing_stop', 'moonbag_trailing_stop', 'max_hold'];
+  const reached = journal.filter((t) =>
+    REACHED.some((r) => t.closeReason.startsWith(r)),
+  ).length;
+  const reachedPct = (reached / journal.length) * 100;
+
+  console.log('\n' + '═'.repeat(88));
+  console.log('VERDICT');
+  console.log('═'.repeat(88));
+  console.log(
+    `Reached the first rung   ${reachedPct.toFixed(1)}% of entries (${reached}/${journal.length})`,
+  );
+  console.log(
+    '  This is the number the whole strategy rests on. The ladder only pays if\n' +
+      '  enough entries survive to the first take-profit.',
+  );
+
+  // Sample size. A handful of trades tells you nothing: memecoin returns are
+  // dominated by rare large winners, so a small sample either missed them
+  // (looks terrible) or caught one (looks amazing). Neither generalises.
+  console.log('');
+  if (journal.length < 30) {
+    console.log(`Sample size              ${journal.length} trades — NOT ENOUGH TO CONCLUDE ANYTHING.`);
+    console.log('  Keep running. Under ~30 trades this is noise, whatever it says.');
+  } else if (journal.length < 100) {
+    console.log(`Sample size              ${journal.length} trades — early read, treat as provisional.`);
+    console.log('  Aim for 100+ before you take the profit factor seriously.');
+  } else if (journal.length < 300) {
+    console.log(`Sample size              ${journal.length} trades — rough read.`);
+    console.log('  Usable signal, but one big winner still moves the result a lot.');
+  } else {
+    console.log(`Sample size              ${journal.length} trades — reasonable sample.`);
+  }
+
+  console.log('');
+  const pf = grossLoss > 0 ? grossWin / grossLoss : Infinity;
+  if (journal.length < 30) {
+    console.log('Bottom line              Too early to say. Do not go live on this.');
+  } else if (pf < 1) {
+    console.log('Bottom line              LOSING on paper. Live would be worse — paper cannot');
+    console.log('                         simulate losing the race or finding no bid on exit.');
+    console.log('                         Do not fund this. Change the strategy or stop.');
+  } else if (pf < 1.3) {
+    console.log('Bottom line              Marginal. A profit factor this thin does not survive');
+    console.log('                         real-world slippage and missed fills. Not fundable yet.');
+  } else {
+    console.log('Bottom line              Profitable on paper. Remember paper is a CEILING:');
+    console.log('                         it assumes every buy landed and every sell found a bid.');
+    console.log('                         If you go live, start at the smallest size you can.');
+  }
   console.log();
 }
 

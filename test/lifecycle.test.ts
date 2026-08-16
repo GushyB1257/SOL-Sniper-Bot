@@ -7,6 +7,8 @@ import { PaperExecutor } from '../src/execution/paper.js';
 import { RiskManager } from '../src/risk/risk-manager.js';
 import { Store } from '../src/state/store.js';
 import { loadConfig, type Config } from '../src/config.js';
+import type { PriceSource } from '../src/execution/pricing.js';
+import type { BondingCurveState } from '../src/execution/bonding-curve.js';
 import type { TokenCandidate } from '../src/types.js';
 
 const BASE_ENV = {
@@ -17,10 +19,48 @@ const BASE_ENV = {
   EXIT_LADDER: '60:40,150:30,400:20',
 } as unknown as NodeJS.ProcessEnv;
 
+/**
+ * Stub price source standing in for the chain. Holds a bonding curve whose
+ * reserves we can move, so the test drives price exactly the way real trading
+ * would — through the curve, not by poking at the executor.
+ */
+class StubPrices implements PriceSource {
+  vSol = 30;
+  vTokens = 1_073_000_000;
+  complete = false;
+  unreadable = false;
+
+  async curve(): Promise<BondingCurveState | null> {
+    if (this.unreadable) return null;
+    return {
+      virtualSolReserves: BigInt(Math.round(this.vSol * 1e9)),
+      virtualTokenReserves: BigInt(Math.round(this.vTokens * 1e6)),
+      realSolReserves: 0n,
+      realTokenReserves: 0n,
+      tokenTotalSupply: 1_000_000_000_000_000n,
+      complete: this.complete,
+    };
+  }
+
+  async price(): Promise<number | null> {
+    if (this.unreadable) return null;
+    return this.vSol / this.vTokens;
+  }
+
+  /** Moves the curve so spot price becomes `multiple` x its starting value. */
+  setPriceMultiple(entryPrice: number, multiple: number): void {
+    const k = this.vSol * this.vTokens;
+    const target = entryPrice * multiple;
+    this.vSol = Math.sqrt(target * k);
+    this.vTokens = k / this.vSol;
+  }
+}
+
 let dir: string;
 let cfg: Config;
 let store: Store;
 let exec: PaperExecutor;
+let prices: StubPrices;
 let manager: PositionManager;
 
 const CANDIDATE: TokenCandidate = {
@@ -39,7 +79,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'sniper-lifecycle-'));
   cfg = loadConfig({ ...BASE_ENV, DATA_DIR: dir });
   store = new Store(dir);
-  exec = new PaperExecutor(cfg);
+  prices = new StubPrices();
+  exec = new PaperExecutor(cfg, prices);
   manager = new PositionManager(cfg, store, exec, new RiskManager(cfg, store, join(dir, 'nostop')));
 });
 
@@ -47,16 +88,8 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** Moves the simulated curve so the spot price becomes `multiple` x entry. */
-function setPriceMultiple(mint: string, entryPrice: number, multiple: number): void {
-  // Spot price is vSol/vTokens with k fixed, so price scales with vSol^2.
-  const curves = (exec as unknown as { curves: Map<string, { vSol: number; vTokens: number }> })
-    .curves;
-  const curve = curves.get(mint)!;
-  const k = curve.vSol * curve.vTokens;
-  const targetPrice = entryPrice * multiple;
-  curve.vSol = Math.sqrt(targetPrice * k);
-  curve.vTokens = k / curve.vSol;
+function setPriceMultiple(_mint: string, entryPrice: number, multiple: number): void {
+  prices.setPriceMultiple(entryPrice, multiple);
 }
 
 describe('full position lifecycle', () => {

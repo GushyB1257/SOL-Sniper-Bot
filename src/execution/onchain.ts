@@ -9,7 +9,7 @@ import type { Config } from '../config.js';
 import { logger } from '../logger.js';
 import { errMessage, retry, withTimeout } from '../util/async.js';
 import { lamportsToSol } from '../util/solana.js';
-import { curveSpotPrice, fetchBondingCurve } from './bonding-curve.js';
+import type { PriceSource } from './pricing.js';
 
 const log = logger('exec:onchain');
 
@@ -31,6 +31,7 @@ export class OnchainExecutor implements Executor {
     private readonly cfg: Config,
     private readonly conn: Connection,
     private readonly wallet: Keypair,
+    private readonly prices: PriceSource,
   ) {}
 
   async buy(candidate: TokenCandidate, amountSol: number): Promise<BuyResult> {
@@ -226,35 +227,7 @@ export class OnchainExecutor implements Executor {
   }
 
   async price(position: Position): Promise<number | null> {
-    try {
-      const curve = await fetchBondingCurve(this.conn, position.mint);
-      if (curve && !curve.complete) return curveSpotPrice(curve);
-      // Graduated to an AMM: curve reserves are frozen and no longer price it.
-      return await this.ammPrice(position.mint);
-    } catch (err) {
-      log.debug(`price lookup failed for ${position.mint}: ${errMessage(err)}`);
-      return null;
-    }
-  }
-
-  /** Price via a Jupiter quote, used once a token has left the bonding curve. */
-  private async ammPrice(mint: string): Promise<number | null> {
-    try {
-      // Quote selling a nominal amount to get an executable price rather than
-      // a mid-price that no one will actually fill.
-      const url =
-        `https://quote-api.jup.ag/v6/quote?inputMint=${mint}` +
-        `&outputMint=So11111111111111111111111111111111111111112` +
-        `&amount=1000000&slippageBps=${Math.round(this.cfg.SELL_SLIPPAGE_PCT * 100)}`;
-      const res = await withTimeout(fetch(url), 3000, 'jupiter quote');
-      if (!res.ok) return null;
-      const quote = (await res.json()) as { outAmount?: string };
-      if (!quote.outAmount) return null;
-      // 1e6 base units in, lamports out.
-      return Number(quote.outAmount) / 1e9;
-    } catch {
-      return null;
-    }
+    return this.prices.price(position.mint);
   }
 
   async balance(mint: string): Promise<number | null> {
