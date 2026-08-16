@@ -71,10 +71,17 @@ export class CopyTrader {
   /** Entry point from the watcher. Never throws into the poll loop. */
   onWalletTrade(trade: WalletTrade): void {
     this.stats.seen += 1;
+
+    // Sells do NOT join the entry chain. Buys are serialised because they
+    // contend for the position cap and the hourly spend cap, and two of them
+    // clearing the same limit at once would overspend. A sell contends for
+    // nothing — the position manager takes a per-position lock of its own — so
+    // queueing it behind an in-flight buy only means being late to the exit,
+    // which is the one thing a copy trader must never be.
     if (trade.side === 'sell') {
-      this.chain = this.chain
-        .then(() => this.mirrorSell(trade))
-        .catch((err) => log.error(`Mirror sell failed for ${trade.mint}: ${errMessage(err)}`));
+      void this.mirrorSell(trade).catch((err) =>
+        log.error(`Mirror sell failed for ${trade.mint}: ${errMessage(err)}`),
+      );
       return;
     }
     this.chain = this.chain

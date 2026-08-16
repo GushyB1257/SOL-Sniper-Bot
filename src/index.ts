@@ -11,6 +11,7 @@ import { TradingBot, type BotId } from './bots/bot.js';
 import { RuntimeSettings } from './settings/runtime.js';
 import { SolPrice } from './util/solprice.js';
 import type { Discovery, Executor, TokenCandidate } from './types.js';
+import type { Keypair } from '@solana/web3.js';
 import { connection, lamportsToSol, loadKeypair } from './util/solana.js';
 import { errMessage } from './util/async.js';
 import { breakevenGrossPct, costModel } from './strategy/costs.js';
@@ -25,6 +26,8 @@ const STRATEGY_TICK_INTERVAL_MS = 10_000;
 
 /** Sentinel file that halts new entries across every bot. */
 const KILL_SWITCH_PATH = 'STOP';
+/** How long a wallet balance reading stays good enough for a risk check. */
+const BALANCE_CACHE_MS = 5000;
 
 const BOT_NAMES: Record<BotId, string> = {
   screener: 'Screener',
@@ -53,6 +56,9 @@ class Supervisor {
   private strategyTimer: NodeJS.Timeout | null = null;
   private shuttingDown = false;
   private readonly startedAt = Date.now();
+  /** Cached SOL balance, so the risk check does not cost a round trip per buy. */
+  private balanceCache: { sol: number; at: number } | null = null;
+  private walletKey: Keypair | null = null;
 
   constructor(private readonly cfg: Config) {
     const conn = connection(cfg);
@@ -254,13 +260,36 @@ class Supervisor {
     }
   }
 
+  /**
+   * Our own SOL balance, cached for a few seconds.
+   *
+   * This is read on the entry path — the risk manager checks it before every
+   * buy — so an uncached version puts a full RPC round trip between seeing a
+   * trade and mirroring it. The balance cannot meaningfully change in the gap
+   * without one of our own trades causing it, and a stale reading only ever
+   * costs us the reserve check being a few seconds out of date.
+   *
+   * A read that FAILS is not cached: the fail-closed zero must not stick around
+   * blocking entries after the RPC recovers.
+   */
   private async walletBalance(): Promise<number> {
     if (this.cfg.MODE === 'paper') {
       return (this.executor as PaperExecutor).simulatedWalletSol;
     }
+
+    const now = Date.now();
+    if (this.balanceCache && now - this.balanceCache.at < BALANCE_CACHE_MS) {
+      return this.balanceCache.sol;
+    }
+
     try {
-      const kp = loadKeypair(this.cfg.WALLET_PRIVATE_KEY);
-      return lamportsToSol(await connection(this.cfg).getBalance(kp.publicKey, 'confirmed'));
+      // Decoding the key on every call is pure latency; it never changes.
+      this.walletKey ??= loadKeypair(this.cfg.WALLET_PRIVATE_KEY);
+      const sol = lamportsToSol(
+        await connection(this.cfg).getBalance(this.walletKey.publicKey, 'confirmed'),
+      );
+      this.balanceCache = { sol, at: now };
+      return sol;
     } catch (err) {
       log.error(`Balance lookup failed: ${errMessage(err)}`);
       return 0; // fail closed: no balance reading means no new entries

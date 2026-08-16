@@ -131,6 +131,10 @@ To use the copy trader: click its tab, hit **Start Copy trader**, open
 make tiny buys just to bump a token's volume on screeners, and 0.5 SOL filters
 those out.
 
+Each wallet in the tracked list shows what copying it has made you — realised
+plus open, with its win count — so a wallet worth following is distinguishable
+from one that has cost you money.
+
 Give each wallet a name while you are there: write `<address>=Insider` instead
 of the bare address and every position and trade copied from it is labelled
 *via Insider* instead of a string of base58. Rename one later and its whole

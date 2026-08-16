@@ -204,6 +204,54 @@ describe('full position lifecycle', () => {
  * price, and the position was written off at -100% — on a token the wallet
  * being copied sold without trouble.
  */
+describe('a partial sell is not a closed trade', () => {
+  it('ignores a zero balance read that contradicts a trim we just made', async () => {
+    // A balance endpoint that has not caught up (or missed the token account)
+    // reads exactly like a wallet holding nothing. Believing it books the
+    // position closed on partial proceeds against the full cost, which is how a
+    // token that was only trimmed turns up in the journal as a loss.
+    const fill = await exec.buy(CANDIDATE, cfg.BUY_AMOUNT_SOL);
+    const p = manager.open(CANDIDATE, fill, 85);
+
+    const truth = exec.balance.bind(exec);
+    exec.balance = async () => 0;
+    await manager.externalExit(p, 'manual', 'trim half', p.remainingQty * 0.5);
+    exec.balance = truth;
+
+    const after = store.getPosition(p.id)!;
+    expect(after.status).toBe('open');
+    expect(after.remainingQty).toBeCloseTo(fill.receivedQty * 0.5, 6);
+    expect(store.journal()).toHaveLength(0);
+  });
+
+  it('still believes a zero balance when we asked to close the whole position', async () => {
+    const fill = await exec.buy(CANDIDATE, cfg.BUY_AMOUNT_SOL);
+    const p = manager.open(CANDIDATE, fill, 85);
+
+    await manager.externalExit(p, 'manual', 'close it');
+
+    const after = store.getPosition(p.id)!;
+    expect(after.status).toBe('closed');
+    expect(store.journal()).toHaveLength(1);
+  });
+
+  it('accepts a zero balance on a trim that really did clear the bag', async () => {
+    // Selling all but dust legitimately reads as zero. The guard only protects
+    // a remainder we have real reason to expect.
+    const fill = await exec.buy(CANDIDATE, cfg.BUY_AMOUNT_SOL);
+    const p = manager.open(CANDIDATE, fill, 85);
+
+    const truth = exec.balance.bind(exec);
+    exec.balance = async () => 0;
+    await manager.externalExit(p, 'manual', 'trim 99.9%', p.remainingQty * 0.999);
+    exec.balance = truth;
+
+    const after = store.getPosition(p.id)!;
+    expect(after.status).toBe('closed');
+    expect(after.remainingQty).toBe(0);
+  });
+});
+
 describe('an unpriceable position is not a rug', () => {
   it('holds through a price outage instead of writing it off in two minutes', async () => {
     const fill = await exec.buy(CANDIDATE, cfg.BUY_AMOUNT_SOL);

@@ -14,6 +14,13 @@ import type { PriceSource } from './pricing.js';
 const log = logger('exec:onchain');
 
 /**
+ * How long a cached blockhash is reused. Solana accepts one for roughly 150
+ * blocks (~60s); two seconds is far inside that and removes the round trip
+ * from the send path entirely.
+ */
+const BLOCKHASH_TTL_MS = 2000;
+
+/**
  * Non-custodial on-chain executor.
  *
  * Transaction *construction* is delegated to PumpPortal's `trade-local`
@@ -27,6 +34,11 @@ const log = logger('exec:onchain');
 export class OnchainExecutor implements Executor {
   readonly name = 'onchain';
 
+  /** Most recent blockhash read, reused for BLOCKHASH_TTL_MS. */
+  private blockhash: { blockhash: string; lastValidBlockHeight: number; at: number } | null = null;
+  private blockhashInFlight: Promise<{ blockhash: string; lastValidBlockHeight: number; at: number }> | null =
+    null;
+
   constructor(
     private readonly cfg: Config,
     private readonly conn: Connection,
@@ -35,8 +47,12 @@ export class OnchainExecutor implements Executor {
   ) {}
 
   async buy(candidate: TokenCandidate, amountSol: number): Promise<BuyResult> {
-    const before = await this.balance(candidate.mint);
-    const solBefore = await this.conn.getBalance(this.wallet.publicKey, 'confirmed');
+    // Both pre-trade reads at once. They are independent, and run in sequence
+    // they put two full round trips in front of every entry.
+    const [before, solBefore] = await Promise.all([
+      this.balance(candidate.mint),
+      this.conn.getBalance(this.wallet.publicKey, 'confirmed'),
+    ]);
 
     try {
       const sig = await this.trade({
@@ -74,11 +90,14 @@ export class OnchainExecutor implements Executor {
   }
 
   async sell(position: Position, qty: number, closeAll: boolean): Promise<SellResult> {
-    const before = (await this.balance(position.mint)) ?? 0;
+    const [held, solBefore] = await Promise.all([
+      this.balance(position.mint),
+      this.conn.getBalance(this.wallet.publicKey, 'confirmed'),
+    ]);
+    const before = held ?? 0;
     if (before <= 0) {
       return { ok: false, soldQty: 0, receivedSol: 0, price: 0, error: 'no token balance' };
     }
-    const solBefore = await this.conn.getBalance(this.wallet.publicKey, 'confirmed');
     const sellQty = closeAll ? before : Math.min(qty, before);
 
     try {
@@ -93,8 +112,11 @@ export class OnchainExecutor implements Executor {
         pool: position.pool === 'auto' ? 'auto' : position.pool,
       });
 
-      const after = (await this.balance(position.mint)) ?? 0;
-      const solAfter = await this.conn.getBalance(this.wallet.publicKey, 'confirmed');
+      const [heldAfter, solAfter] = await Promise.all([
+        this.balance(position.mint),
+        this.conn.getBalance(this.wallet.publicKey, 'confirmed'),
+      ]);
+      const after = heldAfter ?? 0;
 
       const soldQty = Math.max(0, before - after);
       const receivedSol = lamportsToSol(solAfter - solBefore);
@@ -154,9 +176,10 @@ export class OnchainExecutor implements Executor {
     this.assertSafeToSign(tx, params.mint);
 
     // Rebuild against a fresh blockhash: a stale one from the build round-trip
-    // is the single most common cause of a snipe silently never landing.
-    const { blockhash, lastValidBlockHeight } =
-      await this.conn.getLatestBlockhash('confirmed');
+    // is the single most common cause of a snipe silently never landing. The
+    // read is served from a background-refreshed cache so it does not sit on
+    // the hot path between building and sending.
+    const { blockhash, lastValidBlockHeight } = await this.recentBlockhash();
     tx.message.recentBlockhash = blockhash;
     tx.sign([this.wallet]);
 
@@ -179,6 +202,48 @@ export class OnchainExecutor implements Executor {
 
     log.info(`${params.action} confirmed: ${sig}`);
     return sig;
+  }
+
+  /**
+   * A blockhash no more than BLOCKHASH_TTL_MS old.
+   *
+   * Fetching one costs a round trip in the worst possible place — after the
+   * transaction is built, before it is sent — where every millisecond is price
+   * movement. Blockhashes stay valid for about a minute, so one refreshed every
+   * couple of seconds is every bit as good as one fetched on the spot, and it
+   * is already in memory when the send needs it.
+   *
+   * The refresh runs in the background and never rejects into a caller; if it
+   * has not produced anything yet, the first send falls back to a live read.
+   */
+  private async recentBlockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
+    const cached = this.blockhash;
+    if (cached && Date.now() - cached.at < BLOCKHASH_TTL_MS) {
+      // Fire-and-forget, and its failure must stay silent: the cached hash is
+      // still good, and an unhandled rejection here would kill the process.
+      void this.refreshBlockhash().catch(() => {});
+      return cached;
+    }
+    return this.refreshBlockhash();
+  }
+
+  private refreshBlockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
+    if (this.blockhashInFlight) return this.blockhashInFlight;
+    this.blockhashInFlight = this.conn
+      .getLatestBlockhash('confirmed')
+      .then((r) => {
+        const fresh = {
+          blockhash: r.blockhash,
+          lastValidBlockHeight: r.lastValidBlockHeight,
+          at: Date.now(),
+        };
+        this.blockhash = fresh;
+        return fresh;
+      })
+      .finally(() => {
+        this.blockhashInFlight = null;
+      });
+    return this.blockhashInFlight;
   }
 
   /**

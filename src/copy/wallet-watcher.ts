@@ -119,9 +119,11 @@ export class WalletWatcher {
     this.polling = true;
     try {
       this.stats.polls += 1;
-      for (const wallet of wallets) {
-        await this.pollWallet(wallet.address);
-      }
+      // Concurrently, not one after another. Polled in sequence the last wallet
+      // in the list is seen a full round trip per wallet late — with five
+      // wallets that is most of a second of extra lag on whoever happens to be
+      // at the end, and lag is the entire cost model of a copy trader.
+      await Promise.all(wallets.map((w) => this.pollWallet(w.address)));
     } finally {
       this.polling = false;
     }
@@ -214,9 +216,16 @@ export class WalletWatcher {
     const out = new Map<string, number>();
 
     // Both token programs: a growing share of new mints are Token-2022, and
-    // missing those would silently make some wallets look inactive.
-    for (const programId of [TOKEN_PROGRAM, TOKEN_2022_PROGRAM]) {
-      const res = await this.conn.getParsedTokenAccountsByOwner(owner, { programId }, 'processed');
+    // missing those would silently make some wallets look inactive. Read in
+    // parallel — they are independent, and doing them in turn doubles the time
+    // to notice a trade for no benefit.
+    const reads = await Promise.all(
+      [TOKEN_PROGRAM, TOKEN_2022_PROGRAM].map((programId) =>
+        this.conn.getParsedTokenAccountsByOwner(owner, { programId }, 'processed'),
+      ),
+    );
+
+    for (const res of reads) {
       for (const { account } of res.value) {
         const info = (account.data as { parsed?: { info?: Record<string, unknown> } }).parsed?.info;
         const mint = typeof info?.mint === 'string' ? info.mint : null;

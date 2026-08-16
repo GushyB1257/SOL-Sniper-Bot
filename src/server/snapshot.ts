@@ -64,6 +64,52 @@ export interface PositionView {
 /** A closed trade, with the tracked wallet's name resolved for display. */
 export type JournalRow = TradeJournalEntry & { copiedFromLabel?: string };
 
+/**
+ * Every closed position in one token, rolled into a single line.
+ *
+ * A position that is unwound in stages produces one journal row per position,
+ * but a token bought, partly sold and bought again produces several — and read
+ * leg by leg those look like losses even when the token made money overall,
+ * because each leg carries its own full cost against partial proceeds. The
+ * trades table shows these instead of raw rows so the number on screen is the
+ * result for the token, which is the only figure that means anything.
+ */
+export interface TradeGroup {
+  mint: string;
+  symbol?: string;
+  /** How many closed positions are folded into this row. */
+  legs: number;
+  costSol: number;
+  proceedsSol: number;
+  pnlSol: number;
+  pnlPct: number;
+  /** First entry across the legs. */
+  openedAt: number;
+  /** Last exit across the legs. */
+  closedAt: number;
+  /** Entry to final exit, so a re-entry does not read as one long hold. */
+  holdSeconds: number;
+  /** The last leg's reason; `reasons` has them all. */
+  closeReason: string;
+  reasons: string[];
+  safetyScore: number;
+  copiedFrom?: string;
+  copiedFromLabel?: string;
+}
+
+/** How a single tracked wallet has done for us, in SOL. */
+export interface WalletPnl {
+  /** Booked, from closed positions copied from this wallet. */
+  realizedSol: number;
+  /** Mark-to-market on positions copied from it that are still open. */
+  unrealizedSol: number;
+  netSol: number;
+  /** Closed trades copied from this wallet. */
+  trades: number;
+  wins: number;
+  openPositions: number;
+}
+
 export interface PnlSummary {
   netSol: number;
   todaySol: number;
@@ -138,8 +184,12 @@ export interface AiView {
 
 /** What the copy bot is doing, for its tab. */
 export interface CopyView {
-  /** `label` is the user's name for the wallet, or '' when it has none. */
-  wallets: Array<{ address: string; label: string; holdings: number }>;
+  /**
+   * One row per tracked wallet. `label` is the user's name for it, or '' when
+   * it has none; `pnl` is what copying that wallet has actually earned, which
+   * is the only way to tell a wallet worth following from one that is not.
+   */
+  wallets: Array<{ address: string; label: string; holdings: number; pnl: WalletPnl }>;
   /** Wallets whose first balance read has completed — i.e. actually watched. */
   primed: number;
   tracking: number;
@@ -167,6 +217,8 @@ export interface BotView {
   risk: RiskView;
   positions: PositionView[];
   journal: JournalRow[];
+  /** The journal folded per token — what the trades table shows. */
+  trades: TradeGroup[];
   equity: { t: number; cum: number; pnl: number; symbol: string }[];
   exitReasons: { reason: string; count: number; pnlSol: number }[];
   creatorsTracked: number;
@@ -431,6 +483,98 @@ export function summarisePnl(
   };
 }
 
+/**
+ * Folds the journal into one row per token, newest first.
+ *
+ * Legs are summed rather than averaged: cost is everything put in, proceeds is
+ * everything taken out, and the percentage is computed from those totals. That
+ * is what makes a token whose first leg was trimmed at a paper loss and whose
+ * second leg ran read as the single winner it was.
+ */
+export function aggregateTrades(
+  journal: readonly TradeJournalEntry[],
+  cfg: Config,
+): TradeGroup[] {
+  const byMint = new Map<string, TradeGroup>();
+
+  for (const t of journal) {
+    const g = byMint.get(t.mint);
+    if (!g) {
+      byMint.set(t.mint, {
+        mint: t.mint,
+        symbol: t.symbol,
+        legs: 1,
+        costSol: t.costSol,
+        proceedsSol: t.proceedsSol,
+        pnlSol: t.pnlSol,
+        pnlPct: t.pnlPct,
+        openedAt: t.openedAt,
+        closedAt: t.closedAt,
+        holdSeconds: t.holdSeconds,
+        closeReason: t.closeReason,
+        reasons: [t.closeReason],
+        safetyScore: t.safetyScore,
+        copiedFrom: t.copiedFrom,
+        copiedFromLabel: t.copiedFrom ? walletLabel(cfg, t.copiedFrom) : undefined,
+      });
+      continue;
+    }
+    g.legs += 1;
+    g.costSol += t.costSol;
+    g.proceedsSol += t.proceedsSol;
+    g.pnlSol += t.pnlSol;
+    g.pnlPct = g.costSol > 0 ? (g.pnlSol / g.costSol) * 100 : 0;
+    g.openedAt = Math.min(g.openedAt, t.openedAt);
+    g.closedAt = Math.max(g.closedAt, t.closedAt);
+    // Wall-clock from first entry to last exit. Summing the legs' hold times
+    // would double-count the gap between them.
+    g.holdSeconds = (g.closedAt - g.openedAt) / 1000;
+    g.closeReason = t.closedAt >= g.closedAt ? t.closeReason : g.closeReason;
+    g.reasons.push(t.closeReason);
+    g.safetyScore = Math.max(g.safetyScore, t.safetyScore);
+    g.copiedFrom ??= t.copiedFrom;
+    if (g.copiedFrom && !g.copiedFromLabel) g.copiedFromLabel = walletLabel(cfg, g.copiedFrom);
+  }
+
+  return [...byMint.values()].sort((a, b) => b.closedAt - a.closedAt);
+}
+
+/**
+ * What copying one wallet has actually made us.
+ *
+ * Open positions are marked to market rather than ignored: a wallet whose last
+ * three calls are all still running is not a wallet with no results, and
+ * waiting for them to close would leave the card reading zero for hours.
+ */
+export function walletPnl(store: Store, address: string): WalletPnl {
+  let realizedSol = 0;
+  let trades = 0;
+  let wins = 0;
+  for (const t of store.journal()) {
+    if (t.copiedFrom !== address) continue;
+    realizedSol += t.pnlSol;
+    trades += 1;
+    if (t.pnlSol > 0) wins += 1;
+  }
+
+  let unrealizedSol = 0;
+  let openPositions = 0;
+  for (const p of store.openPositions()) {
+    if (p.copiedFrom !== address) continue;
+    unrealizedSol += p.realizedSol + p.remainingQty * p.lastPrice - p.costSol;
+    openPositions += 1;
+  }
+
+  return {
+    realizedSol,
+    unrealizedSol,
+    netSol: realizedSol + unrealizedSol,
+    trades,
+    wins,
+    openPositions,
+  };
+}
+
 export interface BotInput {
   id: string;
   name: string;
@@ -505,6 +649,7 @@ export function buildBotView(input: BotInput, cfg: Config, solUsd: number, now: 
       .slice(-100)
       .reverse()
       .map((t) => (t.copiedFrom ? { ...t, copiedFromLabel: walletLabel(cfg, t.copiedFrom) } : t)),
+    trades: aggregateTrades(journal.slice(-400), cfg).slice(0, 100),
     equity,
     exitReasons: [...reasons]
       .map(([reason, v]) => ({ reason, ...v }))

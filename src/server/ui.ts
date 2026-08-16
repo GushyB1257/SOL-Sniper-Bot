@@ -209,6 +209,11 @@ th.r, td.r { text-align: right; }
 .mint-t { font-size: 11px; color: var(--muted); }
 /* Which tracked wallet a trade came from. */
 .via { font-size: 11px; color: var(--series); font-weight: 550; }
+.sym-line { display: flex; align-items: center; gap: 6px; }
+.legs {
+  font-size: 10.5px; font-weight: 600; padding: 0 5px; border-radius: 999px;
+  color: var(--ink-2); background: var(--plane); border: 1px solid var(--grid);
+}
 .empty { color: var(--muted); padding: 28px 10px; text-align: center; font-size: 13px; }
 
 /* ---- Ladder pips ---- */
@@ -328,6 +333,9 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
 .wallet-id { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .wallet-name { font-size: 12.5px; color: var(--ink); }
 .wallet-addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--ink-2); }
+.wallet-pnl { text-align: right; white-space: nowrap; }
+.wallet-net { font-size: 12.5px; font-weight: 600; }
+.wallet-note { font-size: 11px; color: var(--muted); }
 .hidden { display: none !important; }
 .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 </style>
@@ -829,7 +837,18 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     list.forEach(function (t) {
       var row = el('tr');
       var tdTok = el('td');
-      tdTok.appendChild(el('div', 'sym', t.symbol || t.mint.slice(0, 6)));
+      var head = el('div', 'sym-line');
+      head.appendChild(el('span', 'sym', t.symbol || t.mint.slice(0, 6)));
+      // A token sold down in stages is one result, not several. The chip says
+      // how many closed positions were summed so the row is never mistaken for
+      // a single fill.
+      if (t.legs > 1) {
+        var legs = el('span', 'legs', '\u00d7' + t.legs);
+        legs.title = t.legs + ' closed positions in this token, summed:\\n' +
+          (t.reasons || []).join('\\n');
+        head.appendChild(legs);
+      }
+      tdTok.appendChild(head);
       tdTok.appendChild(mintChip(t.mint));
       if (t.copiedFrom) {
         var via = el('div', 'via', 'via ' + (t.copiedFromLabel || t.copiedFrom.slice(0, 8)));
@@ -844,7 +863,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       row.appendChild(el('td', 'r mono ' + signClass(t.pnlSol), signed(t.pnlPct, 1) + '%'));
       row.appendChild(el('td', 'r mono', dur(t.holdSeconds)));
       var reason = el('td', null, (t.closeReason || '').split(':')[0]);
-      reason.title = t.closeReason || '';
+      reason.title = (t.reasons || [t.closeReason]).join('\\n');
       row.appendChild(reason);
       row.appendChild(el('td', 'r mono', t.safetyScore));
       body.appendChild(row);
@@ -1277,7 +1296,25 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
         id.appendChild(el('div', 'wallet-addr', w.address.slice(0, 6) + '\u2026' + w.address.slice(-4)));
         id.title = w.address;
         r.appendChild(id);
-        r.appendChild(el('span', 'mono', w.holdings + ' token' + (w.holdings === 1 ? '' : 's')));
+
+        // What following this wallet has actually earned. Open positions are
+        // marked to market and included, otherwise a wallet whose last calls
+        // are all still running reads as a wallet with no results.
+        var pnl = w.pnl || { netSol: 0, realizedSol: 0, unrealizedSol: 0, trades: 0, wins: 0, openPositions: 0 };
+        var right = el('div', 'wallet-pnl');
+        var net = el('div', 'wallet-net num ' + signClass(pnl.netSol), signed(pnl.netSol, 4) + ' SOL');
+        net.title =
+          'realised ' + signed(pnl.realizedSol, 4) + ' SOL over ' + pnl.trades + ' closed trade' +
+          (pnl.trades === 1 ? '' : 's') + '\\n' +
+          'open ' + signed(pnl.unrealizedSol, 4) + ' SOL across ' + pnl.openPositions + ' position' +
+          (pnl.openPositions === 1 ? '' : 's');
+        right.appendChild(net);
+        var note = pnl.trades > 0
+          ? pnl.wins + '/' + pnl.trades + ' won \u00b7 ' + w.holdings + ' held'
+          : (pnl.openPositions > 0 ? pnl.openPositions + ' open \u00b7 ' + w.holdings + ' held'
+                                   : 'no copied trades yet \u00b7 ' + w.holdings + ' held');
+        right.appendChild(el('div', 'wallet-note', note));
+        r.appendChild(right);
         host.appendChild(r);
       });
     }
@@ -1388,7 +1425,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     drawEquity(b.equity);
     renderMeters(b.risk);
     renderPositions(b.positions);
-    renderTrades(b.journal);
+    renderTrades(b.trades);
     renderReasons(b.exitReasons);
     renderConfig(s.config);
     renderLog(s.log);

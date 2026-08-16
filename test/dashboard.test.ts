@@ -4,7 +4,7 @@ import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Dashboard } from '../src/server/dashboard.js';
-import { buildSnapshot, redactUrl, summarisePnl, configRows } from '../src/server/snapshot.js';
+import { aggregateTrades, buildSnapshot, redactUrl, summarisePnl, configRows } from '../src/server/snapshot.js';
 import { renderPage } from '../src/server/ui.js';
 import { Store } from '../src/state/store.js';
 import { TradingBot } from '../src/bots/bot.js';
@@ -386,6 +386,87 @@ function snapshotOf(withCfg: Config = cfg) {
   });
 }
 
+describe('trade aggregation', () => {
+  const MINT = 'Mint7777777777777777777777777777777777777';
+
+  function leg(over: Partial<TradeJournalEntry>): TradeJournalEntry {
+    const now = Date.now();
+    return {
+      positionId: 'p' + Math.random(),
+      mint: MINT,
+      symbol: 'AGG',
+      creator: 'Dev1',
+      openedAt: now - 120_000,
+      closedAt: now - 60_000,
+      costSol: 0.25,
+      proceedsSol: 0.1,
+      pnlSol: -0.15,
+      pnlPct: -60,
+      closeReason: 'cost_recovery: trimmed',
+      safetyScore: 50,
+      holdSeconds: 60,
+      ...over,
+    };
+  }
+
+  it('sums the legs so a token that made money does not read as two losses', () => {
+    // This is the reported symptom: sold down in stages, each leg carries the
+    // full cost against partial proceeds, and every line looks like a loss even
+    // though the token was a winner.
+    const rows = aggregateTrades(
+      [
+        leg({ proceedsSol: 0.1, pnlSol: -0.15, pnlPct: -60 }),
+        leg({ proceedsSol: 0.9, pnlSol: 0.65, pnlPct: 260, closedAt: Date.now() }),
+      ],
+      cfg,
+    );
+
+    expect(rows).toHaveLength(1);
+    const g = rows[0]!;
+    expect(g.legs).toBe(2);
+    expect(g.costSol).toBeCloseTo(0.5, 10);
+    expect(g.proceedsSol).toBeCloseTo(1.0, 10);
+    expect(g.pnlSol).toBeCloseTo(0.5, 10);
+    // Percentage comes from the totals, not from averaging the legs.
+    expect(g.pnlPct).toBeCloseTo(100, 6);
+    expect(g.reasons).toHaveLength(2);
+  });
+
+  it('keeps different tokens apart and orders by the most recent exit', () => {
+    const older = leg({ mint: 'Aaa1111111111111111111111111111111111111', closedAt: 1000 });
+    const newer = leg({ mint: 'Bbb1111111111111111111111111111111111111', closedAt: 9000 });
+    const rows = aggregateTrades([older, newer], cfg);
+    expect(rows.map((r) => r.mint)).toEqual([newer.mint, older.mint]);
+  });
+
+  it('measures the hold from first entry to last exit, not by summing legs', () => {
+    const rows = aggregateTrades(
+      [
+        leg({ openedAt: 0, closedAt: 10_000, holdSeconds: 10 }),
+        leg({ openedAt: 50_000, closedAt: 60_000, holdSeconds: 10 }),
+      ],
+      cfg,
+    );
+    // 60s of wall clock, not the 20s the legs add up to.
+    expect(rows[0]!.holdSeconds).toBe(60);
+  });
+
+  it('carries the copied wallet through to the aggregated row', () => {
+    const wallet = 'FoLLoW1111111111111111111111111111111111111';
+    const named = loadConfig(env(dir, { COPY_WALLETS: `${wallet}=Insider` }));
+    const rows = aggregateTrades([leg({ copiedFrom: wallet })], named);
+    expect(rows[0]!.copiedFromLabel).toBe('Insider');
+  });
+
+  it('is what the trades table renders', () => {
+    // The table must read from the aggregate, not the raw journal, or none of
+    // the above reaches the screen.
+    const script = /<script>\n([\s\S]*?)<\/script>/.exec(renderPage('t'))![1]!;
+    expect(script).toContain('renderTrades(b.trades)');
+    expect(script).toContain('t.legs > 1');
+  });
+});
+
 describe('wallet names', () => {
   const WALLET = 'FoLLoW1111111111111111111111111111111111111';
 
@@ -514,6 +595,17 @@ describe('page render', () => {
     const script = /<script>\n([\s\S]*?)<\/script>/.exec(renderPage('t'))![1]!;
     expect(script).toContain('p.copiedFromLabel');
     expect(script).toContain('t.copiedFromLabel');
+  });
+
+  it('shows what each tracked wallet has made in its card', () => {
+    // A wallet worth following and one that has cost you money look identical
+    // without this, which makes the whole list unactionable.
+    const script = /<script>\n([\s\S]*?)<\/script>/.exec(renderPage('t'))![1]!;
+    const card = script.slice(script.indexOf('function renderCopy'));
+    const upto = card.slice(0, card.indexOf('function srow'));
+    expect(upto).toContain('w.pnl');
+    expect(upto).toContain('pnl.netSol');
+    expect(upto).toContain('pnl.unrealizedSol');
   });
 
   it('names the wallets in the tracked-wallets card', () => {

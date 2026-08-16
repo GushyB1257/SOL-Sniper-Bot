@@ -258,8 +258,25 @@ export class PositionManager {
 
     // Reconcile against the chain — dust and rounding mean our arithmetic
     // drifts from the real balance, and selling a quantity we do not hold fails.
+    //
+    // With one exception. A partial sell that comes back reading ZERO while our
+    // own arithmetic says a real remainder is still there is not believable: an
+    // RPC that has not caught up, or a read that missed the token account,
+    // looks exactly like this. Trusting it books the position closed on partial
+    // proceeds against the FULL cost, which is how a trade that was only
+    // trimmed shows up in the journal as a loss. Keep our own number and let
+    // the next tick reconcile once the chain agrees.
     const onchain = await this.executor.balance(p.mint);
-    if (onchain !== null) p.remainingQty = onchain;
+    const expected = p.remainingQty;
+    const dust = p.originalQty * 0.01;
+    if (onchain !== null && !(onchain <= 0 && !order.closeAll && expected > dust)) {
+      p.remainingQty = onchain;
+    } else if (onchain !== null && onchain <= 0) {
+      log.warn(
+        `${label}: balance read says 0 after a partial sell but ${expected.toFixed(0)} tokens ` +
+          'should remain — keeping our own count and re-checking next tick',
+      );
+    }
 
     const closed = order.closeAll || p.remainingQty <= 0;
     if (closed) {

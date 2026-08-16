@@ -226,8 +226,16 @@ const schema = z.object({
   COPY_FULL_EXIT_AT_PCT: num(0, 100).default(90),
   /** Backstop: close a copied position after this long regardless. */
   COPY_MAX_HOLD_SECONDS: num(60, 604_800).default(86_400),
-  /** How often tracked wallets' token balances are re-read. */
-  COPY_POLL_INTERVAL_MS: num(500, 60_000).default(2000),
+  /**
+   * How often tracked wallets' token balances are re-read.
+   *
+   * This is the dominant term in how late we are to a trade, so it is worth
+   * pushing down — wallets are polled concurrently, so the cost is one extra
+   * RPC call per wallet per second rather than a longer cycle. Below ~800ms a
+   * consumer RPC endpoint starts rate-limiting, which makes you slower, not
+   * faster.
+   */
+  COPY_POLL_INTERVAL_MS: num(300, 60_000).default(1000),
   /** Do not follow a wallet into a token it already held before we started. */
   COPY_SKIP_PREEXISTING: bool.default('true'),
 

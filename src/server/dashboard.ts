@@ -9,7 +9,7 @@ import { FIELDS } from '../settings/runtime.js';
 import type { SolPrice } from '../util/solprice.js';
 import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
-import { buildSnapshot, type AiView, type CopyView, type Snapshot } from './snapshot.js';
+import { buildSnapshot, walletPnl, type AiView, type CopyView, type Snapshot } from './snapshot.js';
 import { renderPage } from './ui.js';
 
 const log = logger('dashboard');
@@ -367,6 +367,7 @@ export class Dashboard {
         address: w.address,
         label: w.label ?? '',
         holdings: bot.watcher!.holdingsOf(w.address).length,
+        pnl: walletPnl(bot.store, w.address),
       })),
       tracking: w.tracking,
       primed: w.walletsPrimed,

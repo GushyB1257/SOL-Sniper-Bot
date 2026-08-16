@@ -79,6 +79,14 @@ before anything is written off, an unreadable price is tolerated for
 up the reason is `unpriceable` rather than `rug_detected` — with the deployer's
 reputation left alone, since our outage says nothing about who launched it.
 
+**Every wallet carries its own P&L.** Each row of the tracked-wallets card
+shows what copying that wallet has actually made — realised from its closed
+trades plus mark-to-market on the ones still open, with the win count
+underneath. Open positions are included deliberately: a wallet whose last three
+calls are all still running is not a wallet with no results, and waiting for
+them to close would leave the card reading zero for hours. This is the number
+that tells you which wallets to keep.
+
 **Name the wallets.** A wallet is 44 characters of base58 and nothing in it
 tells you who it is. Append `=Name` to any entry in `COPY_WALLETS` —
 `9xQe…4Rt=Insider, 4Kp8…zzQ=Whale` — and that name appears on every open
@@ -87,6 +95,27 @@ The journal stores the **address**, not the name, and resolves it when the page
 renders, so renaming a wallet relabels its entire history rather than only the
 trades that follow. Names are editable from the dashboard like every other
 setting.
+
+**How late you actually are.** Balance polling means you cannot be in the same
+block as the wallet you follow — by the time their buy shows up in a balance,
+it has already moved the price. That part is structural and no amount of tuning
+removes it. What was removed is everything else:
+
+| Where the time went | Now |
+|---|---|
+| Wallets polled one after another | All at once — the last wallet in the list is no longer N round trips late |
+| Both token programs read in sequence | In parallel |
+| Sells queued behind an in-flight buy | Sells bypass the entry queue entirely |
+| A balance read before every buy | Cached for 5s, so the risk check is free |
+| A blockhash fetched between building and sending | Refreshed in the background and already in memory |
+| Two pre-trade reads in sequence per trade | Issued together |
+| Default poll interval 2s | 1s |
+
+The queue change is the one that matters most. Buys are serialised because they
+contend for the position cap and the hourly spend cap, and two clearing the same
+limit at once would overspend. A sell contends for nothing, so making it wait
+behind a slow entry only means being late out of a position the wallet has
+already left.
 
 The mechanical exits are **disabled** for copied positions. A ratchet or a stop
 firing underneath one would exit on your schedule while the wallet you are
@@ -514,8 +543,15 @@ Live over a websocket, ~1s refresh, with polling fallback if the socket drops.
   safety score it was bought on. Click a mint to copy it.
 - **Risk meters** — daily loss, hourly spend, position count and loss streak,
   each against its configured limit, going amber at 75% and red at the cap.
-- **Trades / Config / Activity** tabs — full journal, every setting the bot is
+- **Trades / Config / Activity** tabs — the journal, every setting the bot is
   running with, and a live log including the reason each launch was rejected.
+  Trades are shown **per token, not per leg**: a token bought, partly sold and
+  bought again produces several journal rows, and read individually each one
+  carries its own full cost against partial proceeds, so a token that made money
+  overall reads as a string of losses. The row sums them — cost in, proceeds
+  out, percentage from the totals — with a `×N` chip when more than one closed
+  position was folded in, and the individual exit reasons on hover. Click a mint
+  to copy it.
 - **Exits by reason** — which exit rule is actually closing your positions and
   what each one earned. The single most useful chart for tuning the exit.
 - **Why entries were skipped** — in screener mode, every filter check that came
@@ -676,7 +712,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 308 tests
+npm test           # 324 tests
 npm run typecheck
 npm run build
 ```

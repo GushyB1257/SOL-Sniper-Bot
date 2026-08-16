@@ -149,8 +149,8 @@ export const FIELDS: FieldSpec[] = [
   { key: 'COPY_MAX_HOLD_SECONDS', label: 'Max hold', bot: 'copy', group: 'Exit',
     kind: 'number', min: 60, max: 604_800, step: 60, help: 'Backstop if they never sell.' },
   { key: 'COPY_POLL_INTERVAL_MS', label: 'Wallet poll interval', bot: 'copy', group: 'Data',
-    kind: 'number', min: 500, max: 60_000, step: 250,
-    help: 'Lower is faster to react and costs more RPC.' },
+    kind: 'number', min: 300, max: 60_000, step: 100,
+    help: 'How late you are to their trades. Wallets are polled in parallel, so this is the whole lag. Under ~800ms most RPC endpoints rate-limit.' },
 
   // --- Shared ----------------------------------------------------------
   { key: 'BUY_AMOUNT_SOL', label: 'Position size', bot: 'shared', group: 'Sizing',

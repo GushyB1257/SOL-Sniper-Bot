@@ -13,18 +13,26 @@ import type { PriceSource } from '../src/execution/pricing.js';
 import type { BondingCurveState } from '../src/execution/bonding-curve.js';
 import type { WalletTrade } from '../src/copy/wallet-watcher.js';
 import type { Position } from '../src/types.js';
+import { walletPnl } from '../src/server/snapshot.js';
 
 const WALLET = 'FoLLoW1111111111111111111111111111111111111';
 const OTHER = 'oTHeR22222222222222222222222222222222222222';
 const MINT = 'Mint1111111111111111111111111111111111111';
+const OTHER_MINT = 'Mint2222222222222222222222222222222222222';
 
 /** Curve with 45 vSOL — one token is worth about 6.3e-8 SOL. */
 class StubPrices implements PriceSource {
   complete = false;
   missing = false;
   vSol = 45;
+  /** Stalls the curve read for one mint, standing in for a slow RPC. */
+  curveDelayMs = 0;
+  curveDelayMint: string | null = null;
 
-  async curve(): Promise<BondingCurveState | null> {
+  async curve(mint: string): Promise<BondingCurveState | null> {
+    if (this.curveDelayMs > 0 && mint === this.curveDelayMint) {
+      await new Promise((r) => setTimeout(r, this.curveDelayMs));
+    }
     if (this.missing) return null;
     const k = 30 * 1_073_000_000;
     return {
@@ -362,6 +370,71 @@ describe('naming wallets', () => {
 
     build({ COPY_WALLETS: text });
     expect(cfg.COPY_WALLETS).toEqual([{ address: WALLET, label: 'Insider' }, { address: OTHER }]);
+  });
+
+  it('does not make an exit wait behind an entry that is still in flight', async () => {
+    // Buys are serialised because they contend for the position and spend caps.
+    // Sells contend for nothing, and queueing one behind a slow buy means being
+    // late out of a position the wallet has already left.
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+    expect(store.openPositions()).toHaveLength(1);
+
+    prices.curveDelayMint = OTHER_MINT; // only the new entry's read stalls
+    prices.curveDelayMs = 300;
+    trader.onWalletTrade({ ...theirBuy(32_000_000), mint: OTHER_MINT });
+    trader.onWalletTrade(theirSell(1, 0));
+
+    // Well inside the stalled entry: the exit must already be done.
+    await new Promise((r) => setTimeout(r, 60));
+    expect(store.openPositions().some((p) => p.mint === MINT)).toBe(false);
+    expect(store.journal()).toHaveLength(1);
+
+    prices.curveDelayMs = 0;
+    await new Promise((r) => setTimeout(r, 400));
+  });
+
+  it('reports what copying each wallet has made', async () => {
+    build({ COPY_WALLETS: `${WALLET}=Insider, ${OTHER}=Quiet` });
+
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+    prices.vSol = 90; // their token doubles
+    trader.onWalletTrade(theirSell(1, 0));
+    await settle();
+
+    const good = walletPnl(store, WALLET);
+    expect(good.trades).toBe(1);
+    expect(good.wins).toBe(1);
+    expect(good.realizedSol).toBeGreaterThan(0);
+    expect(good.netSol).toBeCloseTo(good.realizedSol + good.unrealizedSol, 12);
+
+    // A wallet we have not copied yet reads as zero rather than borrowing the
+    // other one's numbers.
+    expect(walletPnl(store, OTHER)).toEqual({
+      realizedSol: 0,
+      unrealizedSol: 0,
+      netSol: 0,
+      trades: 0,
+      wins: 0,
+      openPositions: 0,
+    });
+  });
+
+  it('marks a still-open copied position to market rather than ignoring it', async () => {
+    build({ COPY_WALLETS: WALLET + '=Insider' });
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+
+    const open = store.openPositions()[0]!;
+    open.lastPrice = open.entryPrice * 3;
+    store.savePosition(open);
+
+    const pnl = walletPnl(store, WALLET);
+    expect(pnl.trades).toBe(0);
+    expect(pnl.openPositions).toBe(1);
+    expect(pnl.unrealizedSol).toBeGreaterThan(0);
+    expect(pnl.netSol).toBe(pnl.unrealizedSol);
   });
 
   it('records the wallet on the trade journal so history can be labelled', async () => {
