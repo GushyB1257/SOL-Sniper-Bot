@@ -359,20 +359,35 @@ run them without you feeding data back by hand.
 Off by default: it spends API credit on a timer and it edits the settings you
 are trading on.
 
-**What it can touch is fixed in code**, in `src/tuner/limits.ts`, not in config:
+**What it can touch is fixed in code**, in `src/tuner/limits.ts`, not in
+config — it cannot be widened from `.env`, from the dashboard, or by the tuner
+itself. It covers **97 parameters**: every entry filter, the whole safety
+battery, all three exit machineries, the momentum and watchlist gates,
+copy-trade behaviour, execution and RPC settings, the analyst's own budget, and
+the risk limits.
 
-| Can change | Never changes |
+That last group deserves plain words. **The tuner can change how much money is
+at stake per trade and how much you can lose in a day** — `BUY_AMOUNT_SOL`,
+`MAX_CONCURRENT_POSITIONS`, `DAILY_LOSS_LIMIT_SOL`, `HOURLY_SPEND_CAP_SOL`, the
+loss-streak breaker, the wallet reserve, both slippage settings and the stop
+loss. In paper mode that is free. In live mode it is not, and the bounds are
+the only thing between a bad inference and a bad afternoon. Seventeen
+parameters carry a risk flag that reaches the prompt, the log, and a red
+**RISK** tag on the dashboard, so a change to one is never quiet. Position size
+is capped at 2 SOL and may move at most 25% per round — 0.25 can reach 0.31
+next round, not 5.
+
+Four things stay out, each for a reason that is not a matter of taste:
+
+| Excluded | Why |
 |---|---|
-| Entry filters (volume, mcap, age, socials, buyers) | Position size |
-| Safety score threshold | Concurrent positions |
-| Exit timing (checkpoints, recovery, give-back, trimming) | Daily loss limit, hourly spend cap |
-| Copy-trade filters and sell multiplier | Loss-streak breaker, wallet reserve |
-| | Slippage, stop loss, mode, executor |
+| `AUTO_TUNE_ENABLED`, `TUNER_*` | They **are** the enforcement. A system that can relax its own step cap or minimum sample has neither — and they are read mid-experiment to decide baselines. |
+| `PROGRAM_FEE_PCT`, `ROUTER_FEE_PCT`, `SOL_USD_FALLBACK` | Measurements of the world, not choices. Changing them does not make trading cheaper, it makes the breakeven wrong — and the bot then holds losers below true breakeven. |
+| `BOT_*_ENABLED` | Controls, not parameters. Turning a bot off stops the data it learns from; turning one on spends money on a strategy you switched off. |
+| `COPY_WALLETS` | Your list of people to follow — an input. Nothing should quietly drop a wallet from it. |
 
-Position size is on the right-hand side even though it is one of the strongest
-levers on profitability, because *"the analysis said to bet more"* is the
-failure mode that ends accounts. If the tuner concludes size is the problem it
-writes a note for you to read, and you type the number in yourself.
+Mode, executor, the wallet key, RPC URLs and the dashboard are refused a layer
+lower by the settings validator regardless of what any list says.
 
 **How it avoids fooling itself.** The naive version of this feature — feed the
 journal to a model every few minutes and apply whatever comes back — does not
@@ -857,7 +872,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 374 tests
+npm test           # 383 tests
 npm run typecheck
 npm run build
 ```
