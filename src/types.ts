@@ -53,6 +53,11 @@ export interface SafetyVerdict {
   /** Which check vetoed the buy, if any. */
   rejectedBy?: string;
   elapsedMs: number;
+  /**
+   * True when the free checks alone settled it and the RPC-costing ones were
+   * never run. The verdict is the same either way; `results` is shorter.
+   */
+  shortCircuited?: boolean;
 }
 
 export type PositionStatus = 'open' | 'closing' | 'closed' | 'failed';

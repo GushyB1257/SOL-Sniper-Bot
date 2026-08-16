@@ -323,7 +323,11 @@ export const TUNABLES: Tunable[] = [
 
   // === Infrastructure ==================================================
   n('RPC_MAX_REQUESTS_PER_SEC', 'shared', 5, 500, 50,
-    'Sustained RPC rate cap. Too high rate-limits you, which costs sells.'),
+    'Ceiling on the RPC rate, not the rate itself: the throttle opens at half ' +
+    'this and finds the endpoint\'s real limit by backing off whenever it is ' +
+    'refused. Lowering it does not fix rate limiting — that is already handled ' +
+    'in the loop — it only caps how fast the bot can ever go. Raise it if the ' +
+    'dashboard shows the rate pinned at the ceiling with no 429s.'),
   n('RPC_MAX_CONCURRENT', 'shared', 2, 64, 50, 'RPC requests in flight at once.'),
   n('RPC_MAX_RETRIES', 'shared', 1, 10, 100, 'Retries on a 429 or 5xx.'),
 

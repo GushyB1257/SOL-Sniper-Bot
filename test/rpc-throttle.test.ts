@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   createThrottledFetch,
+  rpcBackpressureMs,
   rpcStats,
   resetRpcStatsForTests,
   topMethods,
@@ -46,12 +47,83 @@ describe('RPC throttling', () => {
     );
 
     const started = Date.now();
-    // The bucket starts full, so 20 go instantly and the next 10 wait ~500ms.
+    // The bucket opens at half the ceiling — 10 go instantly and the rest are
+    // paced at ~10/s, so 30 requests cannot possibly land inside a second.
     await Promise.all(Array.from({ length: 30 }, () => f('http://rpc.test')));
     const elapsed = Date.now() - started;
 
     expect(elapsed).toBeGreaterThan(300);
     expect(rpcStats().requests).toBe(30);
+  });
+
+  it('opens below the configured ceiling rather than discovering it with 429s', async () => {
+    // Starting at the ceiling means the first seconds of every run are a burst
+    // of rate limiting while the controller learns the number was optimistic —
+    // and those are the seconds all three bots come up in.
+    createThrottledFetch(
+      { maxConcurrent: 8, maxPerSecond: 30, maxRetries: 0 },
+      (async () => reply(200)) as unknown as typeof fetch,
+    );
+    expect(rpcStats().rateNow).toBe(15);
+    expect(rpcStats().rateCeiling).toBe(30);
+  });
+
+  it('backs off the rate itself when the provider says no, instead of only retrying', async () => {
+    // The 19%-rate-limited session this fixes: retrying at a rate the endpoint
+    // has already refused just re-earns the 429, and each one costs a request
+    // slot on the way to being retried, so the overshoot feeds itself.
+    const f = createThrottledFetch(
+      { maxConcurrent: 8, maxPerSecond: 40, maxRetries: 0 },
+      (async () => reply(429)) as unknown as typeof fetch,
+    );
+
+    const before = rpcStats().rateNow;
+    await f('http://rpc.test');
+    const afterOne = rpcStats().rateNow;
+    expect(afterOne).toBeLessThan(before);
+
+    // Cuts are one-per-burst: the requests already in flight when the limit was
+    // breached all come back 429, and treating that as twenty separate signals
+    // would collapse straight to the floor.
+    await Promise.all(Array.from({ length: 10 }, () => f('http://rpc.test')));
+    expect(rpcStats().rateNow).toBe(afterOne);
+  });
+
+  it('will not throttle itself below a workable floor', async () => {
+    // A relentlessly 429ing endpoint must not leave the bot unable to issue the
+    // one call that matters, which is the sell. A ceiling of 8 opens at 4, so
+    // the first cut lands on the floor and the second has to hold it.
+    const f = createThrottledFetch(
+      { maxConcurrent: 8, maxPerSecond: 8, maxRetries: 0 },
+      (async () => reply(429)) as unknown as typeof fetch,
+    );
+    expect(rpcStats().rateNow).toBe(4);
+
+    await f('http://rpc.test');
+    expect(rpcStats().rateNow).toBe(3);
+
+    // Past the per-burst cooldown, so this is a second genuine cut.
+    await new Promise((r) => setTimeout(r, 1600));
+    await f('http://rpc.test');
+    expect(rpcStats().rateNow).toBe(3);
+  });
+
+  it('reports how long requests are waiting, so deadlines can allow for it', async () => {
+    // A check that dies while its request is still queued reports a slow
+    // endpoint when the truth is a full queue. Callers add this to their budget.
+    expect(rpcBackpressureMs()).toBe(0);
+
+    const f = createThrottledFetch(
+      { maxConcurrent: 1, maxPerSecond: 0, maxRetries: 0 },
+      (async () => {
+        await new Promise((r) => setTimeout(r, 40));
+        return reply(200);
+      }) as unknown as typeof fetch,
+    );
+
+    await Promise.all(Array.from({ length: 6 }, () => f('http://rpc.test')));
+    // The last one waited behind five 40ms requests.
+    expect(rpcBackpressureMs()).toBeGreaterThan(100);
   });
 
   it('retries a 429 instead of surfacing it as a failed sell', async () => {

@@ -23,7 +23,8 @@ export const deployerBalanceCheck: Check = {
   id: 'deployer_balance',
   severity: 'major',
   penalty: 25,
-  timeoutMs: 1500,
+  timeoutMs: 2500,
+  cost: 'rpc',
   failClosed: false,
   async run(ctx) {
     const bal = await deployerBalanceSol(ctx);
@@ -50,6 +51,7 @@ export const deployerHistoryCheck: Check = {
   severity: 'fatal',
   penalty: 100,
   timeoutMs: 100,
+  cost: 'local',
   failClosed: false,
   async run(ctx) {
     const rec = ctx.store.getCreator(ctx.candidate.creator);
@@ -82,6 +84,7 @@ export const deployerSpamCheck: Check = {
   severity: 'major',
   penalty: 30,
   timeoutMs: 100,
+  cost: 'local',
   failClosed: false,
   async run(ctx) {
     const rec = ctx.store.getCreator(ctx.candidate.creator);

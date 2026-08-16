@@ -283,6 +283,9 @@ export interface Snapshot {
     rateLimited: number;
     retries: number;
     givenUp: number;
+    /** Requests per second the throttle has settled on, and its configured cap. */
+    rateNow: number;
+    rateCeiling: number;
     /** Busiest JSON-RPC methods — which subsystem is spending the quota. */
     top: Array<{ method: string; calls: number; pct: number }>;
   };
@@ -730,11 +733,13 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
       return view;
     }),
     tuner: input.tuner ?? null,
-    rpc: (({ requests, rateLimited, retries, givenUp }) => ({
+    rpc: (({ requests, rateLimited, retries, givenUp, rateNow, rateCeiling }) => ({
       requests,
       rateLimited,
       retries,
       givenUp,
+      rateNow,
+      rateCeiling,
       top: topMethods(4),
     }))(rpcStats()),
     config: configRows(input.cfg),

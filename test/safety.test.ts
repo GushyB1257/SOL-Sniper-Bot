@@ -8,6 +8,7 @@ import type { Check } from '../src/safety/types.js';
 import { devBuyCheck } from '../src/safety/checks/supply.js';
 import { deployerHistoryCheck } from '../src/safety/checks/deployer.js';
 import { metadataSanityCheck } from '../src/safety/checks/metadata.js';
+import { createThrottledFetch, rpcBackpressureMs } from '../src/util/rpc-throttle.js';
 import { Store } from '../src/state/store.js';
 import { loadConfig, type Config } from '../src/config.js';
 import type { TokenCandidate } from '../src/types.js';
@@ -226,5 +227,150 @@ describe('SafetyEngine scoring', () => {
     const v = await engine.evaluate(candidate());
     expect(Date.now() - started).toBeLessThan(1000);
     expect(v.results[0]!.passed).toBe(false);
+  });
+});
+
+describe('SafetyEngine cost control', () => {
+  const local = (id: string, passed: boolean, penalty = 20): Check => ({
+    id,
+    severity: 'major',
+    penalty,
+    timeoutMs: 50,
+    failClosed: false,
+    cost: 'local',
+    run: async () => ({ passed, detail: passed ? 'ok' : 'nope' }),
+  });
+
+  /** Records whether it ran at all — the whole point of the phase split. */
+  const paid = (id: string, ran: { yes: boolean }): Check => ({
+    id,
+    severity: 'major',
+    penalty: 10,
+    timeoutMs: 50,
+    failClosed: false,
+    cost: 'rpc',
+    run: async () => {
+      ran.yes = true;
+      return { passed: true, detail: 'ok' };
+    },
+  });
+
+  it('spends no RPC on a launch the free checks have already rejected', async () => {
+    // At peak, pump.fun deploys several tokens a second and most are copycat or
+    // serial-launcher spam the local checks already condemn. Paying four RPC
+    // calls to confirm a rejection we had made takes quota straight from the
+    // sells of positions we are actually holding.
+    const ran = { yes: false };
+    const engine = new SafetyEngine(cfg, fakeConn, store, [
+      local('duplicate_name', false, 25),
+      local('deployer_spam', false, 30),
+      paid('mint_authority', ran),
+    ]);
+
+    const v = await engine.evaluate(candidate());
+    expect(v.passed).toBe(false);
+    expect(v.shortCircuited).toBe(true);
+    expect(ran.yes).toBe(false);
+    expect(v.results).toHaveLength(2);
+  });
+
+  it('still runs the paid checks when the free ones leave it open', async () => {
+    const ran = { yes: false };
+    const engine = new SafetyEngine(cfg, fakeConn, store, [
+      local('duplicate_name', true),
+      paid('mint_authority', ran),
+    ]);
+
+    const v = await engine.evaluate(candidate());
+    expect(v.passed).toBe(true);
+    expect(v.shortCircuited).toBeFalsy();
+    expect(ran.yes).toBe(true);
+  });
+
+  it('does not short-circuit on a penalty the threshold can absorb', async () => {
+    // The rule is only sound because the remaining checks can only subtract. A
+    // launch still able to clear the threshold has not been decided yet.
+    const ran = { yes: false };
+    const engine = new SafetyEngine(cfg, fakeConn, store, [
+      local('duplicate_name', false, 100 - cfg.MIN_SAFETY_SCORE),
+      paid('mint_authority', ran),
+    ]);
+
+    const v = await engine.evaluate(candidate());
+    expect(ran.yes).toBe(true);
+    expect(v.score).toBe(cfg.MIN_SAFETY_SCORE);
+    expect(v.passed).toBe(true);
+  });
+
+  it('short-circuits immediately on a fatal free check', async () => {
+    const ran = { yes: false };
+    const engine = new SafetyEngine(cfg, fakeConn, store, [
+      { ...local('dev_buy_share', false), severity: 'fatal', penalty: 100 },
+      paid('creator_age', ran),
+    ]);
+
+    const v = await engine.evaluate(candidate());
+    expect(v.rejectedBy).toBe('dev_buy_share');
+    expect(ran.yes).toBe(false);
+  });
+
+  it('treats an unclassified check as costing something', async () => {
+    // Conservative default: a check that has not said what it costs must not be
+    // promoted into the free phase, where a stray RPC call would be spent on
+    // every launch including the ones being thrown away.
+    const ran = { yes: false };
+    const unclassified: Check = {
+      id: 'legacy',
+      severity: 'major',
+      penalty: 10,
+      timeoutMs: 50,
+      failClosed: false,
+      run: async () => {
+        ran.yes = true;
+        return { passed: true, detail: 'ok' };
+      },
+    };
+    const engine = new SafetyEngine(cfg, fakeConn, store, [
+      local('duplicate_name', false, 100),
+      unclassified,
+    ]);
+
+    await engine.evaluate(candidate());
+    expect(ran.yes).toBe(false);
+  });
+
+  it('gives a queued RPC check the time it spent waiting, on top of its budget', async () => {
+    // The reported failure: "mint_authority timed out after 1500ms" on a mint
+    // read that never got to leave the queue. Charging a check for the
+    // throttle's backlog turns congestion into a fail-closed rejection.
+    const f = createThrottledFetch(
+      { maxConcurrent: 1, maxPerSecond: 0, maxRetries: 0 },
+      (async () => {
+        await new Promise((r) => setTimeout(r, 40));
+        return { status: 200, headers: { get: () => null } } as unknown as Response;
+      }) as unknown as typeof fetch,
+    );
+    // Build a backlog so there is measurable backpressure to allow for.
+    await Promise.all(Array.from({ length: 8 }, () => f('http://rpc.test')));
+    expect(rpcBackpressureMs()).toBeGreaterThan(150);
+
+    const slow: Check = {
+      id: 'mint_authority',
+      severity: 'fatal',
+      penalty: 100,
+      timeoutMs: 60,
+      failClosed: true,
+      cost: 'rpc',
+      run: async () => {
+        await new Promise((r) => setTimeout(r, 120));
+        return { passed: true, detail: 'revoked' };
+      },
+    };
+
+    const v = await new SafetyEngine(cfg, fakeConn, store, [slow]).evaluate(candidate());
+    // 120ms of work against a 60ms budget: without the allowance this is a
+    // timeout, and because it fails closed, a rejected launch.
+    expect(v.results[0]!.errored).toBeFalsy();
+    expect(v.passed).toBe(true);
   });
 });

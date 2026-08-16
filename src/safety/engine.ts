@@ -5,6 +5,7 @@ import type { Store } from '../state/store.js';
 import type { Check, CheckContext } from './types.js';
 import { logger } from '../logger.js';
 import { errMessage, withTimeout } from '../util/async.js';
+import { rpcBackpressureMs } from '../util/rpc-throttle.js';
 
 import { freezeAuthorityCheck, mintAuthorityCheck } from './checks/authorities.js';
 import {
@@ -82,7 +83,23 @@ export class SafetyEngine {
       cache: new Map(),
     };
 
-    const results = await Promise.all(this.checks.map((c) => this.runOne(c, ctx)));
+    // Free checks first, and stop here if they have already decided. Nothing is
+    // skipped that could have changed the answer: the remaining checks can only
+    // subtract from the score, so a launch that cannot reach the threshold on
+    // the free evidence alone cannot reach it on the paid evidence either. What
+    // this saves is the four RPC calls that would have gone into confirming a
+    // rejection we had already made — which at peak is most of them.
+    const free = this.checks.filter((c) => (c.cost ?? 'rpc') === 'local');
+    const paid = this.checks.filter((c) => (c.cost ?? 'rpc') !== 'local');
+
+    const results = await Promise.all(free.map((c) => this.runOne(c, ctx)));
+    let shortCircuited = false;
+
+    if (this.decidedBy(results) === 'reject') {
+      shortCircuited = true;
+    } else {
+      results.push(...(await Promise.all(paid.map((c) => this.runOne(c, ctx)))));
+    }
 
     // A fatal failure is a veto regardless of how good the rest looks.
     const fatal = results.find((r) => !r.passed && r.severity === 'fatal');
@@ -102,6 +119,7 @@ export class SafetyEngine {
       results,
       rejectedBy: fatal?.id ?? (passed ? undefined : 'score_threshold'),
       elapsedMs,
+      shortCircuited,
     };
 
     if (!passed) {
@@ -113,9 +131,29 @@ export class SafetyEngine {
     return verdict;
   }
 
+  /**
+   * Whether the results so far settle it, given that every check still to run
+   * can only lower the score.
+   */
+  private decidedBy(results: readonly CheckResult[]): 'reject' | 'undecided' {
+    if (results.some((r) => !r.passed && r.severity === 'fatal')) return 'reject';
+
+    const best = results.reduce(
+      (score, r) => (!r.passed && r.severity !== 'fatal' ? score - r.penalty : score),
+      100,
+    );
+    return best < this.cfg.MIN_SAFETY_SCORE ? 'reject' : 'undecided';
+  }
+
   private async runOne(check: Check, ctx: CheckContext): Promise<CheckResult> {
+    // A check that talks to the endpoint is not slow when the queue is deep —
+    // it has not started yet. Charging it for the wait is how a healthy mint
+    // read ends up reported as "mint_authority timed out after 1500ms", and
+    // because that check fails closed, that reads as a rejected launch.
+    const budget =
+      check.timeoutMs + ((check.cost ?? 'rpc') === 'rpc' ? rpcBackpressureMs() : 0);
     try {
-      const outcome = await withTimeout(check.run(ctx), check.timeoutMs, check.id);
+      const outcome = await withTimeout(check.run(ctx), budget, check.id);
       return {
         id: check.id,
         passed: outcome.passed,
@@ -143,5 +181,8 @@ export class SafetyEngine {
 export function formatVerdict(v: SafetyVerdict): string {
   const failed = v.results.filter((r) => !r.passed);
   if (failed.length === 0) return `score ${v.score}/100, all ${v.results.length} checks passed`;
-  return `score ${v.score}/100 — ${failed.map((f) => `${f.id}(${f.detail})`).join('; ')}`;
+  // Say when the paid checks never ran, so a short results list reads as a
+  // saving rather than as checks that quietly went missing.
+  const how = v.shortCircuited ? ' [free checks only, no RPC spent]' : '';
+  return `score ${v.score}/100${how} — ${failed.map((f) => `${f.id}(${f.detail})`).join('; ')}`;
 }

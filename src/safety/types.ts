@@ -27,8 +27,33 @@ export interface Check {
   readonly severity: CheckSeverity;
   /** Points off the 100-point score when this check fails (non-fatal only). */
   readonly penalty: number;
-  /** Hard cap on runtime. The whole battery must fit inside the snipe window. */
+  /**
+   * Hard cap on the check's own work.
+   *
+   * The engine adds current RPC backpressure on top for checks that make
+   * network calls, so this is a budget for the work rather than for the work
+   * plus however long the throttle's queue happened to be. The whole battery
+   * still has to fit inside the snipe window, which is what keeps these small.
+   */
   readonly timeoutMs: number;
+  /**
+   * What running this check costs.
+   *
+   * `local` — decided from the candidate, the config or the local store. Free
+   * and instant, so it runs first and can reject a launch before a single
+   * request is spent on it. At peak, pump.fun deploys several tokens a second
+   * and most of them are copycat or serial-launcher spam that the local checks
+   * already condemn; paying four RPC calls to confirm that is quota taken
+   * directly from the sells of positions we are actually holding.
+   *
+   * `http` — fetches off-chain metadata. Costs latency but not RPC quota.
+   *
+   * `rpc`  — costs a call against the endpoint's rate limit.
+   *
+   * Defaults to `rpc`, the conservative reading: an unclassified check is
+   * assumed to cost something and runs in the second phase.
+   */
+  readonly cost?: 'local' | 'http' | 'rpc';
   /**
    * When true, a check that errors or times out is treated as a FAILURE rather
    * than being skipped. Use for checks whose whole purpose is catching a rug —

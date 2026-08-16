@@ -24,7 +24,8 @@ export const holderCountCheck: Check = {
   id: 'holder_count',
   severity: 'major',
   penalty: 20,
-  timeoutMs: 1500,
+  timeoutMs: 3000,
+  cost: 'rpc',
   failClosed: false,
   async run(ctx) {
     const min = ctx.cfg.MIN_HOLDERS;
@@ -62,7 +63,8 @@ export const deployerStillHoldsCheck: Check = {
   id: 'deployer_exited',
   severity: 'fatal',
   penalty: 100,
-  timeoutMs: 2000,
+  timeoutMs: 3000,
+  cost: 'rpc',
   failClosed: false,
   async run(ctx) {
     if (!ctx.cfg.REJECT_IF_DEPLOYER_EXITED) {
@@ -113,7 +115,8 @@ export const creatorAgeCheck: Check = {
   id: 'creator_age',
   severity: 'major',
   penalty: 25,
-  timeoutMs: 3000,
+  timeoutMs: 4000,
+  cost: 'rpc',
   failClosed: false,
   async run(ctx) {
     const minMinutes = ctx.cfg.MIN_CREATOR_AGE_MINUTES;
@@ -161,7 +164,8 @@ export const launchBundleCheck: Check = {
   id: 'launch_bundle',
   severity: 'fatal',
   penalty: 100,
-  timeoutMs: 3000,
+  timeoutMs: 4000,
+  cost: 'rpc',
   failClosed: false,
   async run(ctx) {
     const max = ctx.cfg.MAX_LAUNCH_BUNDLE_TXS;

@@ -866,18 +866,49 @@ at peak, which is enough on its own to rate-limit a consumer endpoint. The 429s
 then land on position pricing and *sells*, not just on the checks that caused
 them, which is how a rate limit turns into a position you cannot exit.
 
-Three things now handle it, in order of where they act:
+Five things now handle it, in order of where they act:
 
-1. Every RPC call passes through one throttle — a token bucket for sustained
-   rate (`RPC_MAX_REQUESTS_PER_SEC`) and a semaphore for burst
-   (`RPC_MAX_CONCURRENT`). One caller cannot starve another.
-2. A 429 or a 5xx is retried with exponential backoff and jitter
+1. **The cheap checks decide first.** The battery runs in two phases: everything
+   that can be settled from the launch itself, the config or the local store
+   (`duplicate_name`, `deployer_spam`, `dev_buy_share`, `deployer_history`,
+   `curve_sanity`, `metadata_sanity`) runs before anything that costs a request.
+   If those alone already put the score below `MIN_SAFETY_SCORE`, the launch is
+   rejected without a single RPC call. Nothing is skipped that could have changed
+   the answer — the remaining checks can only subtract from the score — and at
+   peak most launches are copycat waves or serial-launcher spam that the free
+   checks condemn anyway. The log says `[free checks only, no RPC spent]` when
+   this happens.
+2. Every RPC call passes through one throttle — a token bucket for sustained
+   rate and a semaphore for burst (`RPC_MAX_CONCURRENT`). One caller cannot
+   starve another.
+3. **The rate is learned, not configured.** `RPC_MAX_REQUESTS_PER_SEC` is a
+   ceiling. The bucket opens at half of it and then runs
+   additive-increase/multiplicative-decrease: every 429 cuts the rate by 30%
+   (once per burst, not once per response), and a quiet 20 seconds starts it
+   creeping back up 1/s at a time. Nobody knows what their endpoint actually
+   grants — the tier is undocumented, shared across three bots, and moves with
+   load — and a fixed rate set above the real one does not fail gracefully,
+   because each 429 costs a request slot on the way to being retried and the
+   overshoot feeds itself. Hover the RPC chip to see the rate it has settled on.
+4. A 429 or a 5xx is retried with exponential backoff and jitter
    (`RPC_MAX_RETRIES`), honouring `Retry-After` when the provider sends one.
    Jitter matters: without it every queued caller retries on the same beat and
-   recreates the burst.
-3. The sniper evaluates at most `SNIPER_MAX_CONCURRENT_CHECKS` launches at once
+   recreates the burst. web3.js's own 429 retry is switched off
+   (`disableRetryOnRateLimit`) — two retry loops stacked on top of each other
+   multiply rather than add, and its fixed 500ms delay ignores `Retry-After` and
+   tells the throttle nothing.
+5. The sniper evaluates at most `SNIPER_MAX_CONCURRENT_CHECKS` launches at once
    and **drops** the rest rather than queueing them. A launch that had to wait
    in line is one you are too late to buy anyway.
+
+**Check timeouts allow for the queue.** A deadline measured from the moment a
+check starts is really two budgets added together: the work, and however long
+the throttle made it wait. Under load the second dominates, and a 1500ms check
+needing 300ms of work dies having never issued its request — which is where
+`mint_authority timed out after 1500ms` came from, and because that check fails
+closed, it read as a rejected launch. Each check's `timeoutMs` is now a budget
+for its own work; the engine adds current backpressure on top for the ones that
+make requests.
 
 **Find out which subsystem is spending the quota before turning anything down.**
 Every RPC call is counted by its JSON-RPC method, and the method maps straight
@@ -886,19 +917,23 @@ instead of leaving you to guess:
 
 | Busiest method | That is | Turn down |
 |---|---|---|
-| `getParsedTokenAccountsByOwner` | Copy trader reading tracked wallets | `COPY_POLL_INTERVAL_MS` (2000 is plenty), or track fewer wallets |
+| `getTokenAccountsByOwner`, `getParsedTokenAccountsByOwner` | Copy trader reading tracked wallets | `COPY_POLL_INTERVAL_MS` (2000 is plenty), or track fewer wallets |
 | `getMultipleAccounts` | Screener polling bonding curves | `SCREEN_POLL_MAX_TOKENS`, or raise `SCREEN_POLL_INTERVAL_MS` |
 | `getSignaturesForAddress` | Sniper provenance checks | `MIN_CREATOR_AGE_MINUTES=0` and `MAX_LAUNCH_BUNDLE_TXS=0` |
-| `getTokenLargestAccounts`, `getParsedAccountInfo` | Sniper safety battery | `SNIPER_MAX_CONCURRENT_CHECKS` |
+| `getBalance` | Deployer-balance check, one per launch | `MIN_DEPLOYER_BALANCE_SOL=0`, or `SNIPER_MAX_CONCURRENT_CHECKS` |
+| `getAccountInfo`, `getTokenLargestAccounts` | Sniper safety battery reading mints | `SNIPER_MAX_CONCURRENT_CHECKS` |
+| `sendTransaction`, `getSignatureStatuses` | Trade execution | Nothing. This is the one thing worth spending quota on |
 
 The chip shows the *share* of requests rate limited rather than a raw count, so
 a number that climbs while the percentage stays flat is a bot that has simply
 been running a long time.
 
-If it stays high after that, lower `RPC_MAX_REQUESTS_PER_SEC` to your
-provider's documented limit — 10 on most free tiers — so calls queue instead of
-failing. A free public endpoint will rate-limit this workload whatever the
-settings say; a paid endpoint is the real fix.
+Lowering `RPC_MAX_REQUESTS_PER_SEC` is **not** the fix it used to be — the
+throttle already backs itself off, and lowering the ceiling only caps how fast
+the bot can ever go once the endpoint recovers. If the chip stays high, the
+number to look at is the settled rate in its tooltip: a rate sitting near the
+floor means a free public endpoint that will rate-limit this workload whatever
+the settings say, and a paid endpoint is the real fix.
 
 **Why throttling is faster than not throttling.** It looks like a self-imposed
 tax: why wait when you could fire and let the failures sort themselves out? The

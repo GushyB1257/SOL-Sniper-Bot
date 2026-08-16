@@ -1648,12 +1648,24 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       var busiest = (s.rpc.top || []).map(function (m) {
         return '  ' + m.method + ' \u2014 ' + m.pct.toFixed(0) + '% (' + m.calls + ')';
       }).join('\\n');
+      // The settled rate is the number worth knowing: it is what the endpoint
+      // actually grants, as opposed to what the config optimistically asked for.
+      var rate = '';
+      if (s.rpc.rateCeiling > 0) {
+        rate = '\\n\\nNow allowing ' + s.rpc.rateNow + '/s' +
+          (s.rpc.rateNow < s.rpc.rateCeiling
+            ? ' — backed off from the ' + s.rpc.rateCeiling + '/s ceiling because your endpoint refused that rate.'
+            : ' (at the configured ceiling).');
+      }
       rpcBadge.title =
         s.rpc.rateLimited + ' of ' + s.rpc.requests + ' requests rate limited, ' +
         s.rpc.retries + ' retried' +
         (s.rpc.givenUp > 0 ? ', ' + s.rpc.givenUp + ' gave up after every retry' : '') +
-        '.\\n\\nBusiest calls:\\n' + busiest +
-        '\\n\\ngetParsedTokenAccountsByOwner = copy trader' +
+        '.' + rate +
+        '\\n\\nBusiest calls:\\n' + busiest +
+        '\\n\\ngetAccountInfo = safety battery reading mints' +
+        '\\ngetBalance = deployer balance check' +
+        '\\ngetTokenAccountsByOwner = copy trader' +
         '\\ngetMultipleAccounts = screener curve polling' +
         '\\ngetSignaturesForAddress = sniper provenance checks';
     } else {

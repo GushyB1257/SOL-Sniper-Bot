@@ -44,7 +44,8 @@ export const freezeAuthorityCheck: Check = {
   id: 'freeze_authority',
   severity: 'fatal',
   penalty: 100,
-  timeoutMs: 1500,
+  timeoutMs: 2500,
+  cost: 'rpc',
   failClosed: true,
   async run(ctx) {
     const mint = await fetchMintInfo(ctx);
@@ -68,7 +69,8 @@ export const mintAuthorityCheck: Check = {
   id: 'mint_authority',
   severity: 'fatal',
   penalty: 100,
-  timeoutMs: 1500,
+  timeoutMs: 2500,
+  cost: 'rpc',
   failClosed: true,
   async run(ctx) {
     const mint = await fetchMintInfo(ctx);

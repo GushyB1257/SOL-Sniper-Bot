@@ -20,6 +20,7 @@ export const devBuyCheck: Check = {
   severity: 'fatal',
   penalty: 100,
   timeoutMs: 200,
+  cost: 'local',
   failClosed: false,
   async run(ctx) {
     const tokens = ctx.candidate.initialBuyTokens;
@@ -69,7 +70,8 @@ export const holderConcentrationCheck: Check = {
   id: 'holder_concentration',
   severity: 'major',
   penalty: 30,
-  timeoutMs: 2500,
+  timeoutMs: 3000,
+  cost: 'rpc',
   failClosed: false,
   async run(ctx) {
     // On the bonding curve the "top holder" is the curve PDA; measuring
@@ -105,6 +107,7 @@ export const curveSanityCheck: Check = {
   severity: 'major',
   penalty: 20,
   timeoutMs: 100,
+  cost: 'local',
   failClosed: false,
   async run(ctx) {
     const { vSolInBondingCurve, pool } = ctx.candidate;

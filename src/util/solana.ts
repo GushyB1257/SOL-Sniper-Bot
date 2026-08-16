@@ -14,6 +14,14 @@ export function connection(cfg: Config): Connection {
       wsEndpoint: cfg.RPC_WS_URL,
       // Snipes are worthless if confirmed late; fail fast and move on.
       confirmTransactionInitialTimeout: 30_000,
+      // web3.js has its own 429 retry, and two retry loops stacked on top of
+      // each other multiply rather than add: our backoff runs to completion,
+      // hands back the 429, and web3.js then does the whole thing again — five
+      // more attempts at a fixed 500ms, without honouring Retry-After and
+      // without telling the throttle that its rate is too high. That is where
+      // the "Retrying after 500ms delay" lines and the multi-second check
+      // timeouts come from. Ours is the loop that can actually see the load.
+      disableRetryOnRateLimit: true,
       // Every RPC call in the process goes through this, which is the only
       // place that can see the whole load. Rate limiting one caller just moves
       // the 429 to the next one.

@@ -76,6 +76,7 @@ export const metadataSanityCheck: Check = {
   severity: 'major',
   penalty: 35,
   timeoutMs: 200,
+  cost: 'local',
   failClosed: false,
   async run(ctx) {
     const { name = '', symbol = '' } = ctx.candidate;
@@ -106,6 +107,7 @@ export const socialsCheck: Check = {
   severity: 'major',
   penalty: 20,
   timeoutMs: 2500,
+  cost: 'http',
   failClosed: false,
   async run(ctx) {
     if (!ctx.cfg.REQUIRE_SOCIALS) {
@@ -138,6 +140,7 @@ export const duplicateNameCheck: Check = {
   severity: 'major',
   penalty: 25,
   timeoutMs: 50,
+  cost: 'local',
   failClosed: false,
   async run(ctx) {
     const windowMin = ctx.cfg.DUPLICATE_NAME_WINDOW_MINUTES;
