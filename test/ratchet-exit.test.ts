@@ -172,10 +172,15 @@ describe('giving back a move', () => {
   });
 
   it('leaves a normal pullback alone', () => {
-    // Peaked at +50%, now +35% — a third of the move given back, inside the
-    // limit, and still below the recovery threshold so nothing else fires.
+    // Peaked at +50%, now +42% — well inside the limit, and still below the
+    // recovery threshold so nothing else fires. Expressed against the
+    // configured limit rather than a hardcoded number, so tuning the default
+    // does not silently turn this into a different test.
+    expect(C.RATCHET_GIVEBACK_PCT).toBeGreaterThan(10);
     const p = position({ peakPrice: ENTRY * 1.5 });
-    expect(decide(p, 1.35, 15)).toBeNull();
+    // Give back a third of the allowed share of a 50% move.
+    const givenBack = 50 * (C.RATCHET_GIVEBACK_PCT / 100) * 0.33;
+    expect(decide(p, 1 + (50 - givenBack) / 100, 15)).toBeNull();
   });
 
   it('cannot fire on a position that is down, however far', () => {

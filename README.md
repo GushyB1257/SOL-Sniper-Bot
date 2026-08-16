@@ -964,7 +964,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 421 tests
+npm test           # 420 tests
 npm run typecheck
 npm run build
 ```
