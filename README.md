@@ -624,6 +624,32 @@ Fatal checks are **fail-closed**: if the check errors, that counts as a failure.
 "I could not tell" must not read as "it is fine". Scored checks fail open so one
 flaky RPC call does not halt all trading.
 
+That cuts both ways, so the two mint reads have to be right about *when* they
+look. Discovery detects launches at `processed` commitment — seeing the create
+before it is confirmed is the entire point of it — so reading the mint back at
+`confirmed` asked the node about an account it had not admitted to yet. It
+answered "no such account", the check failed closed, and the buy was vetoed:
+
+```
+REJECT … freeze_authority(check errored: mint account not found or not an SPL mint)
+```
+
+The inversion is what made it expensive: the *faster* a launch was seen, the more
+certain its rejection, so the filter was strictest on exactly the launches worth
+having. `fetchMintInfo` now reads at `processed`, and looks a second time 300ms
+later before treating "missing" as an answer, since a feed running off someone
+else's node can be a slot ahead of yours. Reading early costs nothing in accuracy
+here — pump.fun revokes both authorities inside the create transaction and they
+can never come back.
+
+The same check also decodes the mint itself rather than asking the node for
+`jsonParsed`. That encoding depends on the endpoint recognising the program,
+which not every endpoint does for Token-2022; when it does not, the account
+arrives as raw base64 and the old code called a perfectly ordinary mint "not an
+SPL mint" and vetoed it. Unpacking the 82-byte layout locally works on any
+endpoint, covers both token programs, and puts less on the wire — which matters
+when `getAccountInfo` is the busiest call the bot makes.
+
 The metadata fetcher only resolves URIs on an allowlist of IPFS/Arweave hosts —
 the URI comes from the attacker, and an unrestricted fetch is an SSRF hole and a
 free way to stall every snipe.

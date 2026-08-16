@@ -2,9 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Connection } from '@solana/web3.js';
+import { PublicKey, type AccountInfo, type Connection } from '@solana/web3.js';
+import { MintLayout, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { SafetyEngine } from '../src/safety/engine.js';
 import type { Check } from '../src/safety/types.js';
+import { freezeAuthorityCheck, mintAuthorityCheck } from '../src/safety/checks/authorities.js';
 import { devBuyCheck } from '../src/safety/checks/supply.js';
 import { deployerHistoryCheck } from '../src/safety/checks/deployer.js';
 import { metadataSanityCheck } from '../src/safety/checks/metadata.js';
@@ -227,6 +229,121 @@ describe('SafetyEngine scoring', () => {
     const v = await engine.evaluate(candidate());
     expect(Date.now() - started).toBeLessThan(1000);
     expect(v.results[0]!.passed).toBe(false);
+  });
+});
+
+describe('authority checks', () => {
+  // A real base58 key: unlike the other fixtures, this one is turned into a
+  // PublicKey by the code under test.
+  const MINT = '6ChE3ZP9BjmGXBTzQLcRDZ72bpmTLmHsgYdCCpdLqunF';
+
+  /** A real 82-byte SPL mint account, so the decode path is genuinely exercised. */
+  function mintAccount(
+    opts: { mintAuthority?: PublicKey | null; freezeAuthority?: PublicKey | null } = {},
+    owner: PublicKey = TOKEN_PROGRAM_ID,
+  ): AccountInfo<Buffer> {
+    const data = Buffer.alloc(MintLayout.span);
+    MintLayout.encode(
+      {
+        mintAuthorityOption: opts.mintAuthority ? 1 : 0,
+        mintAuthority: opts.mintAuthority ?? PublicKey.default,
+        supply: 1_000_000_000_000_000n,
+        decimals: 6,
+        isInitialized: true,
+        freezeAuthorityOption: opts.freezeAuthority ? 1 : 0,
+        freezeAuthority: opts.freezeAuthority ?? PublicKey.default,
+      },
+      data,
+    );
+    return { owner, data, executable: false, lamports: 1, rentEpoch: 0 };
+  }
+
+  /** Connection stub that counts reads and records the commitment asked for. */
+  function connReturning(...responses: Array<AccountInfo<Buffer> | null>) {
+    const commitments: unknown[] = [];
+    let calls = 0;
+    const conn = {
+      getAccountInfo: async (_k: PublicKey, commitment?: unknown) => {
+        commitments.push(commitment);
+        return responses[Math.min(calls++, responses.length - 1)] ?? null;
+      },
+    } as unknown as Connection;
+    return { conn, commitments, reads: () => calls };
+  }
+
+  function ctxWith(conn: Connection) {
+    return { candidate: candidate({ mint: MINT }), conn, cfg, store, cache: new Map() };
+  }
+
+  it('reads the mint at processed, because that is where discovery found it', async () => {
+    // Discovery subscribes at `processed` on purpose. Reading back at the
+    // connection default of `confirmed` asks the node about an account it has
+    // not admitted to yet — and since these checks fail closed, "no such
+    // account" vetoed the buy. The faster we saw the launch, the more certain
+    // the rejection.
+    const { conn, commitments } = connReturning(mintAccount());
+    const r = await freezeAuthorityCheck.run(ctxWith(conn));
+    expect(r.passed).toBe(true);
+    expect(commitments[0]).toBe('processed');
+  });
+
+  it('looks a second time before calling a fresh mint missing', async () => {
+    // A feed running off someone else's node can be a slot ahead of ours.
+    const { conn, reads } = connReturning(null, mintAccount());
+    const r = await mintAuthorityCheck.run(ctxWith(conn));
+    expect(r.passed).toBe(true);
+    expect(reads()).toBe(2);
+  });
+
+  it('fails closed on a mint that never appears, and says why', async () => {
+    const { conn } = connReturning(null, null);
+    await expect(freezeAuthorityCheck.run(ctxWith(conn))).rejects.toThrow(/does not exist/);
+  });
+
+  it('reads a Token-2022 mint the endpoint may not parse', async () => {
+    // jsonParsed depends on the endpoint recognising the program. When it does
+    // not, the account arrives as raw base64 and the old code called an
+    // ordinary mint "not an SPL mint" and vetoed it.
+    const { conn } = connReturning(mintAccount({}, TOKEN_2022_PROGRAM_ID));
+    const r = await freezeAuthorityCheck.run(ctxWith(conn));
+    expect(r.passed).toBe(true);
+  });
+
+  it('catches a live freeze authority — the cleanest honeypot there is', async () => {
+    const attacker = new PublicKey('So11111111111111111111111111111111111111112');
+    const { conn } = connReturning(mintAccount({ freezeAuthority: attacker }));
+    const r = await freezeAuthorityCheck.run(ctxWith(conn));
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/freeze/);
+  });
+
+  it('catches a live mint authority', async () => {
+    const attacker = new PublicKey('So11111111111111111111111111111111111111112');
+    const { conn } = connReturning(mintAccount({ mintAuthority: attacker }));
+    const r = await mintAuthorityCheck.run(ctxWith(conn));
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/inflated/);
+  });
+
+  it('rejects an address that is not a token account at all', async () => {
+    const notAMint = {
+      owner: new PublicKey('11111111111111111111111111111111'),
+      data: Buffer.alloc(0),
+      executable: false,
+      lamports: 1,
+      rentEpoch: 0,
+    };
+    const { conn } = connReturning(notAMint);
+    await expect(freezeAuthorityCheck.run(ctxWith(conn))).rejects.toThrow(/not a token program/);
+  });
+
+  it('reads the mint once for both checks', async () => {
+    // Two fatal checks, one account. The shared cache is what keeps the battery
+    // at four RPC calls rather than five.
+    const { conn, reads } = connReturning(mintAccount());
+    const ctx = ctxWith(conn);
+    await Promise.all([freezeAuthorityCheck.run(ctx), mintAuthorityCheck.run(ctx)]);
+    expect(reads()).toBe(1);
   });
 });
 
