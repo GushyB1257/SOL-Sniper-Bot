@@ -394,11 +394,35 @@ export class AutoTuner {
       return `[allowed ${t.min}..${t.max}, max ${t.maxStepPct}% move this round]`;
     };
 
+    // Marked rather than hidden. A parameter that does nothing in the current
+    // mode is still worth knowing about — switching the mode is itself a
+    // proposal — but spending a measurement window on a scalp setting while the
+    // ratchet is running is a wasted round, and there are enough parameters
+    // here that the distinction is not obvious from the names.
+    const inertNote = (key: string): string => {
+      const exitMode = current.EXIT_MODE;
+      const entryMode = current.ENTRY_MODE;
+      if (key.startsWith('SCALP_') && exitMode !== 'scalp') return '  (INERT: EXIT_MODE is ' + exitMode + ')';
+      if (key.startsWith('RATCHET_') && exitMode !== 'ratchet') return '  (INERT: EXIT_MODE is ' + exitMode + ')';
+      if (
+        ['STOP_LOSS_PCT', 'TRAILING_STOP_PCT', 'MOONBAG_TRAILING_STOP_PCT', 'EXIT_LADDER'].includes(key) &&
+        exitMode !== 'ladder'
+      ) {
+        return '  (INERT: EXIT_MODE is ' + exitMode + ')';
+      }
+      if (key.startsWith('MOMENTUM_') && entryMode !== 'fast') return '  (INERT: ENTRY_MODE is ' + entryMode + ')';
+      if (key.startsWith('SCREEN_') && entryMode !== 'screener') return '  (INERT: ENTRY_MODE is ' + entryMode + ')';
+      if (key.startsWith('AI_') && entryMode !== 'ai' && current.AI_MANAGE_EXITS !== 'true') {
+        return '  (INERT: no AI entry or exit management)';
+      }
+      return '';
+    };
+
     const catalogue = knobs
       .map(
         (t) =>
           `  ${t.key} = ${current[t.key] ?? '?'}  ${bounds(t)}` +
-          `${t.risk ? '  *** RISK ***' : ''}\n    ${t.what}`,
+          `${t.risk ? '  *** RISK ***' : ''}${inertNote(t.key)}\n    ${t.what}`,
       )
       .join('\n');
 
@@ -406,7 +430,12 @@ export class AutoTuner {
       {
         label: `tuner:${bot}`,
         system: SYSTEM,
-        maxTokens: 2000,
+        // Generous on purpose. Thinking is adaptive and this is a genuinely
+        // hard call over a hundred-plus parameters, so a tight budget gets
+        // spent reasoning before a single character of JSON is written and the
+        // whole round returns empty. The tuner runs a few times an hour at
+        // most, so the ceiling costs nothing when it is not used.
+        maxTokens: 16_000,
         jsonSchema: JSON_SCHEMA,
         userContent:
           `${renderEvidence(evidence)}\n\n` +
@@ -524,5 +553,5 @@ Rules:
 - Risk parameters are in scope but are not ordinary knobs. Raising position size, concurrent positions, or a loss limit increases what a mistake costs, and in live mode that is real money. Move one only when the evidence is specifically about exposure — most often the fee analysis showing positive gross P&L eaten by fixed costs — and prefer the smallest step that tests the idea. Lowering exposure needs no special justification.
 - The fee constants and the SOL price fallback are not in your list on purpose. They describe what the world charges, not what you have chosen; changing them would not make trading cheaper, only make the breakeven you are given wrong.
 - Values outside the stated range, or moves larger than the stated step cap, are clamped or dropped. Propose realistic values rather than relying on the clamp.
-- Some parameters only take effect in a particular mode — the scalp settings when EXIT_MODE is scalp, the momentum settings when ENTRY_MODE is fast, the ladder settings when EXIT_MODE is ladder. Changing one that is not in force does nothing and wastes a measurement window. Check the current EXIT_MODE and ENTRY_MODE values before proposing.
+- Parameters marked (INERT) do nothing in the current mode. Changing one wastes a whole measurement window on a change that cannot have an effect. They are listed because switching the mode itself is a valid proposal — but if you want a mode's settings to matter, change the mode first and tune it in a later round.
 - If you believe something you cannot reach is the problem, say so in notes — a human reads them.`;

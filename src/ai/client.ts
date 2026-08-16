@@ -135,7 +135,14 @@ export class ClaudeAnalyst {
         .join('');
 
       if (!text.trim()) {
-        return { ok: false, error: 'empty response', usage, latencyMs: Date.now() - started };
+        // Almost always the output budget being spent on thinking before any
+        // text is written — which presented as a bare "empty response" and sent
+        // the reader looking for a network fault. Say which it is.
+        const why =
+          response.stop_reason === 'max_tokens'
+            ? `ran out of output budget after ${usage.output} tokens — raise maxTokens for this call`
+            : `empty response (stop_reason: ${response.stop_reason ?? 'none'})`;
+        return { ok: false, error: why, usage, latencyMs: Date.now() - started };
       }
 
       let parsed: unknown;

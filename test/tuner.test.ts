@@ -276,6 +276,52 @@ describe('what the tuner may touch', () => {
   });
 });
 
+describe('the call budget', () => {
+  it('asks for enough output tokens to actually answer', async () => {
+    // With adaptive thinking and a catalogue of a hundred-plus parameters, a
+    // tight budget is spent reasoning before a single character of JSON is
+    // written — and the round comes back "empty response", which reads like a
+    // network fault rather than a budget one.
+    let asked: { maxTokens?: number } | null = null;
+    const t = new AutoTuner({ cfg, settings, stores: new Map([['screener', store]]), dataDir: dir });
+    (t as unknown as { claude: { ask: unknown } }).claude = {
+      ask: async (opts: { maxTokens?: number }) => {
+        asked = opts;
+        return { ok: false, error: 'stubbed', usage: {}, latencyMs: 0 };
+      },
+      usage: {},
+    };
+
+    fill(12);
+    await t.tick();
+    expect(asked).not.toBeNull();
+    expect(asked!.maxTokens ?? 0).toBeGreaterThanOrEqual(8000);
+  });
+
+  it('marks parameters that do nothing in the current mode', async () => {
+    // Spending a measurement window on a scalp setting while the ratchet is
+    // running is a wasted round, and there are too many parameters for the
+    // distinction to be obvious from the names.
+    let sent = '';
+    const t = new AutoTuner({ cfg, settings, stores: new Map([['screener', store]]), dataDir: dir });
+    (t as unknown as { claude: { ask: unknown } }).claude = {
+      ask: async (opts: { userContent: string }) => {
+        sent = opts.userContent;
+        return { ok: false, error: 'stubbed', usage: {}, latencyMs: 0 };
+      },
+      usage: {},
+    };
+
+    fill(12);
+    await t.tick();
+    // Default EXIT_MODE is ratchet, so the scalp and ladder knobs are inert.
+    expect(sent).toMatch(/SCALP_TARGET_NET_PCT[^\n]*INERT/);
+    expect(sent).toMatch(/STOP_LOSS_PCT[^\n]*INERT/);
+    // And the ones that are live are not marked.
+    expect(sent).not.toMatch(/RECOVER_AT_GAIN_PCT[^\n]*INERT/);
+  });
+});
+
 describe('the structured-output schema', () => {
   // A schema the API rejects turns every tuning call into a 400 and the feature
   // silently never runs — which is exactly what happened. These pin the two
