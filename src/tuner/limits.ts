@@ -418,6 +418,24 @@ export function vetProposal(
     value = spec.max;
   }
 
+  // A value already OUTSIDE the allowed range is a special case. The step cap
+  // exists to stop drift within the range; applied to a setting parked far
+  // outside it, it becomes a trap — from 100 against a ceiling of 20, a 30%
+  // step reaches 70, then 49, then 34, and five rounds are spent walking back
+  // to a bound that was never in dispute. Let it go straight to the nearest
+  // bound instead: that is a return to the sanctioned range, not a drift.
+  const wasOutside =
+    (spec.min !== undefined && current < spec.min) ||
+    (spec.max !== undefined && current > spec.max);
+  if (wasOutside) {
+    return {
+      ok: true,
+      value: String(round(value)),
+      typed: round(value),
+      clamped: `${current} was outside the allowed ${spec.min}..${spec.max}; moved straight to ${round(value)}`,
+    };
+  }
+
   // Step limiting is what stops a series of individually reasonable rounds
   // from walking a parameter somewhere no single round would have proposed.
   const stepPct = maxStepPctOverride ?? spec.maxStepPct ?? 30;

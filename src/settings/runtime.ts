@@ -289,6 +289,15 @@ const CONTROL_KEYS = new Set([
  * "rendered as a form field": the dashboard shows FIELDS, but the auto-tuner
  * reaches parameters that have no field, and those still have to be writable.
  */
+/**
+ * Never rendered into a settings payload, whatever asks for it.
+ *
+ * `values()` now walks every config key rather than a curated list, so the
+ * exclusion has to live here rather than being implicit in what the list
+ * happened to contain.
+ */
+const SECRET_KEYS = new Set(['WALLET_PRIVATE_KEY', 'ANTHROPIC_API_KEY']);
+
 const KNOWN_KEYS = new Set(
   Object.keys(
     loadConfig({
@@ -363,7 +372,13 @@ export class RuntimeSettings {
   /** Current effective value of every editable field, as display strings. */
   values(): Record<string, string> {
     const out: Record<string, string> = {};
-    for (const key of [...FIELDS.map((f) => f.key), ...CONTROL_KEYS]) {
+    // EVERY known key, not just the ones with a dashboard field. The auto-tuner
+    // reads this to see what a setting currently is, and a key missing here
+    // reads back as undefined — which its vetting treats as "not a live
+    // setting" and drops. Forty-four of its parameters were silently
+    // unchangeable for exactly that reason, and the prompt showed them as "?".
+    for (const key of [...KNOWN_KEYS, ...CONTROL_KEYS]) {
+      if (SECRET_KEYS.has(key)) continue;
       const raw = (this.live as unknown as Record<string, unknown>)[key];
       // Tracked wallets round-trip through their own `Addr=Name` form; the
       // generic array join would render them as [object Object] and the next

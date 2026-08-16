@@ -261,6 +261,23 @@ describe('what the tuner may touch', () => {
     expect(vetProposal('EXIT_LADDER', '60:40', 'garbage').ok).toBe(false);
   });
 
+  it('lets a value parked outside its range return in one step', () => {
+    // The step cap stops drift WITHIN the range. Applied to a setting parked
+    // far outside it, it becomes a trap: from 100 against a ceiling of 20, a
+    // 30% step reaches 70, then 49, then 34 — five rounds walking back to a
+    // bound nobody disputed, each one burning a measurement window.
+    const r = vetProposal('DAILY_LOSS_LIMIT_SOL', '100', 5, 30);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(Number(r.value)).toBe(5);
+      expect(r.clamped).toMatch(/outside the allowed/);
+    }
+
+    // Still bounded: it lands inside the range, not wherever it was asked to.
+    const far = vetProposal('MAX_CONCURRENT_POSITIONS', '50', 999, 30);
+    expect(far.ok && Number(far.value)).toBe(20);
+  });
+
   it('can move a parameter that is currently zero', () => {
     // A percentage step off zero is zero, so without a special case a disabled
     // setting could never be switched on again.

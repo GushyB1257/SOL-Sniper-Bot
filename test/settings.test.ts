@@ -226,3 +226,26 @@ describe('the exposed field list', () => {
     expect(copyKeys).toContain('COPY_MIN_BUY_SOL');
   });
 });
+
+describe('what values() exposes', () => {
+  it('covers every settable key, not just the ones with a form field', () => {
+    // The auto-tuner reads this to see what a setting currently is. A key
+    // missing here reads back undefined, which its vetting treats as "not a
+    // live setting" and drops — 44 of its parameters were silently
+    // unchangeable for exactly that reason, showing as "?" in its prompt.
+    const settings = new RuntimeSettings(cfg, env, dir);
+    const values = settings.values();
+    for (const key of Object.keys(cfg)) {
+      if (key === 'WALLET_PRIVATE_KEY' || key === 'ANTHROPIC_API_KEY') continue;
+      expect(values[key], `${key} is invisible to anything reading values()`).toBeDefined();
+    }
+  });
+
+  it('never renders a secret', () => {
+    const settings = new RuntimeSettings(cfg, env, dir);
+    const values = settings.values();
+    expect(values.WALLET_PRIVATE_KEY).toBeUndefined();
+    expect(values.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(JSON.stringify(values)).not.toContain('sk-ant');
+  });
+});
