@@ -105,6 +105,11 @@ export interface Position {
   /** Free-form notes appended over the position's life, for the trade journal. */
   notes: string[];
 
+  /** Consecutive failed sell attempts; resets on a successful sell. */
+  exitFailures?: number;
+  /** Epoch ms before which no further sell should be attempted. */
+  nextExitAttemptAt?: number;
+
   /** Analyst's expected upside, when the AI strategy opened this position. */
   aiTargetGainPct?: number;
   /**

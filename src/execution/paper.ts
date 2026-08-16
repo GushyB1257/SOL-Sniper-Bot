@@ -164,6 +164,18 @@ export class PaperExecutor implements Executor {
     return this.balances.get(mint) ?? 0;
   }
 
+  /**
+   * Restores a holding for a position resumed from disk.
+   *
+   * Paper balances live in memory, but positions are persisted — so after a
+   * restart the store believes we hold tokens the executor has never heard of,
+   * and every sell fails with "no balance". The position record is the truth
+   * about what a paper run holds, so it seeds the executor on startup.
+   */
+  seedBalance(mint: string, qty: number): void {
+    if (qty > 0) this.balances.set(mint, qty);
+  }
+
   get simulatedWalletSol(): number {
     return this.walletSol;
   }

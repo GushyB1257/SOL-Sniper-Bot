@@ -16,6 +16,12 @@ import { pctChange } from '../util/solana.js';
 
 const log = logger('positions');
 
+/** Wait between retries after a failed sell, so failures don't spin the loop. */
+const EXIT_RETRY_COOLDOWN_MS = 30_000;
+
+/** Consecutive failed sells before a position is written off. */
+const MAX_EXIT_FAILURES = 5;
+
 /**
  * Owns the lifecycle of every open position: entry bookkeeping, the monitoring
  * tick, exit execution and the trade journal.
@@ -104,6 +110,13 @@ export class PositionManager {
       p.lastPriceAt = Date.now();
       if (price > p.peakPrice) p.peakPrice = price;
 
+      // Respect the post-failure backoff: keep pricing the position, but do
+      // not re-attempt a sell that just failed.
+      if (p.nextExitAttemptAt !== undefined && Date.now() < p.nextExitAttemptAt) {
+        this.store.savePosition(p);
+        return;
+      }
+
       const order = decideExit({ position: p, price, cfg: this.cfg, now: Date.now() });
       if (!order) {
         this.store.savePosition(p);
@@ -124,6 +137,22 @@ export class PositionManager {
       p.notes.push(`sell failed (${order.reason}): ${result.error ?? 'unknown'}`);
       log.warn(`Sell failed for ${label}: ${result.error ?? 'unknown'}`);
 
+      // Reconcile before deciding what the failure means. If the executor says
+      // we hold nothing, our accounting is stale — the tokens are gone (sold
+      // elsewhere, or a paper run restarted with an in-memory balance we no
+      // longer have). Retrying can never succeed, so book it closed instead of
+      // spinning on it every tick.
+      const held = await this.executor.balance(p.mint);
+      if (held !== null && held <= 0) {
+        log.warn(`${label}: executor holds 0 tokens — closing stale position`);
+        p.remainingQty = 0;
+        p.status = 'closed';
+        p.closedAt = Date.now();
+        p.closeReason = `${order.reason}: position no longer held (${result.error ?? 'unknown'})`;
+        this.finalise(p, false);
+        return;
+      }
+
       // A failed sell on a stop loss is the dangerous case — it usually means
       // the token cannot be sold at all. Mark it so we stop counting it as
       // recoverable value and stop trusting this deployer.
@@ -132,11 +161,33 @@ export class PositionManager {
         p.closedAt = Date.now();
         p.closeReason = `${order.reason}: sell failed — ${result.error ?? 'unknown'}`;
         this.finalise(p, true);
-      } else {
-        this.store.savePosition(p);
+        return;
       }
+
+      // Otherwise back off and cap the attempts. Without this a persistently
+      // failing sell retries at the tick rate forever, floods the log, and
+      // holds a position slot that the risk manager will never release.
+      p.exitFailures = (p.exitFailures ?? 0) + 1;
+      p.nextExitAttemptAt = Date.now() + EXIT_RETRY_COOLDOWN_MS;
+
+      if (p.exitFailures >= MAX_EXIT_FAILURES) {
+        log.error(
+          `${label}: ${p.exitFailures} consecutive failed sells — giving up and marking failed`,
+        );
+        p.status = 'failed';
+        p.closedAt = Date.now();
+        p.closeReason = `${order.reason}: ${p.exitFailures} failed sells — ${result.error ?? 'unknown'}`;
+        this.finalise(p, true);
+        return;
+      }
+
+      this.store.savePosition(p);
       return;
     }
+
+    // A sell that worked clears the backoff.
+    p.exitFailures = 0;
+    p.nextExitAttemptAt = undefined;
 
     p.remainingQty = Math.max(0, p.remainingQty - result.soldQty);
     p.realizedSol += result.receivedSol;

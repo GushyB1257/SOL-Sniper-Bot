@@ -203,3 +203,83 @@ describe('paper mode tracks a real rug to the floor', () => {
     expect(journal[0]!.pnlPct).toBeGreaterThan(-95);
   });
 });
+
+describe('resumed paper position (the restart bug)', () => {
+  it('does not loop forever when the executor has no record of the holding', async () => {
+    const store = new Store(dir);
+    const risk = new RiskManager(cfg, store, join(dir, 'nostop'));
+    const manager = new PositionManager(cfg, store, exec, risk);
+
+    // Simulate a restart: the store believes we hold tokens, but the paper
+    // executor's in-memory balance map is empty.
+    const fill = await exec.buy(CANDIDATE, 0.05);
+    const p = manager.open(CANDIDATE, fill, 90);
+    (exec as unknown as { balances: Map<string, number> }).balances.clear();
+
+    // Backdate past the time stop so an exit is attempted.
+    p.openedAt = Date.now() - (cfg.TIME_STOP_SECONDS + 10) * 1000;
+    store.savePosition(p);
+
+    await manager.tick();
+
+    const after = store.getPosition(p.id)!;
+    expect(after.status).toBe('closed');
+    expect(after.closeReason).toMatch(/no longer held/);
+
+    // And it must stay closed rather than being retried next tick.
+    await manager.tick();
+    expect(store.openPositions()).toHaveLength(0);
+  });
+
+  it('seedBalance makes a resumed position sellable again', async () => {
+    const store = new Store(dir);
+    const risk = new RiskManager(cfg, store, join(dir, 'nostop'));
+    const manager = new PositionManager(cfg, store, exec, risk);
+
+    const fill = await exec.buy(CANDIDATE, 0.05);
+    const p = manager.open(CANDIDATE, fill, 90);
+    (exec as unknown as { balances: Map<string, number> }).balances.clear();
+
+    // What index.ts does for every resumed position on startup.
+    exec.seedBalance(p.mint, p.remainingQty);
+
+    p.openedAt = Date.now() - (cfg.TIME_STOP_SECONDS + 10) * 1000;
+    store.savePosition(p);
+
+    await manager.tick();
+
+    const after = store.getPosition(p.id)!;
+    expect(after.status).toBe('closed');
+    expect(after.closeReason).toMatch(/time_stop/);
+    // It actually sold, rather than being written off.
+    expect(after.realizedSol).toBeGreaterThan(0);
+  });
+
+  it('backs off instead of retrying a failing sell every tick', async () => {
+    const store = new Store(dir);
+    const risk = new RiskManager(cfg, store, join(dir, 'nostop'));
+    const manager = new PositionManager(cfg, store, exec, risk);
+
+    const fill = await exec.buy(CANDIDATE, 0.05);
+    const p = manager.open(CANDIDATE, fill, 90);
+
+    // Executor reports a balance but every sell fails — the shape of a
+    // transient RPC problem rather than a stale position.
+    let sells = 0;
+    exec.sell = async () => {
+      sells += 1;
+      return { ok: false, soldQty: 0, receivedSol: 0, price: 0, error: 'rpc timeout' };
+    };
+    exec.balance = async () => p.remainingQty;
+
+    p.openedAt = Date.now() - (cfg.TIME_STOP_SECONDS + 10) * 1000;
+    store.savePosition(p);
+
+    for (let i = 0; i < 5; i++) await manager.tick();
+
+    // One attempt, then the cooldown gates the rest.
+    expect(sells).toBe(1);
+    expect(store.getPosition(p.id)!.exitFailures).toBe(1);
+    expect(store.getPosition(p.id)!.status).toBe('open');
+  });
+});

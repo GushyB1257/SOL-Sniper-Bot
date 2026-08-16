@@ -1,6 +1,6 @@
 import type { Config } from '../config.js';
 import type { Store } from '../state/store.js';
-import type { Executor, LadderTier, TokenCandidate } from '../types.js';
+import type { Executor, LadderTier, Position, TokenCandidate } from '../types.js';
 import type { RiskManager } from '../risk/risk-manager.js';
 import type { PositionManager } from '../strategy/position-manager.js';
 import { Watchlist, type ObservedTrade } from '../watchlist/watchlist.js';
@@ -91,6 +91,28 @@ export class AiOrchestrator {
 
   recordTrade(trade: ObservedTrade): void {
     this.watchlist.recordTrade(trade);
+  }
+
+  /**
+   * Re-tracks a position resumed from disk.
+   *
+   * The watchlist is in-memory, so after a restart the reviewer sees no flow
+   * for positions we are still holding and — reasonably, given no evidence —
+   * exits them. Putting them back on the watchlist restores the data instead,
+   * and marking them analysed keeps them out of the entry funnel.
+   */
+  adoptPosition(p: Position): void {
+    if (this.watchlist.has(p.mint)) return;
+    this.watchlist.add({
+      mint: p.mint,
+      creator: p.creator,
+      symbol: p.symbol,
+      name: p.name,
+      pool: p.pool,
+      detectedAt: p.openedAt,
+      source: 'resumed',
+    });
+    this.watchlist.markAnalysed(p.mint);
   }
 
   /**
@@ -258,6 +280,15 @@ export class AiOrchestrator {
       const gainPct = pctChange(p.entryPrice, p.lastPrice);
 
       try {
+        // Without live flow there is nothing to judge the thesis against. The
+        // model will reasonably exit on "no evidence", which after a restart
+        // would liquidate every resumed position for no market reason. Skip the
+        // review instead and wait for the feed to repopulate.
+        if (!metrics || metrics.buyCount + metrics.sellCount === 0) {
+          log.debug(`Skipping review of ${p.symbol ?? p.mint}: no flow data yet`);
+          continue;
+        }
+
         const review = await this.analyst.reviewPosition(p, token, metrics, gainPct);
         if (!review.ok || !review.value) continue;
 

@@ -123,6 +123,17 @@ class SniperBot {
       log.warn(`Resuming ${resumed.length} open position(s) from previous run`);
       for (const p of resumed) {
         log.warn(`  ${p.symbol ?? p.mint} — ${p.remainingQty.toFixed(0)} tokens, ${p.mint}`);
+
+        // Paper balances are in-memory, so a resumed position would otherwise
+        // be unsellable: the store says we hold tokens, the executor says we
+        // hold none, and every exit fails. The position record is the truth.
+        if (this.executor instanceof PaperExecutor) {
+          this.executor.seedBalance(p.mint, p.remainingQty);
+        }
+
+        // Put resumed positions back on the watchlist so the reviewer has live
+        // flow data again instead of judging them blind.
+        this.ai?.adoptPosition(p);
       }
     }
 
