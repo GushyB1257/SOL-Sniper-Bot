@@ -113,6 +113,14 @@ export class Store {
     return Object.values(this.data.positions).some((p) => p.mint === mint);
   }
 
+  allPositions(): Position[] {
+    return Object.values(this.data.positions);
+  }
+
+  creatorCount(): number {
+    return Object.keys(this.data.creators).length;
+  }
+
   // --- creator reputation -------------------------------------------------
 
   getCreator(address: string): CreatorRecord | undefined {

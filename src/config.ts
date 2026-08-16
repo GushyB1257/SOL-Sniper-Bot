@@ -120,6 +120,13 @@ const schema = z.object({
   EXECUTOR: z.enum(['paper', 'onchain', 'axiom']).default('paper'),
   PUMPPORTAL_TRADE_URL: z.string().url().default('https://pumpportal.fun/api/trade-local'),
 
+  DASHBOARD_ENABLED: bool.default('true'),
+  /** 0 asks the OS for an ephemeral port. */
+  DASHBOARD_PORT: num(0, 65535).default(4321),
+  // Loopback only by default. This UI can liquidate positions; exposing it on
+  // 0.0.0.0 hands that to anyone who can reach the port.
+  DASHBOARD_HOST: z.string().default('127.0.0.1'),
+
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   DATA_DIR: z.string().default('./data'),
 });

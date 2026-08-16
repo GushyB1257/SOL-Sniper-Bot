@@ -77,6 +77,9 @@ documented seam: if Axiom ever ships a real API, implement five methods and set
  discovery ──► safety engine ──► risk manager ──► executor ──► position manager
  new launch    11 checks,         limits and       buy/sell      ladder, stops,
  in <1s        parallel, scored   breakers         on-chain      trade journal
+                                       │                              │
+                                       └────────► dashboard ◄─────────┘
+                                          localhost:4321, live P&L
 ```
 
 ### 1. Discovery (`src/discovery/`)
@@ -179,6 +182,56 @@ Fills are settled against **actual balance deltas**, not the quote — a sell th
 lands but does not move the balance is reported as a probable honeypot rather
 than booked as a success.
 
+### 6. Dashboard (`src/server/`)
+
+A local web UI at **http://127.0.0.1:4321**, started automatically with the bot.
+Live over a websocket, ~1s refresh, with polling fallback if the socket drops.
+
+- **Net P&L** hero figure — realised plus open, marked to market — with return
+  on capital deployed, best/worst trade and average winner/loser.
+- **Equity curve** — cumulative realised P&L per closed trade, with a hover
+  crosshair and tooltip. Zero baseline drawn, since the value crosses it.
+- **KPI row** — win rate, profit factor, today's P&L against the daily limit,
+  open positions, wallet balance, launches seen/screened/rejected.
+- **Open positions** — age, cost, entry → current price, gain, P&L, how much of
+  the position is left, **ladder progress as pips** (filled rungs, plus an amber
+  pip once the moonbag is armed), distance to the nearest active stop, and the
+  safety score it was bought on. Click a mint to copy it.
+- **Risk meters** — daily loss, hourly spend, position count and loss streak,
+  each against its configured limit, going amber at 75% and red at the cap.
+- **Trades / Config / Activity** tabs — full journal, every setting the bot is
+  running with, and a live log including the reason each launch was rejected.
+- **Exits by reason** — which exit rule is actually closing your positions and
+  what each one earned. The single most useful chart for tuning the ladder.
+- **Kill switch** and per-position **force sell**, both behind a confirmation.
+
+Colour is not the only channel: every P&L figure carries an explicit `+`/`−`
+sign, so the numbers read correctly for colourblind viewers. A **CVD** button
+additionally swaps profit-green for a blue that clears colourblind separation
+against the loss red (validated: ΔE 23.8 protan / 25.7 deutan, versus 4.1 for
+green-red). Light and dark themes both ship, following your OS by default.
+
+#### Dashboard security
+
+The UI can liquidate positions, so it is locked down accordingly:
+
+- Binds to **loopback only**. Leave `DASHBOARD_HOST=127.0.0.1`; if you need it
+  from another machine, forward it over SSH (`ssh -L 4321:127.0.0.1:4321 …`)
+  rather than binding publicly.
+- Writes (kill switch, force sell) require a **per-run token** generated at
+  startup and embedded in the served page, so another site open in your browser
+  cannot forge one.
+- `Host` is checked against loopback names to defeat **DNS rebinding**, and
+  `Origin` is checked to defeat **CSRF**.
+- **Secrets never reach the browser**: the private key is excluded by name and
+  RPC URLs are redacted, since they routinely carry a paid API key in the query
+  string or subdomain.
+- A strict CSP denies every external origin; the page loads no fonts, scripts,
+  or images from the network.
+
+Set `DASHBOARD_ENABLED=false` to turn it off. If the port is busy the bot logs
+the error and keeps trading — the dashboard never blocks execution.
+
 ---
 
 ## Setup
@@ -197,7 +250,8 @@ Every setting is documented inline in `.env.example`.
 ```bash
 npm run doctor     # validates config, RPC latency, ladder arithmetic
 npm run sniper     # runs the strategy against live launches, zero transactions
-npm run report     # trade journal: win rate, profit factor, exits by reason
+                   # → dashboard at http://127.0.0.1:4321
+npm run report     # same numbers in the terminal, if you prefer
 ```
 
 Paper mode simulates fills against the same constant-product curve pump.fun
@@ -262,7 +316,7 @@ ladders leaving no moonbag, or a trailing stop tighter than the hard stop.
 ## Development
 
 ```bash
-npm test           # 53 tests
+npm test           # 80 tests
 npm run typecheck
 npm run build
 ```

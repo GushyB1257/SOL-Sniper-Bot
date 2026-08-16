@@ -9,6 +9,7 @@ import { RpcDiscovery } from './discovery/rpc.js';
 import { PaperExecutor } from './execution/paper.js';
 import { OnchainExecutor } from './execution/onchain.js';
 import { AxiomExecutor } from './execution/axiom.js';
+import { Dashboard } from './server/dashboard.js';
 import type { Discovery, Executor, TokenCandidate } from './types.js';
 import { connection, lamportsToSol, loadKeypair } from './util/solana.js';
 import { errMessage } from './util/async.js';
@@ -18,6 +19,9 @@ const log = logger('main');
 /** How often open positions are re-priced and re-evaluated for exits. */
 const TICK_INTERVAL_MS = 1500;
 
+/** Sentinel file that halts new entries. Shared by the CLI and the dashboard. */
+const KILL_SWITCH_PATH = 'STOP';
+
 class SniperBot {
   private readonly store: Store;
   private readonly safety: SafetyEngine;
@@ -25,6 +29,8 @@ class SniperBot {
   private readonly positions: PositionManager;
   private readonly discovery: Discovery;
   private readonly executor: Executor;
+  private readonly dashboard: Dashboard | null;
+  private readonly startedAt = Date.now();
 
   private tickTimer: NodeJS.Timeout | null = null;
   private shuttingDown = false;
@@ -37,13 +43,26 @@ class SniperBot {
     const conn = connection(cfg);
     this.store = new Store(cfg.DATA_DIR);
     this.safety = new SafetyEngine(cfg, conn, this.store);
-    this.risk = new RiskManager(cfg, this.store);
+    this.risk = new RiskManager(cfg, this.store, KILL_SWITCH_PATH);
     this.executor = this.buildExecutor(cfg);
     this.positions = new PositionManager(cfg, this.store, this.executor, this.risk);
     this.discovery =
       cfg.DISCOVERY_SOURCE === 'rpc'
         ? new RpcDiscovery(conn)
         : new PumpPortalDiscovery(cfg.PUMPPORTAL_WS_URL);
+
+    this.dashboard = cfg.DASHBOARD_ENABLED
+      ? new Dashboard({
+          cfg,
+          store: this.store,
+          positions: this.positions,
+          stats: () => ({ ...this.stats }),
+          walletBalance: () => this.walletBalance(),
+          discoveryName: this.discovery.name,
+          startedAt: this.startedAt,
+          killSwitchPath: KILL_SWITCH_PATH,
+        })
+      : null;
   }
 
   private buildExecutor(cfg: Config): Executor {
@@ -70,6 +89,15 @@ class SniperBot {
       }
     }
 
+    if (this.dashboard) {
+      try {
+        await this.dashboard.start();
+      } catch (err) {
+        // A busy port must not stop the bot from trading.
+        log.error(`Dashboard failed to start: ${errMessage(err)}`);
+      }
+    }
+
     await this.discovery.start((c) => this.onCandidate(c));
 
     this.tickTimer = setInterval(() => {
@@ -81,6 +109,7 @@ class SniperBot {
 
     this.installSignalHandlers();
     log.info(`Watching for launches via ${this.discovery.name}. Ctrl-C to stop.`);
+    if (this.dashboard) log.info(`Dashboard: ${this.dashboard.url}`);
   }
 
   private banner(): void {
@@ -229,6 +258,7 @@ class SniperBot {
 
     if (this.tickTimer) clearInterval(this.tickTimer);
     await this.discovery.stop();
+    await this.dashboard?.stop();
 
     // Deliberately NOT auto-selling on shutdown: dumping every position into
     // a thin book because the process is restarting is usually worse than
