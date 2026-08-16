@@ -77,6 +77,7 @@ class SniperBot {
             walletBalance: () => this.walletBalance(),
             trackTrades: (mints) => this.feed?.trackTrades(mints),
             untrackTrades: (mints) => this.feed?.untrackTrades(mints),
+            connection: conn,
           })
         : null;
 
@@ -170,6 +171,8 @@ class SniperBot {
       }, AI_TICK_INTERVAL_MS);
     }
 
+    this.ai?.start();
+
     this.installSignalHandlers();
     log.info(`Watching for launches via ${this.discovery.name}. Ctrl-C to stop.`);
     if (this.cfg.ENTRY_MODE === 'screener') {
@@ -180,6 +183,14 @@ class SniperBot {
         'Only launches from NOW ON are tracked. A coin already trading when the ' +
           'bot started is invisible to it — give it a few minutes before ' +
           'comparing against a screener you already had open.',
+      );
+      log.info(
+        `Market cap and volume come from ${
+          this.cfg.SCREEN_DATA_SOURCE === 'feed'
+            ? 'the PumpPortal trade feed'
+            : 'your RPC, read straight off each bonding curve'
+        }. SOL/USD $${this.ai?.solUsd.toFixed(2)} — check that against your screener; ` +
+          'if it disagrees, so will every USD threshold.',
       );
     }
     if (this.dashboard) log.info(`Dashboard: ${this.dashboard.url}`);
@@ -412,6 +423,7 @@ class SniperBot {
 
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.aiTimer) clearInterval(this.aiTimer);
+    this.ai?.stop();
     await this.discovery.stop();
     await this.dashboard?.stop();
 

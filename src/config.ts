@@ -184,6 +184,27 @@ const schema = z.object({
    * reason as the cap ceiling: it is a tightener, not part of the filter.
    */
   SCREEN_MIN_BUYERS: num(0, 10_000).default(0),
+  /**
+   * Where the screener gets market cap and volume.
+   *
+   * curve : read each watched token's bonding curve over your own RPC. Exact
+   *         market cap, and volume that is correct on the FIRST read of a
+   *         token — the trade feed can only ever tell you about trades that
+   *         happened after you subscribed.
+   * feed  : PumpPortal's per-token trade stream only. Lower RPC load, but the
+   *         whole strategy then depends on a free shared websocket honouring a
+   *         subscription for every launch.
+   * both  : the default. Whichever source saw more volume wins.
+   */
+  SCREEN_DATA_SOURCE: z.enum(['curve', 'feed', 'both']).default('both'),
+  /** How often watched curves are re-read. */
+  SCREEN_POLL_INTERVAL_MS: num(250, 60_000).default(1500),
+  /**
+   * Ceiling on tokens read per poll, youngest first. Each RPC call covers 100,
+   * so 300 tokens every 1.5s is ~2 requests a second — comfortable on a free
+   * Helius tier. Raise it if your node can take it.
+   */
+  SCREEN_POLL_MAX_TOKENS: num(0, 5000).default(300),
   /** Used to convert SOL to USD when the live price feed is unreachable. */
   SOL_USD_FALLBACK: num(1, 100_000).default(190),
   /**

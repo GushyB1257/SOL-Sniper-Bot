@@ -1,6 +1,8 @@
 import type { TokenCandidate } from '../types.js';
 import type { Config } from '../config.js';
 import { UNCHECKED, type TokenSocials } from './metadata.js';
+import type { BondingCurveState } from '../execution/bonding-curve.js';
+import { marketCapFromState } from './curve-poller.js';
 
 /** A single trade observed on a watched token. */
 export interface ObservedTrade {
@@ -60,6 +62,24 @@ export interface TrackedToken {
   /** True while a socials fetch is in flight, so only one is ever issued. */
   socialsPending: boolean;
 
+  /** True once the bonding curve has been read at least once. */
+  curveSeen: boolean;
+  /** realSolReserves at the last poll, in lamports. */
+  lastRealSolLamports: bigint;
+  /**
+   * Volume estimate from curve movement, in SOL.
+   *
+   * Seeded with the SOL already deposited when we first read the curve, then
+   * grown by every absolute change after that. It errs LOW — a buy and a sell
+   * that cancel out are invisible — but unlike the trade feed it is correct on
+   * the very first read of a token whose trades we never saw.
+   */
+  curveVolumeSol: number;
+  /** True once the curve has graduated to an AMM. */
+  graduated: boolean;
+  /** True when the token has no readable pump.fun curve. */
+  curveMissing: boolean;
+
   /** True once the deployer has been observed selling. */
   deployerSold: boolean;
   deployerSoldSol: number;
@@ -98,6 +118,19 @@ export interface TractionMetrics {
   marketCapSol: number;
   /** All traded volume since launch, both sides, including the creation buy. */
   volumeSol: number;
+}
+
+/**
+ * Best available volume estimate, in SOL.
+ *
+ * Two independent estimators, neither complete on its own: the trade feed sees
+ * every trade but only from the moment we subscribed, and the curve sees the
+ * whole history but only its net effect. Whichever saw more is the one to
+ * believe — they are not additive, and summing them would double count.
+ */
+export function volumeOf(t: TrackedToken): number {
+  const fromFeed = t.seedVolumeSol + t.buyVolumeSol + t.sellVolumeSol;
+  return Math.max(fromFeed, t.curveVolumeSol);
 }
 
 const GRADUATION_VSOL = 85;
@@ -188,6 +221,11 @@ export class Watchlist {
       peakMarketCapSol: candidate.marketCapSol ?? marketCapFromCurve(vSol, curveK),
       socials: UNCHECKED,
       socialsPending: false,
+      curveSeen: false,
+      lastRealSolLamports: 0n,
+      curveVolumeSol: 0,
+      graduated: false,
+      curveMissing: false,
       deployerSold: false,
       deployerSoldSol: 0,
       analysed: false,
@@ -287,6 +325,73 @@ export class Watchlist {
     }
   }
 
+  /**
+   * Mints worth reading the chain for: still inside the entry window, not
+   * already traded, not graduated, and not known to lack a curve. Youngest
+   * first, because those are the ones whose filter crossing is still ahead of
+   * them and the RPC budget is finite.
+   */
+  pollable(limit: number, now = Date.now()): string[] {
+    const out: Array<{ mint: string; firstSeen: number }> = [];
+    for (const [mint, t] of this.tokens) {
+      if (t.analysed || t.graduated || t.curveMissing) continue;
+      if ((now - t.firstSeen) / 1000 > this.cfg.SCREEN_MAX_AGE_SECONDS) continue;
+      out.push({ mint, firstSeen: t.firstSeen });
+    }
+    out.sort((a, b) => b.firstSeen - a.firstSeen);
+    return out.slice(0, limit).map((o) => o.mint);
+  }
+
+  /**
+   * Folds a bonding-curve read into a token's state.
+   *
+   * Returns true when something the screener cares about changed, so the caller
+   * knows whether re-running the filter is worth it.
+   */
+  recordCurve(mint: string, state: BondingCurveState): boolean {
+    const t = this.tokens.get(mint);
+    if (!t) return false;
+
+    if (state.complete) {
+      t.graduated = true;
+      return false;
+    }
+
+    const realSol = state.realSolReserves;
+    if (!t.curveSeen) {
+      // First sight: the SOL already in the curve is volume that happened
+      // before we were looking. Counting it is the entire reason this path
+      // works on tokens whose trades we never received.
+      t.curveVolumeSol = Number(realSol) / 1e9;
+      t.curveSeen = true;
+    } else if (realSol !== t.lastRealSolLamports) {
+      const delta = realSol > t.lastRealSolLamports
+        ? realSol - t.lastRealSolLamports
+        : t.lastRealSolLamports - realSol;
+      t.curveVolumeSol += Number(delta) / 1e9;
+    }
+    t.lastRealSolLamports = realSol;
+
+    const vSol = Number(state.virtualSolReserves) / 1e9;
+    if (vSol > 0) {
+      t.latestVSol = vSol;
+      if (vSol > t.peakVSol) t.peakVSol = vSol;
+    }
+
+    const cap = marketCapFromState(state);
+    if (cap > 0) {
+      t.latestMarketCapSol = cap;
+      if (cap > t.peakMarketCapSol) t.peakMarketCapSol = cap;
+    }
+    return true;
+  }
+
+  /** Records that a token has no readable pump.fun curve, so stop polling it. */
+  markCurveMissing(mint: string): void {
+    const t = this.tokens.get(mint);
+    if (t) t.curveMissing = true;
+  }
+
   metrics(t: TrackedToken, now = Date.now()): TractionMetrics {
     const ageSeconds = (now - t.firstSeen) / 1000;
     const firstVSol = t.samples[0]?.vSol ?? 30;
@@ -322,7 +427,7 @@ export class Watchlist {
       deployerSoldSol: t.deployerSoldSol,
       avgBuySizeSol: t.buyCount > 0 ? t.buyVolumeSol / t.buyCount : 0,
       marketCapSol: t.latestMarketCapSol,
-      volumeSol: t.seedVolumeSol + t.buyVolumeSol + t.sellVolumeSol,
+      volumeSol: volumeOf(t),
     };
   }
 

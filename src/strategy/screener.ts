@@ -1,6 +1,6 @@
 import type { Config } from '../config.js';
 import type { Pool } from '../types.js';
-import type { TrackedToken } from '../watchlist/watchlist.js';
+import { volumeOf, type TrackedToken } from '../watchlist/watchlist.js';
 
 /**
  * The screener entry.
@@ -57,7 +57,7 @@ export function screenSnapshot(
   solUsd: number,
   now = Date.now(),
 ): ScreenSnapshot {
-  const volumeSol = t.seedVolumeSol + t.buyVolumeSol + t.sellVolumeSol;
+  const volumeSol = volumeOf(t);
   const marketCapSol = t.latestMarketCapSol;
   return {
     pool: t.candidate.pool,

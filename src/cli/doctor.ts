@@ -13,6 +13,8 @@ import {
   targetGrossPct,
 } from '../strategy/costs.js';
 import { SolPrice } from '../util/solprice.js';
+import { PublicKey } from '@solana/web3.js';
+import { bondingCurvePda } from '../execution/bonding-curve.js';
 
 const ok = (m: string) => console.log(`  \x1b[32m✓\x1b[0m ${m}`);
 const bad = (m: string) => console.log(`  \x1b[31m✗\x1b[0m ${m}`);
@@ -95,7 +97,14 @@ async function main(): Promise<void> {
       const sol = new SolPrice(cfg.SOL_USD_FALLBACK);
       await sol.refresh();
       if (sol.isLive) {
-        ok(`SOL/USD live at $${sol.usd.toFixed(2)} — the USD thresholds convert correctly`);
+        // Printed in both directions so it can be checked against a screener:
+        // if the two disagree on the SOL price, every USD threshold is off.
+        const minCapSol = cfg.SCREEN_MIN_MCAP_USD / sol.usd;
+        ok(
+          `SOL/USD live at $${sol.usd.toFixed(2)} — $${cfg.SCREEN_MIN_MCAP_USD.toLocaleString()} ` +
+            `market cap means ${minCapSol.toFixed(1)} SOL. Sanity-check that against ` +
+            'the screener you are copying.',
+        );
       } else {
         warn(
           `SOL/USD feed unreachable; falling back to SOL_USD_FALLBACK=$${cfg.SOL_USD_FALLBACK}. ` +
@@ -107,8 +116,42 @@ async function main(): Promise<void> {
     }
 
     if (cfg.DISCOVERY_SOURCE !== 'pumpportal') {
-      bad('the screener needs the pumpportal trade feed for volume — set DISCOVERY_SOURCE=pumpportal');
+      bad('the screener discovers launches via pumpportal — set DISCOVERY_SOURCE=pumpportal');
       fatal++;
+    }
+
+    // The chain read is the screener's primary data source, so a node that
+    // cannot serve getMultipleAccounts means it will watch tokens and screen
+    // none of them.
+    if (cfg.SCREEN_DATA_SOURCE !== 'feed' && cfg.SCREEN_POLL_MAX_TOKENS > 0) {
+      try {
+        const probe = bondingCurvePda(new PublicKey('So11111111111111111111111111111111111111112'));
+        const started = Date.now();
+        await conn.getMultipleAccountsInfo([probe], 'processed');
+        const ms = Date.now() - started;
+        ok(`RPC serves batched account reads (${ms}ms) — the screener reads curves directly`);
+
+        const perSecond =
+          Math.ceil(cfg.SCREEN_POLL_MAX_TOKENS / 100) / (cfg.SCREEN_POLL_INTERVAL_MS / 1000);
+        ok(
+          `curve polling costs about ${perSecond.toFixed(1)} RPC requests/second ` +
+            `(${cfg.SCREEN_POLL_MAX_TOKENS} tokens every ${cfg.SCREEN_POLL_INTERVAL_MS}ms)`,
+        );
+        if (perSecond > 8) {
+          warn(
+            `${perSecond.toFixed(1)} req/s will hit a free RPC tier. Raise ` +
+              'SCREEN_POLL_INTERVAL_MS or lower SCREEN_POLL_MAX_TOKENS.',
+          );
+        }
+      } catch (err) {
+        bad(`RPC cannot serve getMultipleAccounts: ${errMessage(err)}`);
+        fatal++;
+      }
+    } else {
+      warn(
+        'SCREEN_DATA_SOURCE=feed relies entirely on PumpPortal trade subscriptions. ' +
+          'If they stop delivering, the screener sees nothing. Prefer "both".',
+      );
     }
     if (cfg.SCREEN_MIN_SOCIALS > 0 && cfg.SCREEN_MAX_AGE_SECONDS < 15) {
       warn(

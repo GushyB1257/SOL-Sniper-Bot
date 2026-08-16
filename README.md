@@ -132,6 +132,20 @@ that shape rather than around predicting which is which. **Be in at the
 crossing; be out before the crash.** Nothing here forecasts anything — it is a
 stopwatch on a condition.
 
+**Where the numbers come from.** Market cap and volume are read straight off
+each token's **bonding curve over your own RPC**, not from a third-party feed.
+That matters for one specific reason: a trade stream can only tell you about
+trades that happened after you subscribed, so a token you meet mid-move reports
+zero volume forever. The curve carries its whole history — `realSolReserves` is
+the SOL deposited since launch — so the first read of a token is already correct.
+One `getMultipleAccounts` covers 100 tokens, which makes watching a few hundred
+young launches about two requests a second.
+
+PumpPortal's trade feed still runs alongside it and contributes buyer counts and
+deployer-sold detection; whichever source saw more volume wins. Set
+`SCREEN_DATA_SOURCE=feed` to turn the chain reads off, or `curve` to drop the
+feed's contribution.
+
 **Why it is fast.** The check is a pure function over state the bot already has,
 so it runs on the *same websocket event that moved the numbers*, not on a timer
 that would sample the condition after it had passed. No model, no network call,
@@ -162,8 +176,10 @@ entries losing money:
   warning level, and the dashboard shows the last one, so the gap between
   *matched* and *bought* is never silent.
 
-The terminal also prints a `SCREEN` summary every minute — how many checks ran,
-which filters are doing the rejecting, how many matched, how many were bought.
+The terminal prints a `SCREEN` summary every minute — how many checks ran, which
+filters are doing the rejecting, how many matched, how many were bought — and a
+`CHAIN` line for how many curves were read. If either source is dead, the
+summary names it rather than saying nothing is happening.
 
 **The exit is fee-aware, not a round number.** You name a NET target and the bot
 computes the gross move that delivers it after both program fees, both router
@@ -537,7 +553,7 @@ unknown venue in `SCREEN_ALLOWED_POOLS`, a screener band nothing can pass, or
 ## Development
 
 ```bash
-npm test           # 200 tests
+npm test           # 214 tests
 npm run typecheck
 npm run build
 ```

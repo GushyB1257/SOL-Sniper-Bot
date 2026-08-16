@@ -12,6 +12,8 @@ import { pctChange } from '../util/solana.js';
 import { momentumSignal } from '../strategy/momentum.js';
 import { screenerSignal } from '../strategy/screener.js';
 import { SolPrice } from '../util/solprice.js';
+import { CurvePoller } from '../watchlist/curve-poller.js';
+import type { Connection } from '@solana/web3.js';
 
 const log = logger('ai-strategy');
 
@@ -89,6 +91,8 @@ export interface OrchestratorDeps {
   socialsFetcher?: (uri: string | undefined) => Promise<TokenSocials>;
   /** Test seam: stand in for the live SOL/USD feed. */
   solPrice?: { readonly usd: number; readonly isLive: boolean };
+  /** RPC connection for reading bonding curves. Omitted in tests. */
+  connection?: Connection;
 }
 
 /**
@@ -144,6 +148,7 @@ export class AiOrchestrator {
   private subscribed = new Set<string>();
   private subscribeTimer: NodeJS.Timeout | null = null;
   private lastSummaryAt = Date.now();
+  private readonly curvePoller: CurvePoller | null;
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.watchlist = new Watchlist(deps.cfg);
@@ -154,6 +159,28 @@ export class AiOrchestrator {
     // screen the first tokens of a run against the fallback rate, which is the
     // one case where a wrong number is invisible.
     if (deps.cfg.ENTRY_MODE === 'screener') void this.solPrice.usd;
+
+    const usesCurve =
+      deps.cfg.ENTRY_MODE === 'screener' &&
+      deps.cfg.SCREEN_DATA_SOURCE !== 'feed' &&
+      deps.cfg.SCREEN_POLL_MAX_TOKENS > 0;
+    this.curvePoller =
+      usesCurve && deps.connection
+        ? new CurvePoller(deps.connection, deps.cfg, this.watchlist, (mint) =>
+            this.screenToken(mint),
+          )
+        : null;
+  }
+
+  /** Starts the background chain reader. Safe to call more than once. */
+  start(): void {
+    this.curvePoller?.start();
+  }
+
+  stop(): void {
+    this.curvePoller?.stop();
+    if (this.subscribeTimer) clearTimeout(this.subscribeTimer);
+    this.subscribeTimer = null;
   }
 
   get usage() {
@@ -439,13 +466,32 @@ export class AiOrchestrator {
     if (now - this.lastSummaryAt < 60_000) return;
     this.lastSummaryAt = now;
 
+    const poll = this.curvePoller?.snapshot;
     const entries = Object.entries(this.stats.screenRejects).sort((a, b) => b[1] - a[1]);
     const total = entries.reduce((a, [, n]) => a + n, 0);
+
     if (total === 0) {
-      log.info(
-        `SCREEN watching ${this.watchlist.size} tokens, no trades checked yet — ` +
-          'if this persists the trade feed is not delivering',
-      );
+      // Name the actual failing component instead of a generic "nothing yet".
+      // With two independent data sources, "no checks" means a specific one of
+      // them is dead, and which one determines what you fix.
+      if (!this.curvePoller) {
+        log.warn(
+          `SCREEN watching ${this.watchlist.size} tokens but nothing screened. The ` +
+            'chain reader is off (SCREEN_DATA_SOURCE=feed), so this depends entirely ' +
+            'on PumpPortal trade subscriptions. Set SCREEN_DATA_SOURCE=both.',
+        );
+      } else if (!poll || poll.decoded === 0) {
+        log.warn(
+          `SCREEN watching ${this.watchlist.size} tokens but read 0 bonding curves ` +
+            `(${poll?.polls ?? 0} polls, ${poll?.errors ?? 0} errors). Your RPC is not ` +
+            'answering getMultipleAccounts — check RPC_HTTP_URL.',
+        );
+      } else {
+        log.info(
+          `SCREEN watching ${this.watchlist.size} tokens, ${poll.decoded} curves read, ` +
+            'no verdicts recorded yet',
+        );
+      }
       return;
     }
 
@@ -460,6 +506,13 @@ export class AiOrchestrator {
         (s.blockedByRisk > 0 ? `, ${s.blockedByRisk} blocked (${s.lastBlockReason})` : '') +
         (s.buyFailed > 0 ? `, ${s.buyFailed} buy failures` : ''),
     );
+    if (poll) {
+      log.info(
+        `CHAIN ${poll.decoded.toLocaleString()} curves read over ${poll.polls} polls` +
+          (poll.missing > 0 ? `, ${poll.missing} with no curve` : '') +
+          (poll.errors > 0 ? `, ${poll.errors} RPC errors` : ''),
+      );
+    }
     if (!this.solPrice.isLive) {
       log.warn(
         `SOL/USD feed is not live — every USD threshold is being converted at ` +
