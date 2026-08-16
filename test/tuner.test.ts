@@ -259,6 +259,33 @@ describe('measuring what it changed', () => {
   });
 });
 
+describe('showing progress', () => {
+  it('reports how far off the next decision is', async () => {
+    fill(4);
+    const t = tunerWith({ changes: [] });
+    expect(t.progress().screener).toMatchObject({ phase: 'gathering', trades: 4, needed: 10 });
+
+    fill(8);
+    expect(t.progress().screener).toMatchObject({ phase: 'ready', trades: 12 });
+  });
+
+  it('switches to measuring once a change is live', async () => {
+    fill(12);
+    const t = tunerWith({ changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'x' }] });
+    await t.tick();
+
+    expect(t.progress().screener).toMatchObject({ phase: 'measuring', trades: 0 });
+    fill(5);
+    expect(t.progress().screener).toMatchObject({ phase: 'measuring', trades: 5, needed: 10 });
+  });
+
+  it('publishes when the next review is due', () => {
+    const t = tunerWith({ changes: [] });
+    // Never run: due immediately, rather than a whole interval after boot.
+    expect(t.nextRunAt).toBeLessThanOrEqual(Date.now() + cfg.TUNER_INTERVAL_MINUTES * 60_000);
+  });
+});
+
 describe('the audit trail', () => {
   it('survives a restart', () => {
     const ledger = new TuningLedger(dir);

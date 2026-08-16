@@ -189,6 +189,10 @@ export interface TunerView {
   intervalMinutes: number;
   minTrades: number;
   lastRunAt: number;
+  /** When the next review is due, so "is it alive" has a visible answer. */
+  nextRunAt: number;
+  /** Where each bot sits in the gather -> change -> measure cycle. */
+  byBot: Record<string, { phase: string; trades: number; needed: number; since?: number }>;
   lastError?: string;
   costUsd: number;
   experiments: Array<{

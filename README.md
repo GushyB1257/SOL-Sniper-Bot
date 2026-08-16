@@ -384,9 +384,29 @@ parameters random-walk while the log fills with confident explanations. So:
   dashboard goes through. A patch that would produce an invalid config is
   refused whole.
 
-The **Auto-tune tab** is the audit trail: every change, the reason the model
-gave, whether the proposal had to be clamped, and the verdict when it was
-measured. Same data in `data/tuning.json`, readable without the bot running.
+**How often it runs, and how you can tell.** It looks every
+`TUNER_INTERVAL_MINUTES` (default 6 hours), but looking is not changing — most
+reviews correctly do nothing, because a bot needs `TUNER_MIN_TRADES` closed
+trades since its last change before anything moves, and then the same again
+before that change can be judged. So the realistic pace is **at most two
+changes per bot per day, and often none**, entirely driven by how many trades
+your bots actually close.
+
+Because "nothing happened" and "it is broken" look identical from outside, each
+bot's page carries an **Auto-tune card** showing exactly where that bot is:
+
+- `Gathering — 18 of 40 trades before the next change`, with a progress bar
+- `Measuring the last change — 12 of 40 trades needed to judge it`
+- `Enough data — a change may be made at the next review`
+- when the next review is due, counted down in the card heading
+- the last few changes to *that bot*: `SCREEN_MIN_VOLUME_USD 3000 → 3900`, the
+  old value struck through, tagged running / kept / reverted, with the model's
+  reason on hover
+
+The **Auto-tune tab** is the full trail for the bot you are looking at: every
+change, the reason given, whether the proposal had to be clamped by the limits,
+and the verdict once measured. Same data in `data/tuning.json`, readable
+without the bot running.
 
 At the default 6-hour interval this costs a few cents a day in API credit.
 
@@ -812,7 +832,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 361 tests
+npm test           # 365 tests
 npm run typecheck
 npm run build
 ```

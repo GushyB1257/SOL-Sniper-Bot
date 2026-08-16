@@ -13,6 +13,16 @@ import { TuningLedger, type Change, type Experiment } from './ledger.js';
 
 const log = logger('tuner');
 
+/** One bot's position in the tune/measure cycle. */
+export interface TunerProgress {
+  /** gathering: waiting for trades. measuring: a change is under test. */
+  phase: 'gathering' | 'ready' | 'measuring';
+  trades: number;
+  needed: number;
+  /** When the change under measurement was made. */
+  since?: number;
+}
+
 export interface TunerDeps {
   cfg: Config;
   settings: RuntimeSettings;
@@ -99,6 +109,48 @@ export class AutoTuner {
 
   get status(): { lastRunAt: number; lastError?: string; usage: AiUsageTotals } {
     return { lastRunAt: this.lastRunAt, lastError: this.lastError, usage: this.claude.usage };
+  }
+
+  /**
+   * Where each bot is in the cycle, for the dashboard.
+   *
+   * "Is it working?" is a fair question about software that changes things on
+   * its own schedule, and the honest answer is usually "it is waiting for
+   * trades". Without this the only visible evidence is a change appearing
+   * hours later, which is indistinguishable from it being broken.
+   */
+  progress(): Record<string, TunerProgress> {
+    const { cfg } = this.deps;
+    const out: Record<string, TunerProgress> = {};
+
+    for (const [bot, store] of this.deps.stores) {
+      const journal = store.journal();
+      const open = this.ledger.running(bot);
+
+      if (open) {
+        const after = journal.length - open.journalAtStart;
+        out[bot] = {
+          phase: 'measuring',
+          trades: after,
+          needed: cfg.TUNER_MIN_TRADES,
+          since: open.startedAt,
+        };
+        continue;
+      }
+
+      const since = this.tradesSinceLastChange(bot, journal);
+      out[bot] = {
+        phase: since.length >= cfg.TUNER_MIN_TRADES ? 'ready' : 'gathering',
+        trades: since.length,
+        needed: cfg.TUNER_MIN_TRADES,
+      };
+    }
+    return out;
+  }
+
+  /** When the next review is due, in epoch ms. */
+  get nextRunAt(): number {
+    return this.lastRunAt + this.deps.cfg.TUNER_INTERVAL_MINUTES * 60_000;
   }
 
   /** Called on a timer. Never throws into the caller. */

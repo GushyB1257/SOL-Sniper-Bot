@@ -347,6 +347,24 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
 .wallet-pnl { text-align: right; white-space: nowrap; }
 .wallet-net { font-size: 12.5px; font-weight: 600; }
 .wallet-note { font-size: 11px; color: var(--muted); }
+.tune-phase { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); }
+.tune-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.tune-dot.measuring { background: var(--warning); }
+.tune-dot.ready { background: var(--good); }
+.tune-track { height: 5px; border-radius: 3px; background: var(--grid); margin: 8px 0 12px; overflow: hidden; }
+.tune-bar { height: 100%; background: var(--series); }
+.tune-bar.measuring { background: var(--warning); }
+.tune-list { border-top: 1px solid var(--grid); }
+.tune-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 0;
+  border-bottom: 1px solid var(--grid); font-size: 12.5px;
+}
+.tune-row:last-child { border-bottom: none; }
+.tune-key { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tune-move { white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tune-from { color: var(--muted); text-decoration: line-through; }
+.tune-arrow { color: var(--muted); padding: 0 5px; }
+.tune-to { color: var(--ink); font-weight: 600; }
 .tuner-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 4px 0 12px; }
 .tuner-err { color: var(--critical); font-size: 12.5px; padding-bottom: 10px; }
 .exp {
@@ -436,6 +454,13 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     <div class="card"><h2>Open</h2><div class="tile-val num" id="kOpen">—</div><div class="tile-note" id="kOpenSub">—</div></div>
     <div class="card"><h2>Wallet</h2><div class="tile-val num" id="kWallet">—</div><div class="tile-note" id="kWalletSub">—</div></div>
     <div class="card"><h2>Seen</h2><div class="tile-val num" id="kSeen">—</div><div class="tile-note" id="kSeenSub">—</div></div>
+  </div>
+
+  <div class="grid hidden" id="tuneRow">
+    <div class="card">
+      <h2>Auto-tune <span class="sub" id="tuneSub"></span></h2>
+      <div id="tuneCard"></div>
+    </div>
   </div>
 
   <div class="grid g-half hidden" id="copyRow">
@@ -972,7 +997,83 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
   // ---- auto-tuner ------------------------------------------------------
   // This is an audit trail for software that edits its own trading settings.
   // Every change, the reason given, and whether it survived measurement.
-  function renderTuner(t) {
+  function tuneWhen(ms) {
+    var d = Math.round((ms - Date.now()) / 60000);
+    if (d <= 0) return 'due now';
+    if (d < 60) return 'in ' + d + ' min';
+    return 'in ' + Math.floor(d / 60) + 'h ' + (d % 60) + 'm';
+  }
+
+  // The compact tracker that lives on each bot's own page. The full trail is a
+  // tab away; this answers "is it doing anything" without going to look.
+  function renderTuneCard(t, botId) {
+    var row = $('tuneRow');
+    var host = $('tuneCard');
+    var sub = $('tuneSub');
+    host.innerHTML = '';
+    if (!t) { row.classList.add('hidden'); return; }
+    row.classList.remove('hidden');
+
+    if (!t.enabled) {
+      sub.textContent = 'off';
+      host.appendChild(el('div', 'tile-note',
+        'Claude is not tuning this bot. Turn on "Auto-tune strategies" under Settings ' +
+        'and it will adjust the filters from this bot\\'s own results.'));
+      return;
+    }
+
+    sub.textContent = 'next review ' + tuneWhen(t.nextRunAt);
+
+    // Where this bot is in the cycle, with the trade count that gates it. This
+    // is the honest answer to "is it working" — most of the time it is waiting.
+    var p = (t.byBot && t.byBot[botId]) || { phase: 'gathering', trades: 0, needed: t.minTrades };
+    var pct = Math.min(100, Math.round((p.trades / Math.max(1, p.needed)) * 100));
+    var line = el('div', 'tune-phase');
+    line.appendChild(el('span', 'tune-dot ' + p.phase));
+    line.appendChild(el('span', null,
+      p.phase === 'measuring'
+        ? 'Measuring the last change \u2014 ' + p.trades + ' of ' + p.needed +
+          ' trades needed to judge it'
+        : p.phase === 'ready'
+          ? 'Enough data \u2014 a change may be made at the next review'
+          : 'Gathering \u2014 ' + p.trades + ' of ' + p.needed + ' trades before the next change'));
+    host.appendChild(line);
+
+    var track = el('div', 'tune-track');
+    var bar = el('div', 'tune-bar' + (p.phase === 'measuring' ? ' measuring' : ''));
+    bar.style.width = Math.max(2, pct) + '%';
+    track.appendChild(bar);
+    host.appendChild(track);
+
+    var mine = t.experiments.filter(function (e) { return e.bot === botId; });
+    if (!mine.length) {
+      host.appendChild(el('div', 'tile-note', 'No changes made to this bot yet.'));
+      return;
+    }
+
+    var list = el('div', 'tune-list');
+    mine.slice(0, 4).forEach(function (e) {
+      e.changes.forEach(function (c) {
+        var r = el('div', 'tune-row');
+        var st = el('span', 'exp-status ' + e.status, e.status);
+        r.appendChild(st);
+        r.appendChild(el('span', 'mono tune-key', c.key));
+        var mv = el('span', 'tune-move');
+        mv.appendChild(el('span', 'tune-from', String(c.from)));
+        mv.appendChild(el('span', 'tune-arrow', '\u2192'));
+        mv.appendChild(el('span', 'tune-to', String(c.to)));
+        r.appendChild(mv);
+        r.title = c.why + (e.verdict ? '\\n\\n' + e.verdict : '');
+        r.appendChild(el('span', 'mint-t', new Date(e.startedAt).toLocaleDateString()));
+        list.appendChild(r);
+      });
+    });
+    host.appendChild(list);
+    host.appendChild(el('div', 'tile-note',
+      'Hover a row for the reason. Full history on the Auto-tune tab.'));
+  }
+
+  function renderTuner(t, botId) {
     var host = $('tab-tuner');
     host.innerHTML = '';
 
@@ -986,7 +1087,8 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     head.appendChild(pill);
     head.appendChild(el('span', 'meta',
       t.enabled
-        ? 'Reviews every ' + t.intervalMinutes + ' min once a bot has ' + t.minTrades +
+        ? 'Reviews every ' + t.intervalMinutes + ' min (next ' + tuneWhen(t.nextRunAt) +
+          ') once a bot has ' + t.minTrades +
           '+ closed trades since its last change. Spent so far: $' + t.costUsd.toFixed(2)
         : 'Set AUTO_TUNE_ENABLED=true to let Claude tune the strategies from their own results.'));
     host.appendChild(head);
@@ -1003,7 +1105,13 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       return;
     }
 
-    t.experiments.forEach(function (e) {
+    var mine = t.experiments.filter(function (e) { return e.bot === botId; });
+    if (!mine.length) {
+      host.appendChild(el('div', 'empty', 'No changes have been made to this bot yet.'));
+      return;
+    }
+
+    mine.forEach(function (e) {
       var card = el('div', 'exp exp-' + e.status);
       var top = el('div', 'exp-top');
       top.appendChild(el('span', 'exp-bot', e.bot));
@@ -1578,7 +1686,8 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     renderMeters(b.risk);
     renderPositions(b.positions);
     renderTrades(b.trades);
-    renderTuner(s.tuner);
+    renderTuner(s.tuner, b.id);
+    renderTuneCard(s.tuner, b.id);
     renderReasons(b.exitReasons);
     renderConfig(s.config);
     renderLog(s.log);

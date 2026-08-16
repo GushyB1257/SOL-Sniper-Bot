@@ -376,6 +376,8 @@ export class Dashboard {
       intervalMinutes: cfg.TUNER_INTERVAL_MINUTES,
       minTrades: cfg.TUNER_MIN_TRADES,
       lastRunAt: s.lastRunAt,
+      nextRunAt: t.nextRunAt,
+      byBot: t.progress(),
       lastError: s.lastError,
       costUsd: s.usage.estimatedCostUsd,
       // Newest first, and capped: this is an audit trail, not a data source.

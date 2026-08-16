@@ -623,12 +623,35 @@ describe('page render', () => {
     expect(html).toContain('data-tab="tuner"');
     expect(html).toContain('id="tab-tuner"');
     const script = /<script>\n([\s\S]*?)<\/script>/.exec(html)![1]!;
-    expect(script).toContain('renderTuner(s.tuner)');
+    expect(script).toContain('renderTuner(s.tuner, b.id)');
     const panel = script.slice(script.indexOf('function renderTuner'));
     // The reason and the verdict are the whole point of the trail.
     expect(panel).toContain('c.why');
     expect(panel).toContain('e.verdict');
     expect(panel).toContain('e.notes');
+  });
+
+  it('tracks tuner changes on each bot page, scoped to that bot', () => {
+    // "Is it working?" should be answerable from the bot's own page. The full
+    // trail is a tab away; the card is what you see without going to look.
+    const html = renderPage('t');
+    expect(html).toContain('id="tuneRow"');
+    expect(html).toContain('id="tuneCard"');
+
+    const script = /<script>\n([\s\S]*?)<\/script>/.exec(html)![1]!;
+    expect(script).toContain('renderTuneCard(s.tuner, b.id)');
+
+    const card = script.slice(script.indexOf('function renderTuneCard'));
+    const upto = card.slice(0, card.indexOf('function renderTuner('));
+    // Scoped to the active bot, not a mix of all three.
+    expect(upto).toContain('e.bot === botId');
+    // Progress toward the next decision, which is the answer most of the time.
+    expect(upto).toContain('p.needed');
+    expect(upto).toContain("'measuring'");
+    // The before and after of each change, and the reason on hover.
+    expect(upto).toContain('c.from');
+    expect(upto).toContain('c.to');
+    expect(upto).toContain('c.why');
   });
 
   it('reloads itself when its token is from a previous run', () => {
