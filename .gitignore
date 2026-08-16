@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.log
+logs/
+
+# Secrets — never commit these.
+.env
+.env.*
+!.env.example
+*.key
+keypair*.json
+wallet*.json
+
+# Runtime state (trade history, creator reputation, positions)
+data/
+!data/.gitkeep
+
+# Kill switch sentinel
+STOP
