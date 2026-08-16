@@ -11,6 +11,7 @@ import type { Store } from '../state/store.js';
 import type { RiskManager } from '../risk/risk-manager.js';
 import { logger } from '../logger.js';
 import { KeyedMutex, errMessage } from '../util/async.js';
+import { withRpcPriority } from '../util/rpc-throttle.js';
 import { buildLadder, checkpointElapsed, decideExit, positionPnl } from './exit-planner.js';
 import { pctChange } from '../util/solana.js';
 
@@ -161,7 +162,12 @@ export class PositionManager {
     const label = p.symbol ?? p.mint.slice(0, 8);
     log.info(`EXIT ${label} [${order.reason}] ${order.detail}`);
 
-    const result = await this.executor.sell(p, order.qty, order.closeAll);
+    // The sell goes to the front of the RPC queue. A sell delayed behind a
+    // hundred background curve reads is a worse price, and on a token that is
+    // falling it is a materially worse one; a curve read delayed behind a sell
+    // costs nothing. Everything the sell does underneath — the balance reads,
+    // the blockhash, the send, the confirmation — inherits the flag.
+    const result = await withRpcPriority(() => this.executor.sell(p, order.qty, order.closeAll));
 
     if (!result.ok) {
       p.notes.push(`sell failed (${order.reason}): ${result.error ?? 'unknown'}`);

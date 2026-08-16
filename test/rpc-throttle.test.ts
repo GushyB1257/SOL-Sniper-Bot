@@ -4,6 +4,7 @@ import {
   rpcStats,
   resetRpcStatsForTests,
   topMethods,
+  withRpcPriority,
 } from '../src/util/rpc-throttle.js';
 
 /** Minimal stand-in for a fetch Response; only status and headers are read. */
@@ -136,6 +137,65 @@ describe('RPC throttling', () => {
     await f('http://rpc.test', { method: 'POST', body: '<not json>' });
     expect(rpcStats().byMethod.unknown).toBe(2);
     expect(rpcStats().requests).toBe(2);
+  });
+
+  it('sends a trade-path call ahead of queued background reads', async () => {
+    // Fairness is the wrong policy here. A sell queued behind eighty curve
+    // reads is a worse price; a curve read queued behind a sell costs nothing.
+    const order: string[] = [];
+    const transport = async (_i: unknown, init?: RequestInit): Promise<Response> => {
+      await new Promise((r) => setTimeout(r, 10));
+      order.push(String(init?.body ?? '?'));
+      return reply(200);
+    };
+    const f = createThrottledFetch(
+      { maxConcurrent: 1, maxPerSecond: 0, maxRetries: 0 },
+      transport as unknown as typeof fetch,
+    );
+
+    // Fill the single slot, queue several background reads behind it, then a
+    // sell — which must overtake all of them.
+    const inflight = f('http://rpc.test', { body: 'first' });
+    const background = ['bg1', 'bg2', 'bg3'].map((b) => f('http://rpc.test', { body: b }));
+    await new Promise((r) => setTimeout(r, 1));
+    const sell = withRpcPriority(() => f('http://rpc.test', { body: 'SELL' }));
+
+    await Promise.all([inflight, ...background, sell]);
+    expect(order[0]).toBe('first');
+    expect(order[1]).toBe('SELL');
+    expect(rpcStats().priority).toBe(1);
+  });
+
+  it('lets a trade-path call borrow against the rate cap rather than wait', async () => {
+    // The bucket is the other place a sell can be held up. Priority borrows and
+    // the refill works the debt off, so the next background reads wait instead.
+    const f = createThrottledFetch(
+      { maxConcurrent: 8, maxPerSecond: 5, maxRetries: 0 },
+      (async () => reply(200)) as unknown as typeof fetch,
+    );
+    await Promise.all(Array.from({ length: 5 }, () => f('http://rpc.test'))); // drain
+
+    const started = Date.now();
+    await withRpcPriority(() => f('http://rpc.test', { body: 'SELL' }));
+    expect(Date.now() - started).toBeLessThan(80); // would be ~200ms queued
+  });
+
+  it('bounds how far priority can overshoot the provider limit', async () => {
+    // If priority could borrow without limit, a burst of exits would breach the
+    // provider's cap outright and every one of them would 429.
+    const f = createThrottledFetch(
+      { maxConcurrent: 32, maxPerSecond: 5, maxRetries: 0 },
+      (async () => reply(200)) as unknown as typeof fetch,
+    );
+    await Promise.all(Array.from({ length: 5 }, () => f('http://rpc.test'))); // drain
+
+    const started = Date.now();
+    await withRpcPriority(() =>
+      Promise.all(Array.from({ length: 12 }, () => f('http://rpc.test'))),
+    );
+    // Borrowing is capped, so the tail waits for the refill to work the debt
+    // off rather than sailing past the provider's limit.
+    expect(Date.now() - started).toBeGreaterThan(1200);
   });
 
   it('passes an ordinary error straight through without retrying', async () => {

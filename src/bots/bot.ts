@@ -6,6 +6,7 @@ import { PositionManager } from '../strategy/position-manager.js';
 import { SafetyEngine, formatVerdict } from '../safety/engine.js';
 import { AiOrchestrator } from '../ai/orchestrator.js';
 import { WalletWatcher } from '../copy/wallet-watcher.js';
+import { withRpcPriority } from '../util/rpc-throttle.js';
 import { CopyTrader } from '../copy/copy-trader.js';
 import { marketCapFromState } from '../watchlist/curve-poller.js';
 import type { PriceSource } from '../execution/pricing.js';
@@ -246,7 +247,9 @@ export class TradingBot {
       }
 
       const size = this.risk.sizeFor(verdict.score);
-      const fill = await this.deps.executor.buy(candidate, size);
+      // Front of the RPC queue: an entry that lands a second late on a
+      // token that is moving is a different entry.
+      const fill = await withRpcPriority(() => this.deps.executor.buy(candidate, size));
       if (!fill.ok) {
         log.warn(`Buy failed for ${label}: ${fill.error ?? 'unknown'}`);
         if (fill.spentSol > 0) this.risk.recordOutcome(-fill.spentSol);

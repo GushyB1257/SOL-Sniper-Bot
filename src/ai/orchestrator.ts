@@ -1,4 +1,5 @@
 import type { Config } from '../config.js';
+import { withRpcPriority } from '../util/rpc-throttle.js';
 import type { Store } from '../state/store.js';
 import type { Executor, LadderTier, Position, TokenCandidate } from '../types.js';
 import type { RiskManager } from '../risk/risk-manager.js';
@@ -382,7 +383,7 @@ export class AiOrchestrator {
       this.deps.store.recordCreatorLaunch(candidate.creator, candidate.mint);
 
       const size = this.deps.risk.sizeFor(100);
-      const fill = await this.deps.executor.buy(candidate, size);
+      const fill = await withRpcPriority(() => this.deps.executor.buy(candidate, size));
       if (!fill.ok) {
         this.stats.buyFailed += 1;
         this.lastBlockReason = fill.error ?? 'buy failed';
@@ -625,7 +626,7 @@ export class AiOrchestrator {
     d: import('./schema.js').EntryDecision,
   ): Promise<void> {
     const size = this.deps.risk.sizeFor(d.confidence);
-    const fill = await this.deps.executor.buy(candidate, size);
+    const fill = await withRpcPriority(() => this.deps.executor.buy(candidate, size));
 
     if (!fill.ok) {
       log.warn(`Buy failed for ${candidate.symbol ?? candidate.mint}: ${fill.error}`);

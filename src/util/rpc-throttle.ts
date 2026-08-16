@@ -1,6 +1,30 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { logger } from '../logger.js';
 
 const log = logger('rpc');
+
+/**
+ * Marks the calls that must not wait behind background polling.
+ *
+ * A rate limiter is fair, and fairness is the wrong policy here: a sell queued
+ * behind eighty curve reads is a worse price, while a curve read queued behind
+ * a sell costs nothing at all. AsyncLocalStorage carries the flag across every
+ * await inside the wrapped function, so a call site opts in once and everything
+ * underneath it inherits — no plumbing through the executor interface.
+ */
+const priorityContext = new AsyncLocalStorage<true>();
+
+/**
+ * Runs `fn` with its RPC calls at the front of the queue.
+ *
+ * Use it for the trade path — buys, and above all sells. Do NOT use it for
+ * polling: if everything is priority, nothing is.
+ */
+export function withRpcPriority<T>(fn: () => Promise<T>): Promise<T> {
+  return priorityContext.run(true, fn);
+}
+
+const isPriority = (): boolean => priorityContext.getStore() === true;
 
 /**
  * Rate limiting and 429 recovery for every RPC call the bot makes.
@@ -56,6 +80,8 @@ export interface RpcThrottleStats {
    * cooperate.
    */
   byMethod: Record<string, number>;
+  /** Requests that jumped the queue because they were on the trade path. */
+  priority: number;
 }
 
 const stats: RpcThrottleStats = {
@@ -66,6 +92,7 @@ const stats: RpcThrottleStats = {
   waitedMs: 0,
   peakInFlight: 0,
   byMethod: {},
+  priority: 0,
 };
 
 export function rpcStats(): RpcThrottleStats {
@@ -105,8 +132,18 @@ export function resetRpcStatsForTests(): void {
     waitedMs: 0,
     peakInFlight: 0,
     byMethod: {},
+    priority: 0,
   });
 }
+
+/**
+ * How far a priority request may drive the token balance negative.
+ *
+ * Small on purpose: it is enough for a sell and its confirmation to go straight
+ * through, and not enough for a burst of them to meaningfully overshoot the
+ * provider's limit.
+ */
+const PRIORITY_BORROW = 8;
 
 /** Status codes worth retrying: rate limits and transient gateway failures. */
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
@@ -128,8 +165,16 @@ class TokenBucket {
     this.tokens = perSecond;
   }
 
-  /** Waits until a token is available, then consumes it. */
-  async take(): Promise<number> {
+  /**
+   * Waits until a token is available, then consumes it.
+   *
+   * A priority request borrows instead of waiting: it goes through immediately
+   * and drives the balance negative, which the refill then works off. The debt
+   * is bounded, so a burst of them cannot turn into an unbounded overshoot of
+   * the provider's limit — it just means the next few background reads wait a
+   * little longer, which is exactly the trade worth making.
+   */
+  async take(priority = false): Promise<number> {
     if (this.perSecond <= 0) return 0;
     let waited = 0;
 
@@ -145,6 +190,10 @@ class TokenBucket {
         this.tokens -= 1;
         return waited;
       }
+      if (priority && this.tokens > -PRIORITY_BORROW) {
+        this.tokens -= 1;
+        return waited;
+      }
 
       const needed = ((1 - this.tokens) / this.perSecond) * 1000;
       const pause = Math.max(5, Math.ceil(needed));
@@ -157,18 +206,22 @@ class TokenBucket {
 /** Bounds how many requests are in flight, without spinning. */
 class Semaphore {
   private inFlight = 0;
-  private queue: Array<() => void> = [];
+  /** Trade-path waiters. Always served first. */
+  private urgent: Array<() => void> = [];
+  private normal: Array<() => void> = [];
 
   constructor(private readonly limit: number) {}
 
-  async acquire(): Promise<number> {
+  async acquire(priority = false): Promise<number> {
     if (this.inFlight < this.limit) {
       this.inFlight += 1;
       stats.peakInFlight = Math.max(stats.peakInFlight, this.inFlight);
       return 0;
     }
     const started = Date.now();
-    await new Promise<void>((resolve) => this.queue.push(resolve));
+    await new Promise<void>((resolve) => {
+      (priority ? this.urgent : this.normal).push(resolve);
+    });
     this.inFlight += 1;
     stats.peakInFlight = Math.max(stats.peakInFlight, this.inFlight);
     return Date.now() - started;
@@ -176,7 +229,9 @@ class Semaphore {
 
   release(): void {
     this.inFlight -= 1;
-    const next = this.queue.shift();
+    // Strict priority. Background polling is unbounded in volume, so anything
+    // fairer than this lets a busy poller delay a sell indefinitely.
+    const next = this.urgent.shift() ?? this.normal.shift();
     if (next) next();
   }
 }
@@ -250,9 +305,12 @@ export function createThrottledFetch(
   const gate = new Semaphore(Math.max(1, opts.maxConcurrent));
 
   return async function throttledFetch(input, init) {
+    const urgent = isPriority();
+    if (urgent) stats.priority += 1;
+
     for (let attempt = 0; ; attempt++) {
-      stats.waitedMs += await bucket.take();
-      stats.waitedMs += await gate.acquire();
+      stats.waitedMs += await bucket.take(urgent);
+      stats.waitedMs += await gate.acquire(urgent);
 
       let res: Response;
       try {

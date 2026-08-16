@@ -900,6 +900,34 @@ provider's documented limit — 10 on most free tiers — so calls queue instead
 failing. A free public endpoint will rate-limit this workload whatever the
 settings say; a paid endpoint is the real fix.
 
+**Why throttling is faster than not throttling.** It looks like a self-imposed
+tax: why wait when you could fire and let the failures sort themselves out? The
+arithmetic says otherwise. A queued request waits one slot in the bucket —
+50ms at a 20/s cap — and then makes its round trip. A rejected one pays the
+round trip, gets nothing, waits a backoff of 250ms to 4s (or whatever
+`Retry-After` says, often a full second), and pays the round trip again. Three
+to ten times worse, and providers escalate against repeat offenders, so it
+degrades rather than settling.
+
+The deeper problem is *where* the delay lands. Queueing spreads a small,
+predictable wait across every call. Rejection lands a large one at random —
+possibly on your sell. The provider will serve N requests a second whatever you
+do; all you control is whether the excess is queued cheaply or rejected
+expensively.
+
+**The trade path skips the queue.** Fairness is the wrong policy: a sell queued
+behind eighty curve reads is a worse price, while a curve read queued behind a
+sell costs nothing. Buys and sells run inside `withRpcPriority`, which puts them
+at the front of both the concurrency queue and the rate bucket — the bucket lets
+them borrow against the limit and works the debt off afterwards, so background
+polling absorbs the wait instead. The borrow is bounded, so a burst of exits
+cannot overshoot the provider's cap outright. The flag propagates through every
+`await` underneath, so the balance reads, blockhash, send and confirmation of a
+sell all inherit it without any plumbing.
+
+This is why raising your poll intervals costs you less than it sounds: the calls
+that decide your P&L are no longer behind the ones that do not.
+
 Scalp exits (`EXIT_MODE=scalp`):
 
 | Want | Change |
@@ -936,7 +964,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 410 tests
+npm test           # 413 tests
 npm run typecheck
 npm run build
 ```

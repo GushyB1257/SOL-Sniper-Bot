@@ -8,6 +8,7 @@ import { curveSpotPrice } from '../execution/bonding-curve.js';
 import { marketCapFromState } from '../watchlist/curve-poller.js';
 import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
+import { withRpcPriority } from '../util/rpc-throttle.js';
 import type { WalletTrade } from './wallet-watcher.js';
 
 const log = logger('copy');
@@ -175,7 +176,9 @@ export class CopyTrader {
           `mirroring with ${size.toFixed(3)} SOL`,
       );
 
-      const fill = await this.deps.executor.buy(candidate, size);
+      // Front of the RPC queue: an entry that lands a second late on a
+      // token that is moving is a different entry.
+      const fill = await withRpcPriority(() => this.deps.executor.buy(candidate, size));
       if (!fill.ok) {
         this.skip('buy_failed', `${mintShort}: buy failed — ${fill.error}`);
         if (fill.spentSol > 0) this.deps.risk.recordOutcome(-fill.spentSol);
