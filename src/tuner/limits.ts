@@ -31,9 +31,20 @@ import type { BotId } from '../bots/bot.js';
  *    are controls, not parameters, and they go through a different code path.
  *  - **`COPY_WALLETS`.** That is your list of people to follow — an input, not
  *    a parameter. Nothing should be able to quietly drop a wallet from it.
+ *  - **`DISCOVERY_SOURCE`.** Read once, at construction. Changing it at runtime
+ *    does nothing until a restart — which is worse than not offering it, since
+ *    the tuner would spend a whole measurement window on a change that had no
+ *    effect and then draw a conclusion from the noise.
  *
- * Locked keys (mode, executor, keys, RPC URLs, dashboard, data dir) are refused
- * one layer down by RuntimeSettings regardless of what appears here.
+ * Locked keys are refused one layer down by RuntimeSettings regardless of what
+ * appears here: mode, executor, the wallet key, RPC URLs, the dashboard, the
+ * data directory, and the PumpPortal endpoints. That last pair matters more
+ * than it looks — the trade endpoint returns the transaction bytes we sign, so
+ * repointing it is repointing what gets signed.
+ *
+ * A test walks every key in the config schema and fails if it is not tunable,
+ * locked, or on the excluded list above. "Everything is reachable" is therefore
+ * checked rather than asserted.
  */
 export type TunableKind = 'number' | 'boolean' | 'enum' | 'text';
 
@@ -324,6 +335,16 @@ export const TUNABLES: Tunable[] = [
   n('AI_TIMEOUT_MS', 'shared', 5000, 300_000, 50, 'How long an analyst call may take.'),
   b('AI_MANAGE_EXITS', 'shared', 'Whether the analyst may also decide exits.'),
   e('AI_EFFORT', 'shared', ['low', 'medium', 'high'], 'Reasoning effort for analyst calls.'),
+  e('STRATEGY', 'shared', ['ai', 'rules'],
+    'ai runs the watchlist orchestrator (screener, fast and ai entry modes live inside it); ' +
+      'rules is the creation-time sniper path only.'),
+  // An enum rather than free text: a name the API does not know fails every
+  // call, and this is the model making the call.
+  e('AI_MODEL', 'shared',
+    ['claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-haiku-4-5-20251001'],
+    'Which model the analyst and this tuner use. Changes cost per call materially.'),
+  e('LOG_LEVEL', 'shared', ['debug', 'info', 'warn', 'error'],
+    'Terminal verbosity. No effect on trading; quieter levels hide the reject breakdown.'),
 ];
 
 export const TUNABLE_BY_KEY = new Map(TUNABLES.map((t) => [t.key, t]));

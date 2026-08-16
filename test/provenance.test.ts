@@ -97,10 +97,41 @@ beforeEach(() => {
   } as unknown as NodeJS.ProcessEnv);
 });
 
-describe('every provenance check is inert until switched on', () => {
-  // Each costs an RPC call on the entry path, and the sniper is already the
-  // heaviest consumer — so none of them may fire, or spend, by default.
-  it('passes and makes no RPC call at the defaults', async () => {
+describe('the provenance checks at their defaults', () => {
+  it('lets an ordinary fresh launch through', async () => {
+    // The real hazard in turning these on is rejecting EVERYTHING, which looks
+    // exactly like the bot being broken. A launch with a couple of holders, a
+    // deployer still holding, a half-hour-old wallet and an unbundled creation
+    // slot has to pass on the shipped defaults.
+    const fresh = conn({
+      largest: [{ amount: '900000000' }, { amount: '50000000' }, { amount: '10000000' }],
+      devHeld: 10_000_000,
+      creatorSigs: [{ blockTime: Math.floor(Date.now() / 1000) - 3600, slot: 1 }],
+      mintSigs: [{ slot: 100 }, { slot: 100 }, { slot: 101 }, { slot: 104 }],
+    });
+    const shared = ctx(fresh);
+
+    for (const check of [
+      holderCountCheck,
+      deployerStillHoldsCheck,
+      creatorAgeCheck,
+      launchBundleCheck,
+    ]) {
+      const res = await check.run(shared);
+      expect(res.passed, `${check.id} rejected an ordinary launch: ${res.detail}`).toBe(true);
+    }
+  });
+
+  it('can each be switched off, and then costs nothing', async () => {
+    // Three of the four cost an RPC call on the entry path, and the sniper is
+    // already the heaviest consumer — so turning one off has to stop the call,
+    // not just ignore the answer.
+    const off = {
+      MIN_HOLDERS: '0',
+      REJECT_IF_DEPLOYER_EXITED: 'false',
+      MIN_CREATOR_AGE_MINUTES: '0',
+      MAX_LAUNCH_BUNDLE_TXS: '0',
+    };
     for (const check of [
       holderCountCheck,
       deployerStillHoldsCheck,
@@ -108,10 +139,31 @@ describe('every provenance check is inert until switched on', () => {
       launchBundleCheck,
     ]) {
       const c = conn();
-      const res = await check.run(ctx(c));
-      expect(res.passed, `${check.id} should pass by default`).toBe(true);
-      expect(c.calls, `${check.id} should not call the RPC by default`).toEqual([]);
+      const res = await check.run(ctx(c, off));
+      expect(res.passed, `${check.id} should pass when off`).toBe(true);
+      expect(c.calls, `${check.id} should make no RPC call when off`).toEqual([]);
     }
+  });
+
+  it('spends at most three RPC calls per candidate across all four', async () => {
+    // Budgeted deliberately: holder count rides along on a read the
+    // concentration check already makes, so only three are new.
+    const c = conn();
+    const shared = ctx(c);
+    for (const check of [
+      holderCountCheck,
+      deployerStillHoldsCheck,
+      creatorAgeCheck,
+      launchBundleCheck,
+    ]) {
+      await check.run(shared);
+    }
+    const distinct = new Set(c.calls);
+    expect(distinct.has('owner')).toBe(true);
+    expect(distinct.has('creatorSigs')).toBe(true);
+    expect(distinct.has('mintSigs')).toBe(true);
+    // largest + supply are the shared read, counted once between them.
+    expect(c.calls.filter((x) => x === 'largest')).toHaveLength(1);
   });
 });
 

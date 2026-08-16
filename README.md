@@ -361,10 +361,13 @@ are trading on.
 
 **What it can touch is fixed in code**, in `src/tuner/limits.ts`, not in
 config — it cannot be widened from `.env`, from the dashboard, or by the tuner
-itself. It covers **97 parameters**: every entry filter, the whole safety
-battery, all three exit machineries, the momentum and watchlist gates,
-copy-trade behaviour, execution and RPC settings, the analyst's own budget, and
-the risk limits.
+itself. It covers **115 parameters** — everything the config schema has except a short,
+documented exclusion list. Every entry filter and flow signal, the whole safety
+battery and the provenance checks, all three exit machineries, the momentum and
+watchlist gates, copy-trade behaviour, execution and RPC settings, the
+analyst's model and budget, and the risk limits. A test walks every key in the
+schema and fails unless it is tunable, locked, or explicitly excluded, so
+"everything is reachable" is checked rather than claimed.
 
 That last group deserves plain words. **The tuner can change how much money is
 at stake per trade and how much you can lose in a day** — `BUY_AMOUNT_SOL`,
@@ -385,9 +388,13 @@ Four things stay out, each for a reason that is not a matter of taste:
 | `PROGRAM_FEE_PCT`, `ROUTER_FEE_PCT`, `SOL_USD_FALLBACK` | Measurements of the world, not choices. Changing them does not make trading cheaper, it makes the breakeven wrong — and the bot then holds losers below true breakeven. |
 | `BOT_*_ENABLED` | Controls, not parameters. Turning a bot off stops the data it learns from; turning one on spends money on a strategy you switched off. |
 | `COPY_WALLETS` | Your list of people to follow — an input. Nothing should quietly drop a wallet from it. |
+| `DISCOVERY_SOURCE` | Read once at construction. Changing it does nothing until a restart, so the tuner would spend a measurement window on a change with no effect and then draw a conclusion from the noise. |
 
-Mode, executor, the wallet key, RPC URLs and the dashboard are refused a layer
-lower by the settings validator regardless of what any list says.
+Mode, executor, the wallet key, RPC URLs, the dashboard and the PumpPortal
+endpoints are refused a layer lower by the settings validator regardless of
+what any list says. That last pair matters more than it looks: the trade
+endpoint returns the transaction bytes we sign, so repointing it is repointing
+what gets signed.
 
 **How it avoids fooling itself.** The naive version of this feature — feed the
 journal to a model every few minutes and apply whatever comes back — does not
@@ -469,8 +476,10 @@ collects, so none of them costs an RPC call. Every one defaults to **off**.
 | **Tracked wallets holding** | Whether one of the wallets your copy bot follows is already in it. The copy bot reads those balances every second anyway, so this is free — and it is the one signal here that nobody screening the same public data has. |
 
 The sniper gains four **provenance** checks, which ask where a launch came from
-rather than what it looks like. All off by default; all but the first cost an
-RPC call on the entry path, and the sniper is already the heaviest consumer.
+rather than what it looks like. **All four are on by default.** Three cost an
+RPC call on the entry path, so the sniper now spends about seven per candidate
+rather than four — set any of them to 0 (or `false`) to switch one off, which
+stops the call rather than just ignoring the answer.
 
 | Check | Why |
 |---|---|
@@ -478,6 +487,13 @@ RPC call on the entry path, and the sniper is already the heaviest consumer.
 | `REJECT_IF_DEPLOYER_EXITED` | `MAX_DEV_BUY_PCT` asks what the deployer took at creation. This asks whether they are **still in it**, which no check reading only the creation transaction can see. |
 | `MIN_CREATOR_AGE_MINUTES` | Catches a *funded* throwaway wallet, which a balance check alone does not. |
 | `MAX_LAUNCH_BUNDLE_TXS` | Organic interest arrives across slots; a bundle lands together — the signature of a launch whose first buyers are the deployer's own wallets. |
+
+The shipped defaults are deliberately mild, because the real hazard in turning
+these on is rejecting *everything*, which looks exactly like the bot being
+broken: 2 holders (the sniper buys at creation, where the only holders are the
+curve and the deployer), a 30-minute wallet age, and 6 transactions in the
+creation slot. A test asserts an ordinary fresh launch passes all four on those
+defaults.
 
 All thirteen are tunable, so the auto-tuner can find thresholds for them from
 your own trade history rather than you guessing.
@@ -904,7 +920,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 405 tests
+npm test           # 408 tests
 npm run typecheck
 npm run build
 ```

@@ -131,6 +131,54 @@ describe('what the tuner may touch', () => {
     }
   });
 
+  it('can reach every parameter that is not deliberately withheld', () => {
+    // "Everything is reachable" is the whole point of the widened list, and it
+    // is the kind of claim that quietly stops being true the next time a
+    // setting is added. So it is checked rather than asserted: every key in the
+    // config schema must be tunable, locked, or on the excluded list — and a
+    // new key lands in none of those, so this fails until someone decides.
+    const LOCKED_KEYS = new Set([
+      'MODE',
+      'EXECUTOR',
+      'WALLET_PRIVATE_KEY',
+      'RPC_HTTP_URL',
+      'RPC_WS_URL',
+      'ANTHROPIC_API_KEY',
+      'DATA_DIR',
+      'DASHBOARD_ENABLED',
+      'DASHBOARD_PORT',
+      'DASHBOARD_HOST',
+      // Returns the transaction bytes we sign; repointing it repoints that.
+      'PUMPPORTAL_TRADE_URL',
+      'PUMPPORTAL_WS_URL',
+    ]);
+    const EXCLUDED_KEYS = new Set([
+      // The enforcement mechanism itself.
+      'AUTO_TUNE_ENABLED',
+      'TUNER_INTERVAL_MINUTES',
+      'TUNER_MIN_TRADES',
+      'TUNER_MAX_CHANGES_PER_ROUND',
+      'TUNER_MAX_STEP_PCT',
+      // Facts about the world, not choices.
+      'PROGRAM_FEE_PCT',
+      'ROUTER_FEE_PCT',
+      'SOL_USD_FALLBACK',
+      // Controls, and a different code path.
+      'BOT_SCREENER_ENABLED',
+      'BOT_SNIPER_ENABLED',
+      'BOT_COPY_ENABLED',
+      // The user's input, not a knob.
+      'COPY_WALLETS',
+      // Read once at construction; changing it does nothing until a restart.
+      'DISCOVERY_SOURCE',
+    ]);
+
+    const unreachable = Object.keys(cfg).filter(
+      (k) => !TUNABLE_BY_KEY.has(k) && !LOCKED_KEYS.has(k) && !EXCLUDED_KEYS.has(k),
+    );
+    expect(unreachable, `not tunable, locked, or excluded: ${unreachable.join(', ')}`).toEqual([]);
+  });
+
   it('only lists keys the config actually has', () => {
     const known = new Set(Object.keys(cfg));
     for (const t of TUNABLES) expect(known.has(t.key), `${t.key} is not a config key`).toBe(true);

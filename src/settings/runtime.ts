@@ -41,6 +41,12 @@ const LOCKED = new Set([
   'DASHBOARD_HOST',
   'DASHBOARD_PORT',
   'DASHBOARD_ENABLED',
+  // The trade endpoint returns the transaction bytes we then sign. Repointing
+  // it is repointing what gets signed, which is not a dashboard decision and
+  // certainly not an automated one — `assertSafeToSign` is a last line of
+  // defence, not a reason to hand out the address.
+  'PUMPPORTAL_TRADE_URL',
+  'PUMPPORTAL_WS_URL',
 ]);
 
 export type FieldKind = 'number' | 'boolean' | 'enum' | 'text';

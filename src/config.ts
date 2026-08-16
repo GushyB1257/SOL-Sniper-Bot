@@ -211,10 +211,16 @@ const schema = z.object({
   // --- Provenance checks. All OFF by default; each costs an RPC call on the
   // entry path, and the sniper is already the heaviest RPC consumer. ------
   /**
-   * Distinct holders required. FREE — reuses the largest-accounts read the
-   * concentration check already makes. Capped at 20 by what the RPC returns.
+   * Distinct holders required, excluding the bonding curve's own account.
+   *
+   * FREE — reuses the largest-accounts read the concentration check already
+   * makes. Capped at 20 by what the RPC returns.
+   *
+   * Kept low on purpose. The sniper buys at creation, where the only holders
+   * are the curve and the deployer, so anything above 2 or 3 rejects every
+   * fresh launch — which looks exactly like the bot being broken.
    */
-  MIN_HOLDERS: num(0, 20).default(0),
+  MIN_HOLDERS: num(0, 20).default(2),
   /**
    * Reject when the deployer has already sold out of their own token.
    *
@@ -222,20 +228,29 @@ const schema = z.object({
    * are still in it, which is invisible to any check that only reads the
    * creation transaction. One RPC call per candidate.
    */
-  REJECT_IF_DEPLOYER_EXITED: bool.default('false'),
+  REJECT_IF_DEPLOYER_EXITED: bool.default('true'),
   /**
-   * Minimum age of the deployer's wallet, in minutes. Catches a funded
-   * throwaway, which a balance check alone does not. One RPC call.
+   * Minimum age of the deployer's wallet, in minutes.
+   *
+   * Catches a funded throwaway, which a balance check alone does not. This is
+   * the most aggressive of the four: plenty of legitimate deployers use a
+   * fresh wallet per launch, so a high value here rejects a lot. 30 minutes
+   * removes the wallet created moments before the launch without taking a
+   * position on anything older. One RPC call.
    */
-  MIN_CREATOR_AGE_MINUTES: num(0, 525_600).default(0),
+  MIN_CREATOR_AGE_MINUTES: num(0, 525_600).default(30),
   /**
    * Reject when more than this many transactions landed in the creation slot.
    *
    * Organic interest arrives across slots; a bundle lands together, which is
    * the signature of a launch whose first buyers are the deployer's own
    * wallets. One RPC call, signatures only. 0 disables.
+   *
+   * A normal creation slot holds the create transaction and the deployer's own
+   * buy — two, sometimes three. Six leaves room for genuinely fast organic
+   * buyers while still catching a coordinated launch.
    */
-  MAX_LAUNCH_BUNDLE_TXS: num(0, 100).default(0),
+  MAX_LAUNCH_BUNDLE_TXS: num(0, 100).default(6),
 
   DAILY_LOSS_LIMIT_SOL: num(0, 1000).default(1.5),
   MAX_CONSECUTIVE_LOSSES: num(1, 100).default(6),
