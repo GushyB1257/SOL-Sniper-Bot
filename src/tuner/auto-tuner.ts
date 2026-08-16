@@ -21,6 +21,10 @@ export interface TunerProgress {
   needed: number;
   /** When the change under measurement was made. */
   since?: number;
+  /** When this bot's cooldown expires. */
+  nextAt?: number;
+  /** What is holding a change up right now, when something is. */
+  blockedBy?: 'trades' | 'cooldown' | null;
 }
 
 export interface TunerDeps {
@@ -127,6 +131,8 @@ export class AutoTuner {
       const journal = store.journal();
       const open = this.ledger.running(bot);
 
+      const nextAt = this.cooldownEndsAt(bot);
+
       if (open) {
         const after = journal.length - open.journalAtStart;
         out[bot] = {
@@ -134,23 +140,50 @@ export class AutoTuner {
           trades: after,
           needed: cfg.TUNER_MIN_TRADES,
           since: open.startedAt,
+          nextAt,
         };
         continue;
       }
 
       const since = this.tradesSinceLastChange(bot, journal);
+      const enough = since.length >= cfg.TUNER_MIN_TRADES;
       out[bot] = {
-        phase: since.length >= cfg.TUNER_MIN_TRADES ? 'ready' : 'gathering',
+        phase: enough ? 'ready' : 'gathering',
         trades: since.length,
         needed: cfg.TUNER_MIN_TRADES,
+        nextAt,
+        // Which gate is actually holding it up, so the card can say so rather
+        // than showing a progress bar that has been full for an hour.
+        blockedBy: enough && Date.now() < nextAt ? 'cooldown' : enough ? null : 'trades',
       };
     }
     return out;
   }
 
-  /** When the next review is due, in epoch ms. */
+  /**
+   * Earliest moment any bot could next be reviewed.
+   *
+   * The cooldown is per bot, so this is the soonest of them — what the header
+   * shows when you are not looking at a specific bot.
+   */
   get nextRunAt(): number {
-    return this.lastRunAt + this.deps.cfg.TUNER_INTERVAL_MINUTES * 60_000;
+    const times = [...this.deps.stores.keys()].map((b) => this.cooldownEndsAt(b));
+    return times.length > 0 ? Math.min(...times) : Date.now();
+  }
+
+  /**
+   * When this bot's cooldown expires.
+   *
+   * Read from the ledger rather than a field so it survives a restart — a
+   * process that restarts every few minutes would otherwise re-review on every
+   * boot and change something each time.
+   */
+  private cooldownEndsAt(bot: string): number {
+    const mine = this.ledger.all().filter((e) => e.bot === bot);
+    const last = mine[mine.length - 1];
+    if (!last) return 0; // never touched: reviewable as soon as trades allow
+    const touched = Math.max(last.startedAt, last.decidedAt ?? 0);
+    return touched + this.deps.cfg.TUNER_INTERVAL_MINUTES * 60_000;
   }
 
   /** Called on a timer. Never throws into the caller. */
@@ -159,9 +192,9 @@ export class AutoTuner {
     if (!cfg.AUTO_TUNE_ENABLED) return;
     if (this.running) return;
 
-    const due = Date.now() - this.lastRunAt >= cfg.TUNER_INTERVAL_MINUTES * 60_000;
-    if (!due) return;
-
+    // No global clock gate. Whether a bot is ready is a question about ITS
+    // trades and ITS last change — a fast bot should not wait on a slow one,
+    // and 40 trades is 40 trades whether they took two minutes or two days.
     this.running = true;
     this.lastRunAt = Date.now();
     try {
@@ -181,6 +214,15 @@ export class AutoTuner {
   private async tuneBot(bot: string, store: Store): Promise<void> {
     const { cfg } = this.deps;
     const journal = store.journal();
+
+    // The cooldown is not about statistics — the trade count handles that. It
+    // bounds API spend, and it stops a burst of fast trades producing a run of
+    // changes before any of them has been given a chance to show an effect.
+    const cooldown = this.cooldownEndsAt(bot);
+    if (Date.now() < cooldown) {
+      log.debug(`${bot}: cooling down for another ${Math.round((cooldown - Date.now()) / 1000)}s`);
+      return;
+    }
 
     // Settle any experiment that has collected enough evidence first, so a new
     // proposal is never made against data that is still half a blend.

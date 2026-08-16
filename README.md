@@ -397,20 +397,32 @@ parameters random-walk while the log fills with confident explanations. So:
   dashboard goes through. A patch that would produce an invalid config is
   refused whole.
 
-**How often it runs, and how you can tell.** It looks every
-`TUNER_INTERVAL_MINUTES` (default 6 hours), but looking is not changing — most
-reviews correctly do nothing, because a bot needs `TUNER_MIN_TRADES` closed
-trades since its last change before anything moves, and then the same again
-before that change can be judged. So the realistic pace is **at most two
-changes per bot per day, and often none**, entirely driven by how many trades
-your bots actually close.
+**How often it runs, and how you can tell.** Reviews are triggered by **trade
+count, not by a clock** — 40 trades is 40 trades whether they took two minutes
+or two days, and gating on time just wastes data when a bot is trading fast. A
+bot is reviewed as soon as it has `TUNER_MIN_TRADES` closed trades since its
+last change, then again once it has that many more to judge the change by.
+
+`TUNER_INTERVAL_MINUTES` (default 20) is a **floor, not a schedule**: the
+minimum gap between changes to the same bot. It bounds API spend and stops a
+burst of quick trades producing a run of changes before any of them has had a
+chance to show an effect. It is per bot, so the sniper closing trades in
+seconds never waits on the copy trader closing one an hour. It is also read
+from the ledger rather than a timer, so restarting the bot does not earn a
+free review.
+
+If your bots trade fast, **raise `TUNER_MIN_TRADES` rather than lowering the
+gap**. Trades are the currency of statistical confidence and they cost you
+nothing but time: 150 trades per decision is a far better read than 40, and at
+40 trades every couple of minutes it barely slows anything down.
 
 Because "nothing happened" and "it is broken" look identical from outside, each
 bot's page carries an **Auto-tune card** showing exactly where that bot is:
 
 - `Gathering — 18 of 40 trades before the next change`, with a progress bar
 - `Measuring the last change — 12 of 40 trades needed to judge it`
-- `Enough data — a change may be made at the next review`
+- `Enough data — a change is due on the next look`
+- `Ready — holding off until the minimum gap passes, in 6 min`
 - when the next review is due, counted down in the card heading
 - the last few changes to *that bot*: `SCREEN_MIN_VOLUME_USD 3000 → 3900`, the
   old value struck through, tagged running / kept / reverted, with the model's
@@ -845,7 +857,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 369 tests
+npm test           # 374 tests
 npm run typecheck
 npm run build
 ```

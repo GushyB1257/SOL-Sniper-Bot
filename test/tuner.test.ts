@@ -76,8 +76,23 @@ function tunerWith(proposal: unknown, stores?: Map<string, Store>): AutoTuner {
   // The model is the one part that cannot run in a test; everything that makes
   // this feature safe lives on our side of that call, and that is what is under
   // test here.
-  (t as unknown as { propose: () => Promise<unknown> }).propose = async () => proposal;
+  (t as unknown as { propose: (bot: string) => Promise<unknown> }).propose = async (bot) =>
+    typeof proposal === 'function' ? (proposal as (b: string) => unknown)(bot) : proposal;
   return t;
+}
+
+/**
+ * Back-dates every experiment so the per-bot cooldown has expired.
+ *
+ * The cooldown is read from the ledger rather than a field, so that it
+ * survives a restart — which means a test cannot skip it by poking a timer.
+ */
+function cooled(t: AutoTuner): void {
+  const ledger = (t as unknown as { ledger: TuningLedger }).ledger;
+  const past = Date.now() - 24 * 60 * 60_000;
+  for (const e of ledger.all()) {
+    ledger.update(e.id, { startedAt: past, ...(e.decidedAt ? { decidedAt: past } : {}) });
+  }
 }
 
 describe('what the tuner may touch', () => {
@@ -201,8 +216,7 @@ describe('measuring what it changed', () => {
     await t.tick();
 
     fill(12, { pnlSol: afterPnl });
-    // The interval gate is time-based; reach past it for the second look.
-    (t as unknown as { lastRunAt: number }).lastRunAt = 0;
+    cooled(t);
     await t.tick();
     return t;
   }
@@ -231,7 +245,7 @@ describe('measuring what it changed', () => {
     expect(t.history[0]!.status).toBe('reverted');
 
     fill(12, { pnlSol: -0.05 });
-    (t as unknown as { lastRunAt: number }).lastRunAt = 0;
+    cooled(t);
     await t.tick(); // same canned proposal as before
 
     expect(t.history).toHaveLength(1);
@@ -250,12 +264,94 @@ describe('measuring what it changed', () => {
     await t.tick();
 
     fill(3); // not enough to judge
-    (t as unknown as { lastRunAt: number }).lastRunAt = 0;
+    cooled(t);
     await t.tick();
 
     expect(t.history[0]!.status).toBe('running');
     expect(t.history).toHaveLength(1); // and no second change stacked on top
     expect(settings.values().MOONBAG_TRIM_PCT).toBe('30');
+  });
+});
+
+describe('when it decides to act', () => {
+  it('acts as soon as the trades are there, without waiting on a clock', async () => {
+    // 40 trades is 40 trades whether they took two minutes or two days. A bot
+    // that closes them fast should not sit on the data for hours.
+    fill(12);
+    const t = tunerWith({ changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'x' }] });
+
+    await t.tick(); // first ever tick, no cooldown to serve
+    expect(t.history).toHaveLength(1);
+    expect(settings.values().MOONBAG_TRIM_PCT).toBe('30');
+  });
+
+  it('holds off a second change until the cooldown expires', async () => {
+    // The cooldown is not about statistics — it bounds API spend and stops a
+    // burst of fast trades producing a run of changes before any of them has
+    // had a chance to show an effect.
+    fill(12);
+    const t = tunerWith({ changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'x' }] });
+    await t.tick();
+
+    fill(30); // plenty of trades, but the cooldown has not passed
+    await t.tick();
+    expect(t.history).toHaveLength(1);
+
+    const p = t.progress().screener!;
+    expect(p.phase).toBe('measuring');
+    expect(p.nextAt).toBeGreaterThan(Date.now());
+  });
+
+  it('says which gate is holding it, not just that nothing happened', async () => {
+    fill(4);
+    const t = tunerWith({ changes: [] });
+    expect(t.progress().screener).toMatchObject({ phase: 'gathering', blockedBy: 'trades' });
+
+    fill(8);
+    expect(t.progress().screener).toMatchObject({ phase: 'ready', blockedBy: null });
+  });
+
+  it('does not review a bot again just because the process restarted', async () => {
+    // The cooldown is read from the ledger for exactly this reason: a bot that
+    // restarts every few minutes would otherwise change something every boot.
+    fill(12);
+    const first = tunerWith({ changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'x' }] });
+    await first.tick();
+    expect(first.history).toHaveLength(1);
+
+    fill(30);
+    const restarted = tunerWith({ changes: [{ key: 'CHECKPOINT_SECONDS', value: 45, why: 'y' }] });
+    await restarted.tick();
+
+    expect(restarted.history).toHaveLength(1); // the one from before, unchanged
+    expect(settings.values().CHECKPOINT_SECONDS).toBe('60');
+  });
+
+  it('lets a fast bot run without waiting on a slow one', async () => {
+    // Per-bot cooldowns: the sniper closing trades in seconds should not be
+    // held back by the copy trader closing one an hour.
+    const sniperStore = new Store(dir, 'sniper');
+    for (let i = 0; i < 12; i++) sniperStore.appendJournal(trade());
+
+    // A different knob per bot — the same one twice would be refused as "no
+    // change" on the second bot, which would prove nothing.
+    const t = tunerWith(
+      (bot: string) => ({
+        changes: [
+          bot === 'sniper'
+            ? { key: 'CHECKPOINT_SECONDS', value: 45, why: 'sniper' }
+            : { key: 'MOONBAG_TRIM_PCT', value: 30, why: 'screener' },
+        ],
+      }),
+      new Map([['screener', store], ['sniper', sniperStore]]),
+    );
+
+    fill(12);
+    await t.tick();
+
+    // Both were ready, and both were reviewed in the same pass.
+    expect(t.history.map((e) => e.bot).sort()).toEqual(['screener', 'sniper']);
+    sniperStore.close();
   });
 });
 

@@ -1022,21 +1022,30 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       return;
     }
 
-    sub.textContent = 'next review ' + tuneWhen(t.nextRunAt);
+    sub.textContent = 'triggered by trades \u00b7 min gap ' + t.intervalMinutes + ' min';
 
     // Where this bot is in the cycle, with the trade count that gates it. This
     // is the honest answer to "is it working" — most of the time it is waiting.
     var p = (t.byBot && t.byBot[botId]) || { phase: 'gathering', trades: 0, needed: t.minTrades };
     var pct = Math.min(100, Math.round((p.trades / Math.max(1, p.needed)) * 100));
+    var cooling = p.nextAt && p.nextAt > Date.now();
+    var text;
+    if (p.phase === 'measuring') {
+      text = 'Measuring the last change \u2014 ' + p.trades + ' of ' + p.needed +
+        ' trades needed to judge it';
+    } else if (p.phase === 'ready') {
+      // Ready-but-waiting is a different thing from ready, and a full progress
+      // bar that never moves is how a working system looks broken.
+      text = cooling
+        ? 'Ready \u2014 holding off until the minimum gap passes, ' + tuneWhen(p.nextAt)
+        : 'Enough data \u2014 a change is due on the next look';
+    } else {
+      text = 'Gathering \u2014 ' + p.trades + ' of ' + p.needed + ' trades before the next change';
+    }
+
     var line = el('div', 'tune-phase');
     line.appendChild(el('span', 'tune-dot ' + p.phase));
-    line.appendChild(el('span', null,
-      p.phase === 'measuring'
-        ? 'Measuring the last change \u2014 ' + p.trades + ' of ' + p.needed +
-          ' trades needed to judge it'
-        : p.phase === 'ready'
-          ? 'Enough data \u2014 a change may be made at the next review'
-          : 'Gathering \u2014 ' + p.trades + ' of ' + p.needed + ' trades before the next change'));
+    line.appendChild(el('span', null, text));
     host.appendChild(line);
 
     var track = el('div', 'tune-track');
@@ -1087,9 +1096,9 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     head.appendChild(pill);
     head.appendChild(el('span', 'meta',
       t.enabled
-        ? 'Reviews every ' + t.intervalMinutes + ' min (next ' + tuneWhen(t.nextRunAt) +
-          ') once a bot has ' + t.minTrades +
-          '+ closed trades since its last change. Spent so far: $' + t.costUsd.toFixed(2)
+        ? 'Reviews a bot as soon as it has ' + t.minTrades + '+ closed trades since its ' +
+          'last change, and at most once every ' + t.intervalMinutes + ' min. Next possible ' +
+          tuneWhen(t.nextRunAt) + '. Spent so far: $' + t.costUsd.toFixed(2)
         : 'Set AUTO_TUNE_ENABLED=true to let Claude tune the strategies from their own results.'));
     host.appendChild(head);
 

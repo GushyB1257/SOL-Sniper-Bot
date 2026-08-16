@@ -511,12 +511,26 @@ const schema = z.object({
    * reverted automatically if it does not beat it.
    */
   AUTO_TUNE_ENABLED: bool.default('false'),
-  /** How often the tuner looks. Hours, not minutes: it needs closed trades. */
-  TUNER_INTERVAL_MINUTES: num(15, 10_080).default(360),
+  /**
+   * Minimum minutes between reviews OF THE SAME BOT.
+   *
+   * The trade count is what decides whether a change is justified — 40 trades
+   * is 40 trades whether they took two minutes or two days, so gating on the
+   * clock just wastes data when a bot is trading fast. This is a floor, not a
+   * schedule: it bounds API spend, and it stops a burst of quick trades
+   * producing a run of changes before any of them has had a chance to show an
+   * effect. Each bot has its own; a fast bot never waits on a slow one.
+   */
+  TUNER_INTERVAL_MINUTES: num(1, 10_080).default(20),
   /**
    * Closed trades required before anything moves, and again before a change is
    * judged. Under a few dozen, memecoin P&L is one or two outliers and any
    * change can be justified from the noise.
+   *
+   * This is the knob to RAISE if your bots trade quickly. Trades are the
+   * currency of statistical confidence and they cost you nothing but time —
+   * 150 trades per decision is a far better read than 40, and if you are
+   * closing 40 in two minutes it barely slows anything down.
    */
   TUNER_MIN_TRADES: num(10, 5000).default(40),
   /** Parameters that may move in one round. One coherent idea at a time. */
