@@ -2,7 +2,7 @@ import { walletLabel, type Config } from '../config.js';
 import type { Store } from '../state/store.js';
 import type { Position, TradeJournalEntry } from '../types.js';
 import { recentLogs, type LogEntry } from '../logger.js';
-import { rpcStats } from '../util/rpc-throttle.js';
+import { rpcStats, topMethods } from '../util/rpc-throttle.js';
 import { pctChange } from '../util/solana.js';
 
 export interface SessionStats {
@@ -278,7 +278,14 @@ export interface Snapshot {
   /** What the auto-tuner has changed, and whether it worked. Null when off. */
   tuner: TunerView | null;
   /** RPC health. Non-zero rate limiting is the thing worth seeing at a glance. */
-  rpc: { requests: number; rateLimited: number; retries: number; givenUp: number };
+  rpc: {
+    requests: number;
+    rateLimited: number;
+    retries: number;
+    givenUp: number;
+    /** Busiest JSON-RPC methods — which subsystem is spending the quota. */
+    top: Array<{ method: string; calls: number; pct: number }>;
+  };
   /** Read-only view of everything the bot is running with. */
   config: ConfigRow[];
   /** Editable settings: the field specs and their current values. */
@@ -728,6 +735,7 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
       rateLimited,
       retries,
       givenUp,
+      top: topMethods(4),
     }))(rpcStats()),
     config: configRows(input.cfg),
     settings: input.settings,

@@ -45,6 +45,17 @@ export interface RpcThrottleStats {
   waitedMs: number;
   /** Largest number of requests in flight at once since start. */
   peakInFlight: number;
+  /**
+   * Requests by JSON-RPC method.
+   *
+   * "You are being rate limited" is not actionable on its own — the useful
+   * question is which subsystem is spending the quota, and the method name
+   * answers it: getParsedTokenAccountsByOwner is the copy watcher,
+   * getMultipleAccounts is the curve poller, getSignaturesForAddress is the
+   * sniper's provenance checks. Read off the body, so no call site has to
+   * cooperate.
+   */
+  byMethod: Record<string, number>;
 }
 
 const stats: RpcThrottleStats = {
@@ -54,10 +65,35 @@ const stats: RpcThrottleStats = {
   givenUp: 0,
   waitedMs: 0,
   peakInFlight: 0,
+  byMethod: {},
 };
 
 export function rpcStats(): RpcThrottleStats {
-  return { ...stats };
+  return { ...stats, byMethod: { ...stats.byMethod } };
+}
+
+/** Methods in the request, biggest spender first. */
+export function topMethods(limit = 3): Array<{ method: string; calls: number; pct: number }> {
+  const total = Object.values(stats.byMethod).reduce((a, n) => a + n, 0);
+  if (total === 0) return [];
+  return Object.entries(stats.byMethod)
+    .sort((a, blk) => blk[1] - a[1])
+    .slice(0, limit)
+    .map(([method, calls]) => ({ method, calls, pct: (calls / total) * 100 }));
+}
+
+/**
+ * The JSON-RPC method out of a request body, without paying to parse it.
+ *
+ * A regex rather than JSON.parse: this runs on every RPC call the process
+ * makes, and the field sits near the front of a body that can be large when a
+ * batch of accounts is being read.
+ */
+function methodOf(init: RequestInit | undefined): string {
+  const body = init?.body;
+  if (typeof body !== 'string') return 'unknown';
+  const m = /"method"\s*:\s*"([^"]+)"/.exec(body);
+  return m?.[1] ?? 'unknown';
 }
 
 export function resetRpcStatsForTests(): void {
@@ -68,6 +104,7 @@ export function resetRpcStatsForTests(): void {
     givenUp: 0,
     waitedMs: 0,
     peakInFlight: 0,
+    byMethod: {},
   });
 }
 
@@ -164,11 +201,39 @@ function warnThrottled(): void {
   const now = Date.now();
   if (now - lastWarnAt < 60_000) return;
   lastWarnAt = now;
+
+  const share = stats.requests > 0 ? (stats.rateLimited / stats.requests) * 100 : 0;
+  const top = topMethods(3)
+    .map((m) => `${m.method} ${m.pct.toFixed(0)}%`)
+    .join(', ');
+
   log.warn(
-    `RPC rate limited ${stats.rateLimited} time(s) so far — absorbing it with backoff. ` +
-      'If this is constant, lower RPC_MAX_REQUESTS_PER_SEC to match your provider tier, ' +
-      'or raise MIN_SAFETY_SCORE / lower MAX_CONCURRENT_POSITIONS so fewer calls are made.',
+    `RPC rate limited ${stats.rateLimited} of ${stats.requests} requests ` +
+      `(${share.toFixed(1)}%) — absorbing it with backoff.`,
   );
+  // Naming the loudest method is the difference between advice and a shrug:
+  // it points at the exact subsystem to turn down.
+  if (top) log.warn(`  Busiest calls: ${top}`);
+  log.warn(`  ${adviceFor()}`);
+}
+
+/** Which knob to reach for, chosen by what is actually making the calls. */
+function adviceFor(): string {
+  const worst = topMethods(1)[0];
+  switch (worst?.method) {
+    case 'getParsedTokenAccountsByOwner':
+      return 'Most of it is the copy trader reading tracked wallets. Raise COPY_POLL_INTERVAL_MS (2000 is plenty) or track fewer wallets.';
+    case 'getMultipleAccounts':
+      return 'Most of it is the screener polling bonding curves. Lower SCREEN_POLL_MAX_TOKENS or raise SCREEN_POLL_INTERVAL_MS.';
+    case 'getSignaturesForAddress':
+      return 'Most of it is the sniper provenance checks. Set MIN_CREATOR_AGE_MINUTES=0 and MAX_LAUNCH_BUNDLE_TXS=0 to switch those off, or lower SNIPER_MAX_CONCURRENT_CHECKS.';
+    case 'getTokenLargestAccounts':
+    case 'getTokenSupply':
+    case 'getParsedAccountInfo':
+      return 'Most of it is the sniper safety battery. Lower SNIPER_MAX_CONCURRENT_CHECKS, or stop the sniper while you tune the other bots.';
+    default:
+      return 'Lower RPC_MAX_REQUESTS_PER_SEC to your provider tier so calls queue instead of failing — a free endpoint is usually 10/s or less.';
+  }
 }
 
 /**
@@ -192,6 +257,8 @@ export function createThrottledFetch(
       let res: Response;
       try {
         stats.requests += 1;
+        const method = methodOf(init);
+        stats.byMethod[method] = (stats.byMethod[method] ?? 0) + 1;
         res = await transport(input, init);
       } finally {
         gate.release();

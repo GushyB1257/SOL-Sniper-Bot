@@ -879,9 +879,25 @@ Three things now handle it, in order of where they act:
    and **drops** the rest rather than queueing them. A launch that had to wait
    in line is one you are too late to buy anyway.
 
-If the dashboard still shows the amber **RPC throttled** chip climbing, lower
-`RPC_MAX_REQUESTS_PER_SEC` to your provider's documented limit — 10 on most free
-tiers. A free public endpoint will rate-limit this workload no matter what the
+**Find out which subsystem is spending the quota before turning anything down.**
+Every RPC call is counted by its JSON-RPC method, and the method maps straight
+onto a subsystem — so the log and the dashboard chip name the biggest spender
+instead of leaving you to guess:
+
+| Busiest method | That is | Turn down |
+|---|---|---|
+| `getParsedTokenAccountsByOwner` | Copy trader reading tracked wallets | `COPY_POLL_INTERVAL_MS` (2000 is plenty), or track fewer wallets |
+| `getMultipleAccounts` | Screener polling bonding curves | `SCREEN_POLL_MAX_TOKENS`, or raise `SCREEN_POLL_INTERVAL_MS` |
+| `getSignaturesForAddress` | Sniper provenance checks | `MIN_CREATOR_AGE_MINUTES=0` and `MAX_LAUNCH_BUNDLE_TXS=0` |
+| `getTokenLargestAccounts`, `getParsedAccountInfo` | Sniper safety battery | `SNIPER_MAX_CONCURRENT_CHECKS` |
+
+The chip shows the *share* of requests rate limited rather than a raw count, so
+a number that climbs while the percentage stays flat is a bot that has simply
+been running a long time.
+
+If it stays high after that, lower `RPC_MAX_REQUESTS_PER_SEC` to your
+provider's documented limit — 10 on most free tiers — so calls queue instead of
+failing. A free public endpoint will rate-limit this workload whatever the
 settings say; a paid endpoint is the real fix.
 
 Scalp exits (`EXIT_MODE=scalp`):
@@ -920,7 +936,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 408 tests
+npm test           # 410 tests
 npm run typecheck
 npm run build
 ```

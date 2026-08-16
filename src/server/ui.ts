@@ -1641,11 +1641,21 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     if (s.rpc && s.rpc.rateLimited > 0) {
       rpcBadge.classList.remove('hidden');
       rpcBadge.textContent = 'RPC throttled \u00d7' + s.rpc.rateLimited;
+      var pct = s.rpc.requests > 0 ? (s.rpc.rateLimited / s.rpc.requests) * 100 : 0;
+      rpcBadge.textContent = 'RPC throttled ' + pct.toFixed(0) + '%';
+      // Naming the busiest calls turns "you are rate limited" into "turn this
+      // one down" — the method maps straight onto a subsystem.
+      var busiest = (s.rpc.top || []).map(function (m) {
+        return '  ' + m.method + ' \u2014 ' + m.pct.toFixed(0) + '% (' + m.calls + ')';
+      }).join('\\n');
       rpcBadge.title =
-        s.rpc.rateLimited + ' rate-limited responses out of ' + s.rpc.requests + ' requests, ' +
+        s.rpc.rateLimited + ' of ' + s.rpc.requests + ' requests rate limited, ' +
         s.rpc.retries + ' retried' +
         (s.rpc.givenUp > 0 ? ', ' + s.rpc.givenUp + ' gave up after every retry' : '') +
-        '.\\nLower RPC_MAX_REQUESTS_PER_SEC to your provider tier if this keeps climbing.';
+        '.\\n\\nBusiest calls:\\n' + busiest +
+        '\\n\\ngetParsedTokenAccountsByOwner = copy trader' +
+        '\\ngetMultipleAccounts = screener curve polling' +
+        '\\ngetSignaturesForAddress = sniper provenance checks';
     } else {
       rpcBadge.classList.add('hidden');
     }

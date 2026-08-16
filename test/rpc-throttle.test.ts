@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createThrottledFetch, rpcStats, resetRpcStatsForTests } from '../src/util/rpc-throttle.js';
+import {
+  createThrottledFetch,
+  rpcStats,
+  resetRpcStatsForTests,
+  topMethods,
+} from '../src/util/rpc-throttle.js';
 
 /** Minimal stand-in for a fetch Response; only status and headers are read. */
 function reply(status: number, headers: Record<string, string> = {}): Response {
@@ -96,6 +101,41 @@ describe('RPC throttling', () => {
     const res = await f('http://rpc.test');
     expect(res.status).toBe(429);
     expect(rpcStats().givenUp).toBe(1);
+  });
+
+  it('reports which calls are spending the quota', async () => {
+    // "You are being rate limited" is not actionable on its own. The method
+    // name maps straight onto a subsystem, so it is the difference between
+    // advice and a shrug.
+    const f = createThrottledFetch(
+      { maxConcurrent: 8, maxPerSecond: 0, maxRetries: 0 },
+      (async () => reply(200)) as unknown as typeof fetch,
+    );
+    const call = (method: string) =>
+      f('http://rpc.test', { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', method }) });
+
+    await Promise.all([
+      ...Array.from({ length: 7 }, () => call('getParsedTokenAccountsByOwner')),
+      ...Array.from({ length: 2 }, () => call('getMultipleAccounts')),
+      call('getSignaturesForAddress'),
+    ]);
+
+    const top = topMethods(3);
+    expect(top[0]?.method).toBe('getParsedTokenAccountsByOwner');
+    expect(top[0]?.calls).toBe(7);
+    expect(top[0]?.pct).toBeCloseTo(70, 0);
+    expect(rpcStats().byMethod.getMultipleAccounts).toBe(2);
+  });
+
+  it('does not fall over on a body it cannot read', async () => {
+    const f = createThrottledFetch(
+      { maxConcurrent: 2, maxPerSecond: 0, maxRetries: 0 },
+      (async () => reply(200)) as unknown as typeof fetch,
+    );
+    await f('http://rpc.test');
+    await f('http://rpc.test', { method: 'POST', body: '<not json>' });
+    expect(rpcStats().byMethod.unknown).toBe(2);
+    expect(rpcStats().requests).toBe(2);
   });
 
   it('passes an ordinary error straight through without retrying', async () => {
