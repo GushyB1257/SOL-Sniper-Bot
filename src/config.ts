@@ -493,8 +493,16 @@ const schema = z.object({
    * biggest leak — between checkpoints, a position that ran to +90% could give
    * every bit of it back and still be holding when the window finally closed.
    * 0 disables it.
+   *
+   * Tightened from 40 to 25 on the sniper's first 174 closed trades. At 40 a
+   * winner keeps about 60% of its peak gain, which produced a +44.5% average
+   * winner against a -17.5% average loser — a pair needing a 28.2% win rate to
+   * break even, against an actual 16.1%. Keeping 75% of the peak instead moves
+   * the requirement to 23.9% without touching the entry at all. Exits come
+   * earlier and some runners will be cut short; whether that trade is worth
+   * making is exactly what the tuner's measure-and-revert loop decides.
    */
-  RATCHET_GIVEBACK_PCT: num(0, 100).default(40),
+  RATCHET_GIVEBACK_PCT: num(0, 100).default(25),
   /** Share of the remaining moonbag skimmed at each checkpoint it survives. */
   MOONBAG_TRIM_PCT: num(0, 90).default(25),
   /**

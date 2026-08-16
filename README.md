@@ -848,7 +848,7 @@ Ratchet exits (`EXIT_MODE=ratchet`):
 | Hold a bigger runner | Lower `MOONBAG_TRIM_PCT` |
 | Bound the downside again | Set `RATCHET_STOP_LOSS_PCT` (50–70 keeps the recovery upside) |
 | Cut dead entries faster | Lower `RATCHET_FIRST_CHECKPOINT_SECONDS` (20–30) |
-| Keep more of a move you already had | Lower `RATCHET_GIVEBACK_PCT` (25–35) |
+| Keep more of a move you already had | Lower `RATCHET_GIVEBACK_PCT` (20–30) |
 | Let a runner breathe | Raise `RATCHET_GIVEBACK_PCT` (55–70), or 0 to disable |
 
 **The give-back rule is not a stop loss.** It measures how much of the *gain
@@ -964,7 +964,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 418 tests
+npm test           # 421 tests
 npm run typecheck
 npm run build
 ```

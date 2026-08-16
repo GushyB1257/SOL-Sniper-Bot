@@ -6,6 +6,7 @@ import {
   AutoTuner,
   JSON_SCHEMA as SCHEMA_FOR_TEST,
   proposalSchema as PROPOSAL_SCHEMA_FOR_TEST,
+  SYSTEM_PROMPT as SYSTEM_PROMPT_FOR_TEST,
 } from '../src/tuner/auto-tuner.js';
 import { RISK_KEYS, TUNABLES, TUNABLE_BY_KEY, vetProposal } from '../src/tuner/limits.js';
 import { TuningLedger } from '../src/tuner/ledger.js';
@@ -290,6 +291,31 @@ describe('what the tuner may touch', () => {
     expect(vetProposal('MOONBAG_TRIM_PCT', '25', 25).ok).toBe(false);
     expect(vetProposal('EXIT_MODE', 'ratchet', 'ratchet').ok).toBe(false);
     expect(vetProposal('REQUIRE_SOCIALS', 'true', true).ok).toBe(false);
+  });
+});
+
+describe('what it is told it may decide', () => {
+  const SYSTEM = (): string => {
+    // The prompt is the only place "propose it yourself" can be established,
+    // and it regressed once already into writing notes about parameters it
+    // owned. Pin the two instructions that matter.
+    const t = new AutoTuner({ cfg, settings, stores: new Map([['screener', store]]), dataDir: dir });
+    return (t as unknown as { claude: unknown }) && SYSTEM_PROMPT_FOR_TEST;
+  };
+
+  it('separates exposure from shape, and claims shape as its own', () => {
+    const p = SYSTEM();
+    expect(p).toMatch(/EXPOSURE/);
+    expect(p).toMatch(/SHAPE/);
+    // The specific failure: reporting a lever it holds as future work.
+    expect(p).toMatch(/PROPOSE THEM/);
+    expect(p).toMatch(/next lever is X/);
+  });
+
+  it('reserves notes for things it genuinely cannot reach', () => {
+    const p = SYSTEM();
+    expect(p).toMatch(/Notes are ONLY for things you cannot reach/);
+    expect(p).toMatch(/propose it instead/);
   });
 });
 
