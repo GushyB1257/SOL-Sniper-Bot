@@ -1,6 +1,7 @@
 import type { ExitOrder, LadderTier, Position } from '../types.js';
 import type { Config } from '../config.js';
 import { pctChange } from '../util/solana.js';
+import { breakevenGrossPct, costModel, targetGrossPct } from './costs.js';
 
 /**
  * Builds the ladder for a new position from config.
@@ -44,6 +45,8 @@ export function decideExit(ctx: ExitContext): ExitOrder | null {
   if (p.status !== 'open') return null;
   if (p.remainingQty <= 0) return null;
   if (!Number.isFinite(price) || price <= 0) return null;
+
+  if (cfg.SCALP_MODE) return decideScalpExit(ctx);
 
   const gainPct = pctChange(p.entryPrice, price);
   const drawdownFromPeak = p.peakPrice > 0 ? pctChange(p.peakPrice, price) : 0;
@@ -156,4 +159,106 @@ export function positionPnl(p: Position, price: number): { sol: number; pct: num
   const total = p.realizedSol + unrealised;
   const sol = total - p.costSol;
   return { sol, pct: p.costSol > 0 ? (sol / p.costSol) * 100 : 0 };
+}
+
+
+/**
+ * Quick in-and-out exit.
+ *
+ * The target is computed from the fee model rather than being a round number:
+ * you ask for a NET return and the bot works out the gross move that delivers
+ * it after both program fees, both router fees and both priority fees. This
+ * matters more than it sounds — at 0.05 SOL with a 0.0008 priority fee, the
+ * breakeven move is 6.3%, so a "quick 5% scalp" is a guaranteed loss however
+ * well it is timed.
+ *
+ * A runner is kept back after the target fills, so a call that turns out
+ * conservative is not capped at its own guess.
+ */
+export function decideScalpExit(ctx: ExitContext): ExitOrder | null {
+  const { position: p, price, cfg, now } = ctx;
+
+  const model = costModel(cfg, p.notionalSol ?? p.costSol);
+  const breakeven = breakevenGrossPct(model);
+  const target = targetGrossPct(model, cfg.SCALP_TARGET_NET_PCT);
+
+  const gainPct = pctChange(p.entryPrice, price);
+  const peakGainPct = pctChange(p.entryPrice, p.peakPrice);
+  const heldSeconds = (now - p.openedAt) / 1000;
+  const runnerActive = p.moonbagArmed;
+
+  const closeAll = (reason: ExitOrder['reason'], detail: string): ExitOrder => ({
+    mint: p.mint,
+    positionId: p.id,
+    qty: p.remainingQty,
+    reason,
+    closeAll: true,
+    tierIndexes: [],
+    detail,
+  });
+
+  // 1. Hard stop. The analyst's level wins only when tighter.
+  const stopPct =
+    p.aiInvalidationPct !== undefined
+      ? Math.min(cfg.SCALP_STOP_LOSS_PCT, p.aiInvalidationPct)
+      : cfg.SCALP_STOP_LOSS_PCT;
+  if (gainPct <= -stopPct) {
+    return closeAll('stop_loss', `down ${gainPct.toFixed(1)}% (stop ${-stopPct}%)`);
+  }
+
+  // 2. Breakeven stop. Once a trade has been meaningfully green, it should not
+  //    be allowed to become a loser — the whole point of a scalp is banking
+  //    small edges, and giving them back is what turns the arithmetic negative.
+  if (!runnerActive && peakGainPct >= breakeven + cfg.SCALP_BREAKEVEN_ARM_PCT) {
+    if (gainPct <= breakeven) {
+      return closeAll(
+        'trailing_stop',
+        `fell back to breakeven (${breakeven.toFixed(1)}%) after peaking at ${peakGainPct.toFixed(1)}%`,
+      );
+    }
+  }
+
+  // 3. Runner: trail it once the target has been banked.
+  if (runnerActive) {
+    const drawdown = p.peakPrice > 0 ? pctChange(p.peakPrice, price) : 0;
+    if (drawdown <= -cfg.SCALP_RUNNER_TRAILING_STOP_PCT) {
+      return closeAll(
+        'trailing_stop',
+        `runner ${drawdown.toFixed(1)}% off peak (limit ${-cfg.SCALP_RUNNER_TRAILING_STOP_PCT}%)`,
+      );
+    }
+    if (heldSeconds >= cfg.MAX_HOLD_SECONDS) {
+      return closeAll('max_hold', `runner held ${Math.round(heldSeconds)}s`);
+    }
+    return null;
+  }
+
+  // 4. Target hit: bank the position, keep the runner back.
+  if (gainPct >= target) {
+    const runnerFraction = cfg.SCALP_RUNNER_PCT / 100;
+    const sellQty = p.remainingQty * (1 - runnerFraction);
+    const dust = runnerFraction <= 0 || sellQty / p.remainingQty > 0.995;
+    return {
+      mint: p.mint,
+      positionId: p.id,
+      qty: dust ? p.remainingQty : sellQty,
+      reason: 'ladder',
+      closeAll: dust,
+      tierIndexes: p.ladder.map((_, i) => i),
+      detail:
+        `+${gainPct.toFixed(1)}% cleared net target (+${cfg.SCALP_TARGET_NET_PCT}% after ` +
+        `${breakeven.toFixed(1)}% fees)` + (dust ? '' : `, keeping ${cfg.SCALP_RUNNER_PCT}% runner`),
+    };
+  }
+
+  // 5. Time stop. Capital turnover is the whole strategy; a position that has
+  //    not moved is occupying a slot another setup could use.
+  if (heldSeconds >= cfg.SCALP_TIME_STOP_SECONDS && gainPct < breakeven) {
+    return closeAll(
+      'time_stop',
+      `flat at ${gainPct.toFixed(1)}% after ${Math.round(heldSeconds)}s (below ${breakeven.toFixed(1)}% breakeven)`,
+    );
+  }
+
+  return null;
 }

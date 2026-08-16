@@ -8,6 +8,7 @@ import { TokenAnalyst } from './analyst.js';
 import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
 import { pctChange } from '../util/solana.js';
+import { momentumSignal } from '../strategy/momentum.js';
 
 const log = logger('ai-strategy');
 
@@ -68,6 +69,7 @@ export class AiOrchestrator {
   private callLog: number[] = [];
   private lastReview = new Map<string, number>();
   private evaluating = false;
+  private entering = false;
   private subscribed = new Set<string>();
 
   constructor(private readonly deps: OrchestratorDeps) {
@@ -89,8 +91,65 @@ export class AiOrchestrator {
     this.watchlist.add(candidate);
   }
 
+  /**
+   * Every trade on a watched token, straight off the websocket.
+   *
+   * The momentum check runs HERE rather than on the timer, because the moves
+   * worth catching complete in seconds — waiting for the next 10s tick means
+   * arriving after they are over. This path does no I/O and no model call, so
+   * the cost of running it on every trade is microseconds.
+   */
   recordTrade(trade: ObservedTrade): void {
     this.watchlist.recordTrade(trade);
+    if (this.deps.cfg.ENTRY_MODE !== 'fast') return;
+    if (trade.side !== 'buy') return;
+
+    const token = this.watchlist.get(trade.mint);
+    if (!token || token.analysed) return;
+
+    const signal = momentumSignal(token, this.deps.cfg, trade.at);
+    if (!signal.fire) return;
+
+    // Claim it synchronously so a burst of trades cannot fire twice.
+    this.watchlist.markAnalysed(trade.mint);
+    this.stats.graduated += 1;
+
+    void this.fastEntry(token.candidate, signal.reason).catch((err) =>
+      log.error(`Fast entry failed for ${trade.mint}: ${errMessage(err)}`),
+    );
+  }
+
+  /** Deterministic entry: risk check, then buy. No model in this path. */
+  private async fastEntry(candidate: TokenCandidate, reason: string): Promise<void> {
+    if (this.deps.store.hasTraded(candidate.mint)) return;
+    if (this.entering) return;
+    this.entering = true;
+    try {
+      const risk = this.deps.risk.canOpen(await this.deps.walletBalance());
+      if (!risk.allowed) {
+        log.debug(`Momentum fired for ${candidate.symbol ?? candidate.mint} but ${risk.reason}`);
+        return;
+      }
+
+      log.info(`FAST ENTRY ${candidate.symbol ?? candidate.mint.slice(0, 8)} — ${reason}`);
+      this.deps.store.recordCreatorLaunch(candidate.creator, candidate.mint);
+
+      const size = this.deps.risk.sizeFor(100);
+      const fill = await this.deps.executor.buy(candidate, size);
+      if (!fill.ok) {
+        log.warn(`Buy failed for ${candidate.symbol ?? candidate.mint}: ${fill.error}`);
+        if (fill.spentSol > 0) this.deps.risk.recordOutcome(-fill.spentSol);
+        return;
+      }
+
+      this.stats.bought += 1;
+      const position = this.deps.positions.open(candidate, fill, 0);
+      position.notionalSol = size;
+      position.notes.push(`momentum: ${reason}`);
+      this.deps.store.savePosition(position);
+    } finally {
+      this.entering = false;
+    }
   }
 
   /**
@@ -166,6 +225,7 @@ export class AiOrchestrator {
   }
 
   private async evaluateGraduates(): Promise<void> {
+    if (this.deps.cfg.ENTRY_MODE !== 'ai') return;
     if (this.evaluating) return;
 
     const graduates = this.watchlist.graduates();
@@ -243,6 +303,7 @@ export class AiOrchestrator {
 
     this.stats.bought += 1;
     const position = this.deps.positions.open(candidate, fill, d.confidence);
+    position.notionalSol = size;
 
     // Carry the model's plan onto the position so the reviewer can be held to
     // its own thesis, and so the exit planner can use its levels.
@@ -255,6 +316,7 @@ export class AiOrchestrator {
   }
 
   private async reviewOpenPositions(): Promise<void> {
+    if (!this.deps.cfg.AI_MANAGE_EXITS) return;
     const open = this.deps.store.openPositions();
     if (open.length === 0) return;
 

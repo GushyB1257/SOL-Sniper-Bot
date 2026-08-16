@@ -80,6 +80,8 @@ export interface Position {
 
   /** SOL actually spent on entry, including fees. */
   costSol: number;
+  /** SOL notional committed, excluding fees. Drives the fee-aware target. */
+  notionalSol?: number;
   /** Token quantity received on entry (UI units). */
   originalQty: number;
   /** Token quantity still held. */

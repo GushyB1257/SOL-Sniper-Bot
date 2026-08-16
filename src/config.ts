@@ -84,7 +84,7 @@ const schema = z.object({
   WALLET_PRIVATE_KEY: z.string().default(''),
 
   BUY_AMOUNT_SOL: num(0.0001, 100).default(0.05),
-  MAX_CONCURRENT_POSITIONS: num(1, 50).default(3),
+  MAX_CONCURRENT_POSITIONS: num(1, 50).default(8),
   MIN_WALLET_RESERVE_SOL: num(0, 100).default(0.05),
 
   BUY_SLIPPAGE_PCT: num(0.1, 100).default(15),
@@ -113,6 +113,46 @@ const schema = z.object({
   BREAKER_COOLDOWN_SECONDS: num(0, 86400).default(1800),
   HOURLY_SPEND_CAP_SOL: num(0, 1000).default(0.5),
 
+  // === Entry path ===
+  /**
+   * fast   : deterministic momentum trigger, fires in microseconds on the trade
+   *          stream. No model in the entry path. AI still manages exits.
+   * ai     : Claude decides entries. Slower — the model thinks for seconds, so
+   *          moves that complete in seconds are gone before it answers.
+   * rules  : original creation-time sniper.
+   */
+  ENTRY_MODE: z.enum(['fast', 'ai', 'rules']).default('fast'),
+
+  // === Momentum trigger (ENTRY_MODE=fast) ===
+  MOMENTUM_WINDOW_SECONDS: num(5, 600).default(30),
+  MOMENTUM_MIN_AGE_SECONDS: num(0, 3600).default(15),
+  MOMENTUM_MAX_AGE_SECONDS: num(10, 86400).default(900),
+  MOMENTUM_MIN_GAIN_PCT: num(0.1, 10000).default(12),
+  MOMENTUM_MIN_BUYERS: num(1, 1000).default(6),
+  MOMENTUM_MIN_VOLUME_SOL: num(0, 10000).default(1.5),
+  MOMENTUM_MIN_BUY_SELL_RATIO: num(0.1, 1000).default(1.8),
+  /** Refuse to chase a token already up this much since first seen. */
+  MOMENTUM_MAX_CHASE_PCT: num(0, 100000).default(250),
+  /** Cooldown after a fill before the same token can trigger again. */
+  MOMENTUM_REENTRY_COOLDOWN_SECONDS: num(0, 86400).default(600),
+
+  // === Fee model (drives the scalp target) ===
+  PROGRAM_FEE_PCT: num(0, 10).default(1),
+  ROUTER_FEE_PCT: num(0, 10).default(0.5),
+
+  // === Scalp exit ===
+  /** true: exit on a fee-aware net target instead of the long ladder. */
+  SCALP_MODE: bool.default('true'),
+  /** Net profit target as a percent of the SOL committed, AFTER all fees. */
+  SCALP_TARGET_NET_PCT: num(0.1, 1000).default(8),
+  SCALP_STOP_LOSS_PCT: num(0.5, 95).default(18),
+  SCALP_TIME_STOP_SECONDS: num(5, 3600).default(120),
+  /** Once gross gain clears breakeven by this much, the stop moves to breakeven. */
+  SCALP_BREAKEVEN_ARM_PCT: num(0, 100).default(3),
+  /** Percent of the position kept running after the target fills. */
+  SCALP_RUNNER_PCT: num(0, 60).default(20),
+  SCALP_RUNNER_TRAILING_STOP_PCT: num(1, 99).default(35),
+
   // === AI analyst ===
   /** ai: Claude decides entries and exits. rules: the original deterministic sniper. */
   STRATEGY: z.enum(['ai', 'rules']).default('ai'),
@@ -128,15 +168,17 @@ const schema = z.object({
   AI_MAX_CALLS_PER_HOUR: num(1, 10_000).default(60),
   /** Stop making calls once estimated spend for the UTC day exceeds this. */
   AI_DAILY_BUDGET_USD: num(0, 10_000).default(10),
+  /** Let Claude review and exit open positions. Entry stays deterministic. */
+  AI_MANAGE_EXITS: bool.default('true'),
 
   // === Watchlist / traction gate ===
   WATCHLIST_MAX_SIZE: num(10, 20_000).default(1500),
-  WATCH_MIN_AGE_SECONDS: num(5, 3600).default(90),
+  WATCH_MIN_AGE_SECONDS: num(5, 3600).default(20),
   WATCH_MAX_AGE_SECONDS: num(30, 86_400).default(1800),
-  MIN_UNIQUE_BUYERS: num(1, 10_000).default(25),
-  MIN_BUY_VOLUME_SOL: num(0, 10_000).default(3),
+  MIN_UNIQUE_BUYERS: num(1, 10_000).default(8),
+  MIN_BUY_VOLUME_SOL: num(0, 10_000).default(1.5),
   MIN_PRICE_CHANGE_PCT: z.coerce.number().default(-10),
-  MIN_RECENT_BUYERS: num(0, 1000).default(4),
+  MIN_RECENT_BUYERS: num(0, 1000).default(2),
 
   DISCOVERY_SOURCE: z.enum(['pumpportal', 'rpc']).default('pumpportal'),
   PUMPPORTAL_WS_URL: z.string().url().default('wss://pumpportal.fun/api/data'),
@@ -176,11 +218,17 @@ function crossValidate(cfg: Config): string[] {
     }
   }
 
-  if (cfg.STRATEGY === 'ai' && !cfg.ANTHROPIC_API_KEY) {
+  const usesAi = cfg.STRATEGY === 'ai' && (cfg.ENTRY_MODE === 'ai' || cfg.AI_MANAGE_EXITS);
+  if (usesAi && !cfg.ANTHROPIC_API_KEY) {
     errors.push(
-      'STRATEGY=ai requires ANTHROPIC_API_KEY. Get one at console.anthropic.com, ' +
-        'or set STRATEGY=rules to run the deterministic sniper instead.',
+      'This config uses Claude (ENTRY_MODE=ai or AI_MANAGE_EXITS=true) but ' +
+        'ANTHROPIC_API_KEY is empty. Get one at console.anthropic.com, or set ' +
+        'AI_MANAGE_EXITS=false and ENTRY_MODE=fast to run fully deterministically.',
     );
+  }
+
+  if (cfg.SCALP_MODE && cfg.SCALP_RUNNER_PCT >= 100) {
+    errors.push('SCALP_RUNNER_PCT must be below 100 — something has to be sold at the target');
   }
 
   if (cfg.WATCH_MIN_AGE_SECONDS >= cfg.WATCH_MAX_AGE_SECONDS) {

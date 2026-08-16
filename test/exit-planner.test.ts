@@ -13,6 +13,7 @@ const BASE_ENV = {
   RPC_WS_URL: 'wss://rpc.example.com',
   MODE: 'paper',
   ANTHROPIC_API_KEY: 'sk-ant-test',
+  SCALP_MODE: 'false',
 } as unknown as NodeJS.ProcessEnv;
 
 function cfg(overrides: Record<string, string> = {}) {

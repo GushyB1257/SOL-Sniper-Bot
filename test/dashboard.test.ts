@@ -21,6 +21,7 @@ function env(dir: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv
     RPC_WS_URL: 'wss://rpc.example.com',
     MODE: 'paper',
   ANTHROPIC_API_KEY: 'sk-ant-test',
+  SCALP_MODE: 'false',
     DATA_DIR: dir,
     WALLET_PRIVATE_KEY: SECRET,
     DASHBOARD_PORT: '0',
@@ -139,7 +140,7 @@ describe('dashboard serving', () => {
     const body = await res.json();
     expect(body.mode).toBe('paper');
     expect(body.stats.seen).toBe(12);
-    expect(body.risk.maxConcurrentPositions).toBe(3);
+    expect(body.risk.maxConcurrentPositions).toBe(8);
   });
 
   it('404s an unknown route', async () => {
