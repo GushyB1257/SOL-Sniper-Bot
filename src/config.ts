@@ -207,6 +207,26 @@ const schema = z.object({
   /** Do not follow a wallet into a token it already held before we started. */
   COPY_SKIP_PREEXISTING: bool.default('true'),
 
+  // === Exit execution ===
+  /**
+   * How many times a sell is retried before a position is written off.
+   *
+   * This is not a cosmetic number. A position that cannot be sold is booked as
+   * a total loss, so giving up early turns a temporary RPC hiccup or a rate
+   * limit into a fabricated -100% trade.
+   */
+  EXIT_MAX_ATTEMPTS: num(1, 200).default(12),
+  /** Wait between sell retries. */
+  EXIT_RETRY_SECONDS: num(1, 3600).default(15),
+  /**
+   * How long a position may be unpriceable before it is written off.
+   *
+   * Being unable to READ a price is a data problem, not a market one — the
+   * token may be perfectly tradeable. Long enough that an outage does not cost
+   * a position; short enough that a genuinely dead token frees its slot.
+   */
+  PRICE_STALE_SECONDS: num(30, 86_400).default(600),
+
   // === Entry path ===
   /**
    * screener : the filter a human watches, applied automatically — pool,

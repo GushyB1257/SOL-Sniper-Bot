@@ -456,6 +456,22 @@ describe('page render', () => {
     expect(html).toContain('MCap in');
   });
 
+  it('does not rebuild the settings form on every refresh', () => {
+    // Rebuilding replaces every input node, which ejects the caret mid-typing —
+    // the box becomes impossible to fill in. The form is built once per tab and
+    // refreshed in place after that, skipping focused and edited fields.
+    const script = /<script>\n([\s\S]*?)<\/script>/.exec(renderPage('t'))![1]!;
+    expect(script).toContain('settingsBuiltFor');
+    expect(script).toContain('function refreshSettings');
+    expect(script).toContain('input === document.activeElement');
+    // The only innerHTML wipe of the form must sit behind the build guard.
+    const build = script.slice(script.indexOf('function renderSettings'));
+    const guard = build.indexOf('settingsBuiltFor === botId');
+    const wipe = build.indexOf("host.innerHTML = ''");
+    expect(guard).toBeGreaterThan(-1);
+    expect(wipe).toBeGreaterThan(guard);
+  });
+
   it('keeps the run state on a label, not on the action button', () => {
     // "Stop Copy trader" reads as a state as easily as an action, which is how
     // a running bot gets reported as a broken Start button.

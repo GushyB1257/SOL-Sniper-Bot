@@ -16,11 +16,6 @@ import { pctChange } from '../util/solana.js';
 
 const log = logger('positions');
 
-/** Wait between retries after a failed sell, so failures don't spin the loop. */
-const EXIT_RETRY_COOLDOWN_MS = 30_000;
-
-/** Consecutive failed sells before a position is written off. */
-const MAX_EXIT_FAILURES = 5;
 
 /**
  * Owns the lifecycle of every open position: entry bookkeeping, the monitoring
@@ -97,14 +92,35 @@ export class PositionManager {
       const p = this.store.getPosition(positionId);
       if (!p || p.status !== 'open') return;
 
+      // The backoff is checked FIRST, before pricing. It used to sit after the
+      // price read, which meant an unpriceable position skipped it entirely and
+      // burned all its sell attempts at tick rate — twelve retries in eighteen
+      // seconds instead of over three minutes.
+      const inBackoff = p.nextExitAttemptAt !== undefined && Date.now() < p.nextExitAttemptAt;
+
       const price = await this.executor.price(p);
       if (price === null || !Number.isFinite(price) || price <= 0) {
-        // No price is itself a signal: liquidity may have been pulled. Give it
-        // a grace window, then treat a persistently unpriceable token as a rug.
-        const staleMs = Date.now() - p.lastPriceAt;
-        if (staleMs > 120_000) {
-          p.notes.push(`no price for ${Math.round(staleMs / 1000)}s — treating as rugged`);
-          await this.closeOut(p, 'rug_detected', 'price feed dead for over 2 minutes');
+        // Being unable to READ a price is a data problem, not a market one.
+        // This used to write the position off as a rug after two minutes, then
+        // fail the sell (no price to sell at) and book -100% — on tokens that
+        // were perfectly tradeable and that the wallet we were copying sold
+        // just fine. Wait far longer, say what is actually happening, and when
+        // giving up call it what it is.
+        const staleSeconds = (Date.now() - p.lastPriceAt) / 1000;
+        if (inBackoff) return;
+        if (staleSeconds > this.cfg.PRICE_STALE_SECONDS) {
+          p.notes.push(`no readable price for ${Math.round(staleSeconds)}s`);
+          await this.closeOut(
+            p,
+            'unpriceable',
+            `no price could be read for ${Math.round(staleSeconds)}s ` +
+              `(limit ${this.cfg.PRICE_STALE_SECONDS}s)`,
+          );
+        } else if (staleSeconds > 30) {
+          log.warn(
+            `${p.symbol ?? p.mint.slice(0, 8)}: no price for ${Math.round(staleSeconds)}s — ` +
+              `still holding, giving up at ${this.cfg.PRICE_STALE_SECONDS}s`,
+          );
         }
         return;
       }
@@ -113,9 +129,9 @@ export class PositionManager {
       p.lastPriceAt = Date.now();
       if (price > p.peakPrice) p.peakPrice = price;
 
-      // Respect the post-failure backoff: keep pricing the position, but do
-      // not re-attempt a sell that just failed.
-      if (p.nextExitAttemptAt !== undefined && Date.now() < p.nextExitAttemptAt) {
+      // A readable price is worth recording even while backing off, so the
+      // position's mark-to-market keeps updating between sell attempts.
+      if (inBackoff) {
         this.store.savePosition(p);
         return;
       }
@@ -167,34 +183,32 @@ export class PositionManager {
         return;
       }
 
-      // A failed sell on a stop loss is the dangerous case — it usually means
-      // the token cannot be sold at all. Mark it so we stop counting it as
-      // recoverable value and stop trusting this deployer.
-      if (order.reason === 'stop_loss' || order.reason === 'rug_detected') {
-        p.status = 'failed';
-        p.closedAt = Date.now();
-        p.closeReason = `${order.reason}: sell failed — ${result.error ?? 'unknown'}`;
-        this.finalise(p, true);
-        return;
-      }
-
-      // Otherwise back off and cap the attempts. Without this a persistently
-      // failing sell retries at the tick rate forever, floods the log, and
-      // holds a position slot that the risk manager will never release.
+      // EVERY reason retries, including stop_loss and rug_detected. Those two
+      // used to be written off on the first failure on the theory that a failed
+      // stop means the token cannot be sold — but that is precisely the case
+      // that deserves another attempt, and giving up immediately turns a
+      // transient RPC error or rate limit into a fabricated total loss.
       p.exitFailures = (p.exitFailures ?? 0) + 1;
-      p.nextExitAttemptAt = Date.now() + EXIT_RETRY_COOLDOWN_MS;
+      p.nextExitAttemptAt = Date.now() + this.cfg.EXIT_RETRY_SECONDS * 1000;
 
-      if (p.exitFailures >= MAX_EXIT_FAILURES) {
+      if (p.exitFailures >= this.cfg.EXIT_MAX_ATTEMPTS) {
         log.error(
-          `${label}: ${p.exitFailures} consecutive failed sells — giving up and marking failed`,
+          `${label}: gave up after ${p.exitFailures} sell attempts over ` +
+            `${Math.round((p.exitFailures * this.cfg.EXIT_RETRY_SECONDS) / 60)} minutes — ${result.error ?? 'unknown'}`,
         );
         p.status = 'failed';
         p.closedAt = Date.now();
         p.closeReason = `${order.reason}: ${p.exitFailures} failed sells — ${result.error ?? 'unknown'}`;
-        this.finalise(p, true);
+        // Only blame the deployer when the token itself was the problem. A
+        // pricing outage on our side says nothing about who launched it.
+        this.finalise(p, true, order.reason !== 'unpriceable');
         return;
       }
 
+      log.warn(
+        `${label}: sell attempt ${p.exitFailures}/${this.cfg.EXIT_MAX_ATTEMPTS} failed, ` +
+          `retrying in ${this.cfg.EXIT_RETRY_SECONDS}s`,
+      );
       this.store.savePosition(p);
       return;
     }
@@ -314,8 +328,16 @@ export class PositionManager {
     });
   }
 
-  /** Closes the books on a position: journal, PnL accounting, reputation. */
-  private finalise(p: Position, failed: boolean): void {
+  /**
+   * Closes the books on a position: journal, PnL accounting, reputation.
+   *
+   * `blameCreator` exists because a -100% result is not always the token's
+   * fault. When we simply could not read a price, the loss is booked (the
+   * capital really is unrecoverable to us) but the deployer's record is left
+   * alone — otherwise our own outage teaches the safety engine to distrust
+   * honest launches.
+   */
+  private finalise(p: Position, failed: boolean, blameCreator = true): void {
     const pnlSol = p.realizedSol - p.costSol;
     const pnlPct = p.costSol > 0 ? (pnlSol / p.costSol) * 100 : 0;
     const holdSeconds = ((p.closedAt ?? Date.now()) - p.openedAt) / 1000;
@@ -342,8 +364,10 @@ export class PositionManager {
 
     // Feed the outcome back into deployer reputation. A total loss or an
     // unsellable position is what we call a rug for scoring purposes.
-    const rugged = failed || pnlPct <= -80;
-    this.store.recordCreatorOutcome(p.creator, rugged);
+    if (blameCreator) {
+      const rugged = failed || pnlPct <= -80;
+      this.store.recordCreatorOutcome(p.creator, rugged);
+    }
 
     const sign = pnlSol >= 0 ? '+' : '';
     log.info(

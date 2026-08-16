@@ -166,7 +166,13 @@ export type ExitReason =
   /** Skimmed a slice off a moonbag that is still climbing. */
   | 'moonbag_trim'
   /** A checkpoint passed without a new high, so the move is over. */
-  | 'ratchet_stall';
+  | 'ratchet_stall'
+  /**
+   * No price could be read for long enough to give up. Deliberately distinct
+   * from `rug_detected`: one means the token is worthless, the other means we
+   * could not see it, and conflating them writes off tradeable positions.
+   */
+  | 'unpriceable';
 
 /** An instruction produced by the strategy for the executor to carry out. */
 export interface ExitOrder {

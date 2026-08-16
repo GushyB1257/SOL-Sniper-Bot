@@ -37,6 +37,15 @@ export class ChainPriceSource implements PriceSource {
   private cache = new Map<string, { at: number; curve: BondingCurveState | null }>();
   private static readonly TTL_MS = 500;
 
+  /** Quote endpoints to try, in order. Jupiter has moved this more than once. */
+  private static readonly QUOTE_HOSTS = [
+    'https://lite-api.jup.ag/swap/v1/quote',
+    'https://api.jup.ag/swap/v1/quote',
+    'https://quote-api.jup.ag/v6/quote',
+  ];
+  private preferredHost: string | null = null;
+  private warnedNoQuoteHost = false;
+
   constructor(
     private readonly conn: Connection,
     private readonly cfg: Config,
@@ -67,24 +76,53 @@ export class ChainPriceSource implements PriceSource {
     }
   }
 
-  /** Executable price from a Jupiter quote, once the token has left the curve. */
+  /**
+   * Executable price from a Jupiter quote, once the token has left the curve.
+   *
+   * Several hosts are tried rather than one. Jupiter has moved its quote
+   * endpoint more than once, and a single hard-coded URL going stale is
+   * indistinguishable from a token having no liquidity — which is how a
+   * perfectly tradeable position gets written off as a rug. The host that
+   * answers is remembered so the fallback costs one round trip, not every time.
+   */
   private async ammPrice(mint: string): Promise<number | null> {
-    try {
-      // Quote a nominal sell rather than reading a mid-price, so the number
-      // reflects what someone would actually pay us.
-      const url =
-        `https://quote-api.jup.ag/v6/quote?inputMint=${mint}` +
-        `&outputMint=So11111111111111111111111111111111111111112` +
-        `&amount=1000000&slippageBps=${Math.round(this.cfg.SELL_SLIPPAGE_PCT * 100)}`;
-      const res = await withTimeout(fetch(url), 3000, 'jupiter quote');
-      if (!res.ok) return null;
-      const quote = (await res.json()) as { outAmount?: string };
-      if (!quote.outAmount) return null;
-      // 1e6 token base units in, lamports out.
-      return Number(quote.outAmount) / 1e9;
-    } catch {
-      return null;
+    const hosts = ChainPriceSource.QUOTE_HOSTS;
+    const order = this.preferredHost
+      ? [this.preferredHost, ...hosts.filter((h) => h !== this.preferredHost)]
+      : hosts;
+
+    let reachedAny = false;
+    for (const host of order) {
+      try {
+        // Quote a nominal sell rather than reading a mid-price, so the number
+        // reflects what someone would actually pay us.
+        const url =
+          `${host}?inputMint=${mint}` +
+          `&outputMint=So11111111111111111111111111111111111111112` +
+          `&amount=1000000&slippageBps=${Math.round(this.cfg.SELL_SLIPPAGE_PCT * 100)}`;
+        const res = await withTimeout(fetch(url), 3000, 'jupiter quote');
+        if (res.status === 404 || res.status >= 500) continue; // wrong or broken host
+        reachedAny = true;
+        this.preferredHost = host;
+        if (!res.ok) return null; // reached it and it said no route
+
+        const quote = (await res.json()) as { outAmount?: string };
+        if (!quote.outAmount) return null;
+        // 1e6 token base units in, lamports out.
+        return Number(quote.outAmount) / 1e9;
+      } catch {
+        continue;
+      }
     }
+
+    if (!reachedAny && !this.warnedNoQuoteHost) {
+      this.warnedNoQuoteHost = true;
+      log.warn(
+        'No Jupiter quote endpoint responded. Graduated tokens cannot be priced, ' +
+          'which will look like positions dying for no reason. Check outbound HTTPS.',
+      );
+    }
+    return null;
   }
 }
 

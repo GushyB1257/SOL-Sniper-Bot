@@ -68,6 +68,17 @@ The cost is latency: you react a poll interval late (2s by default) rather than
 in the same block. For following a wallet's position that is fine. For racing
 them into a launch it is not, and this does not pretend otherwise.
 
+**A price you cannot read is not a rug.** Once a token graduates off the
+bonding curve its price comes from a Jupiter quote, and a quote endpoint being
+unreachable used to look identical to a token having no liquidity: the position
+was declared rugged, the sell then failed for want of a price, and it was booked
+at -100% — on tokens the wallet being copied sold without trouble. Several quote
+hosts are now tried, a sell is retried `EXIT_MAX_ATTEMPTS` times with a backoff
+before anything is written off, an unreadable price is tolerated for
+`PRICE_STALE_SECONDS` (10 minutes) rather than two, and when it is finally given
+up the reason is `unpriceable` rather than `rug_detected` — with the deployer's
+reputation left alone, since our outage says nothing about who launched it.
+
 The mechanical exits are **disabled** for copied positions. A ratchet or a stop
 firing underneath one would exit on your schedule while the wallet you are
 copying is still holding, which is the one thing a copy trader must never do.
@@ -656,7 +667,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 290 tests
+npm test           # 295 tests
 npm run typecheck
 npm run build
 ```

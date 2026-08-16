@@ -1056,6 +1056,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
 
       btn.addEventListener('click', function () {
         activeBot = b.id;
+        settingsBuiltFor = null; // different tab, different field set
         try { localStorage.setItem('sniper-bot', b.id); } catch (e) {}
         // Settings are per-tab, so a pending edit belongs to the tab it was
         // typed on. Dropping it on switch is safer than carrying it across.
@@ -1100,12 +1101,29 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
   // ---- settings --------------------------------------------------------
   var pendingSettings = {};
 
+  var settingsBuiltFor = null;
+
+  /**
+   * The form is BUILT once per tab and only refreshed after that.
+   *
+   * It used to be rebuilt from scratch on every snapshot push — once a second —
+   * which destroyed and recreated every input node. Clicking into a box and
+   * typing meant losing focus a fraction of a second later, so a field could
+   * not be filled in at all. Nothing here may replace a node the user might be
+   * interacting with.
+   */
   function renderSettings(s, botId) {
     var host = $('setForm');
-    host.innerHTML = '';
     var fields = s.settings.fields.filter(function (f) {
       return f.bot === botId || f.bot === 'shared';
     });
+
+    if (settingsBuiltFor === botId) {
+      refreshSettings(s, fields);
+      return;
+    }
+    settingsBuiltFor = botId;
+    host.innerHTML = '';
 
     var groups = {}, order = [];
     fields.forEach(function (f) {
@@ -1123,6 +1141,26 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       });
       box.appendChild(grid);
       host.appendChild(box);
+    });
+  }
+
+  /**
+   * Pushes new server values into the existing inputs, leaving alone anything
+   * the user is touching: the focused field, and any field with an unsaved
+   * edit. Without both guards a live refresh either steals the caret or
+   * silently reverts what was just typed.
+   */
+  function refreshSettings(s, fields) {
+    fields.forEach(function (f) {
+      var input = $('set-' + f.key);
+      if (!input) return;
+      if (input === document.activeElement) return;
+      if (Object.prototype.hasOwnProperty.call(pendingSettings, f.key)) return;
+
+      var value = s.settings.values[f.key];
+      if (input.value !== value) input.value = value;
+      input.dataset.serverValue = value;
+      input.parentNode.className = 'set-field';
     });
   }
 
@@ -1163,8 +1201,11 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     input.value = Object.prototype.hasOwnProperty.call(pendingSettings, f.key)
       ? pendingSettings[f.key]
       : value;
+    input.dataset.serverValue = value;
     input.addEventListener('input', function () {
-      if (input.value === value) delete pendingSettings[f.key];
+      // Compared against the CURRENT server value, not the one captured when
+      // this node was built — those diverge as soon as anything else saves.
+      if (input.value === input.dataset.serverValue) delete pendingSettings[f.key];
       else pendingSettings[f.key] = input.value;
       wrap.className = 'set-field' + (pendingSettings[f.key] !== undefined ? ' changed' : '');
     });
@@ -1376,6 +1417,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       .then(function (res) {
         if (!res.ok) { setMsg(res.body.error || 'Rejected', 'err'); return; }
         pendingSettings = {};
+        settingsBuiltFor = null; // rebuild so every field shows the accepted value
         setMsg('Applied ' + res.body.changed.length + ' change(s) — live now, no restart.', 'ok');
       })
       .catch(function () { setMsg('Request failed', 'err'); });
@@ -1383,6 +1425,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
 
   $('setRevert').addEventListener('click', function () {
     pendingSettings = {};
+    settingsBuiltFor = null;
     setMsg('Reverted to the running values.', '');
     if (snap) render(snap);
   });
@@ -1393,6 +1436,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       .then(function (r) { return r.json(); })
       .then(function (j) {
         pendingSettings = {};
+        settingsBuiltFor = null;
         setMsg(j && j.error ? j.error : 'Reset to .env.', j && j.error ? 'err' : 'ok');
       });
   });

@@ -237,7 +237,7 @@ const CONFIG_GROUPS: Record<string, string[]> = {
     'JITO_TIP_SOL',
     'MAX_CANDIDATE_AGE_MS',
   ],
-  Exit: ['EXIT_MODE'],
+  Exit: ['EXIT_MODE', 'EXIT_MAX_ATTEMPTS', 'EXIT_RETRY_SECONDS', 'PRICE_STALE_SECONDS'],
   Ratchet: [
     'CHECKPOINT_SECONDS',
     'RECOVER_AT_GAIN_PCT',

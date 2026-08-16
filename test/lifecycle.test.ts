@@ -196,3 +196,84 @@ describe('full position lifecycle', () => {
     expect(store.hasTraded(CANDIDATE.mint)).toBe(true);
   });
 });
+
+/**
+ * The failure the copy trader hit in the wild: a token whose price could not be
+ * READ was declared a rug after two minutes, the sell then failed for want of a
+ * price, and the position was written off at -100% — on a token the wallet
+ * being copied sold without trouble.
+ */
+describe('an unpriceable position is not a rug', () => {
+  it('holds through a price outage instead of writing it off in two minutes', async () => {
+    const fill = await exec.buy(CANDIDATE, cfg.BUY_AMOUNT_SOL);
+    const p = manager.open(CANDIDATE, fill, 85);
+
+    prices.unreadable = true;
+    p.lastPriceAt = Date.now() - 150_000; // well past the old 120s rule
+    store.savePosition(p);
+
+    await manager.tick();
+    expect(store.getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('gives up only after PRICE_STALE_SECONDS, and does not call it a rug', async () => {
+    const fill = await exec.buy(CANDIDATE, cfg.BUY_AMOUNT_SOL);
+    const p = manager.open(CANDIDATE, fill, 85);
+    store.recordCreatorLaunch(CANDIDATE.creator, CANDIDATE.mint);
+
+    prices.unreadable = true;
+    p.lastPriceAt = Date.now() - (cfg.PRICE_STALE_SECONDS + 30) * 1000;
+    store.savePosition(p);
+
+    // Every attempt fails (nothing can be priced), so drive it past the cap.
+    for (let i = 0; i < cfg.EXIT_MAX_ATTEMPTS + 2; i++) {
+      const cur = store.getPosition(p.id)!;
+      if (cur.status !== 'open') break;
+      cur.nextExitAttemptAt = undefined;
+      cur.lastPriceAt = Date.now() - (cfg.PRICE_STALE_SECONDS + 30) * 1000;
+      store.savePosition(cur);
+      await manager.tick();
+    }
+
+    const done = store.getPosition(p.id)!;
+    expect(done.status).toBe('failed');
+    expect(done.closeReason).toMatch(/unpriceable/);
+    expect(done.closeReason).not.toMatch(/rug/);
+
+    // A pricing outage on our side says nothing about who launched the token.
+    expect(store.getCreator(CANDIDATE.creator)!.rugs).toBe(0);
+  });
+
+  it('retries a failed sell many times rather than writing off on the first', async () => {
+    const fill = await exec.buy(CANDIDATE, cfg.BUY_AMOUNT_SOL);
+    const p = manager.open(CANDIDATE, fill, 85);
+
+    prices.unreadable = true;
+    p.lastPriceAt = Date.now() - (cfg.PRICE_STALE_SECONDS + 30) * 1000;
+    store.savePosition(p);
+
+    await manager.tick();
+    const after = store.getPosition(p.id)!;
+    expect(after.status).toBe('open');
+    expect(after.exitFailures).toBe(1);
+    expect(cfg.EXIT_MAX_ATTEMPTS).toBeGreaterThan(5);
+  });
+
+  it('honours the retry backoff instead of burning attempts at tick rate', async () => {
+    const fill = await exec.buy(CANDIDATE, cfg.BUY_AMOUNT_SOL);
+    const p = manager.open(CANDIDATE, fill, 85);
+
+    prices.unreadable = true;
+    p.lastPriceAt = Date.now() - (cfg.PRICE_STALE_SECONDS + 30) * 1000;
+    store.savePosition(p);
+
+    await manager.tick();
+    expect(store.getPosition(p.id)!.exitFailures).toBe(1);
+
+    // Three more ticks inside the cooldown must not consume attempts.
+    await manager.tick();
+    await manager.tick();
+    await manager.tick();
+    expect(store.getPosition(p.id)!.exitFailures).toBe(1);
+  });
+});
