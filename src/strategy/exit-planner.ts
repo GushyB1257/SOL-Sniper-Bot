@@ -46,6 +46,12 @@ export function decideExit(ctx: ExitContext): ExitOrder | null {
   if (p.remainingQty <= 0) return null;
   if (!Number.isFinite(price) || price <= 0) return null;
 
+  // Copy positions belong to the wallet being followed, not to a price rule.
+  // A ratchet or a stop firing underneath one would exit on our schedule while
+  // the person we are copying is still holding — which is the one thing a copy
+  // trader must never do.
+  if (p.managedBy === 'copy') return decideFollowExit(ctx);
+
   if (cfg.EXIT_MODE === 'ratchet') return decideRatchetExit(ctx);
   if (cfg.EXIT_MODE === 'scalp') return decideScalpExit(ctx);
 
@@ -435,5 +441,29 @@ export function decideRatchetExit(ctx: ExitContext): ExitOrder | null {
     detail:
       `moonbag +${sinceCheckpointPct.toFixed(1)}% over ${cfg.CHECKPOINT_SECONDS}s ` +
       `(+${gainPct.toFixed(0)}% overall) — skimming ${cfg.MOONBAG_TRIM_PCT}%`,
+  };
+}
+
+/**
+ * The only exit a copied position has of its own: a backstop.
+ *
+ * Everything else is driven by the tracked wallet. This exists because a wallet
+ * can go quiet holding a dead token indefinitely, and "mirror them exactly"
+ * should not mean holding a zero forever while it occupies a position slot.
+ */
+export function decideFollowExit(ctx: ExitContext): ExitOrder | null {
+  const { position: p, cfg, now } = ctx;
+  const heldSeconds = (now - p.openedAt) / 1000;
+  if (heldSeconds < cfg.COPY_MAX_HOLD_SECONDS) return null;
+  return {
+    mint: p.mint,
+    positionId: p.id,
+    qty: p.remainingQty,
+    reason: 'max_hold',
+    closeAll: true,
+    tierIndexes: [],
+    detail:
+      `copied position held ${Math.round(heldSeconds)}s without the tracked wallet ` +
+      `selling (max ${cfg.COPY_MAX_HOLD_SECONDS}s)`,
   };
 }

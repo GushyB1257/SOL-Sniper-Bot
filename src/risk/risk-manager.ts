@@ -26,8 +26,23 @@ export class RiskManager {
     private readonly killSwitchPath = 'STOP',
   ) {}
 
+  /** Per-bot pause, toggled from the dashboard. Separate from the kill switch. */
+  private paused = false;
+
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+  }
+
+  get isPaused(): boolean {
+    return this.paused;
+  }
+
   /** Checked before every buy. Cheap, synchronous, no I/O beyond a stat. */
   canOpen(walletBalanceSol: number): RiskDecision {
+    // Pausing stops NEW entries only. Open positions keep being managed, since
+    // abandoning them mid-flight is how a paused bot turns into a stuck bag.
+    if (this.paused) return { allowed: false, reason: 'bot paused' };
+
     if (existsSync(this.killSwitchPath)) {
       return { allowed: false, reason: `kill switch present (${this.killSwitchPath})` };
     }

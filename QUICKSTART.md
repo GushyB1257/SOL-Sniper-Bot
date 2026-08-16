@@ -111,6 +111,26 @@ The **Why entries were skipped** panel is the one to watch early on. It shows
 which filter is turning tokens away, so if nothing is trading you can see the
 reason immediately instead of guessing.
 
+### The three tabs
+
+The dashboard has a tab per bot along the top, each with its own P&L:
+
+- **Screener** — the filter strategy, on by default.
+- **Sniper** — the original creation-time sniper. Off by default.
+- **Copy trader** — mirrors wallets you give it. Off by default.
+
+Start, stop and pause each from its own tab. **You do not need to edit `.env`
+again** — every filter, size, limit and wallet is editable under the
+**Settings** sub-tab and applies immediately. A bad value is rejected with the
+reason and nothing changes, so you cannot break a running bot by typing in the
+wrong box.
+
+To use the copy trader: click its tab, hit **Start Copy trader**, open
+**Settings**, paste the wallet addresses into *Wallets to track*, and press
+**Save changes**. The setting that matters most is *Ignore buys under* — wallets
+make tiny buys just to bump a token's volume on screeners, and 0.5 SOL filters
+those out.
+
 Every minute it also prints a one-line `SCREEN` summary in the terminal:
 how many checks it ran, which filter is doing most of the rejecting, and how
 many tokens matched versus were actually bought.

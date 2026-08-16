@@ -3,26 +3,27 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, writeFileSync, rmSync } from 'node:fs';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Config } from '../config.js';
-import type { Store } from '../state/store.js';
-import type { PositionManager } from '../strategy/position-manager.js';
+import type { TradingBot, BotId } from '../bots/bot.js';
+import type { RuntimeSettings } from '../settings/runtime.js';
+import { FIELDS } from '../settings/runtime.js';
+import type { SolPrice } from '../util/solprice.js';
 import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
-import { buildSnapshot, type AiView, type SessionStats, type Snapshot } from './snapshot.js';
+import { buildSnapshot, type AiView, type CopyView, type Snapshot } from './snapshot.js';
 import { renderPage } from './ui.js';
 
 const log = logger('dashboard');
 
 export interface DashboardDeps {
   cfg: Config;
-  store: Store;
-  positions: PositionManager;
-  stats: () => SessionStats;
+  settings: RuntimeSettings;
+  bots: Map<BotId, TradingBot>;
   walletBalance: () => Promise<number | null>;
   discoveryName: string;
   startedAt: number;
   killSwitchPath: string;
-  /** Null when the deterministic strategy is running. */
-  ai?: () => AiView | null;
+  solPrice: SolPrice;
+  setBotEnabled: (id: BotId, on: boolean) => { ok: boolean; error?: string };
 }
 
 /** Push interval for connected browsers. */
@@ -188,14 +189,63 @@ export class Dashboard {
       if (!this.tokenOk(req)) return this.json(res, 403, { error: 'bad token' });
       const body = await readJson(req);
       const id = typeof body?.id === 'string' ? body.id : '';
-      const position = this.deps.store.getPosition(id);
-      if (!position || position.status !== 'open') {
-        this.json(res, 404, { error: 'no such open position' });
+      // Positions are per-bot, so the owning bot has to be found before the
+      // right PositionManager can close it. Searching beats trusting a botId
+      // from the request, which would let a typo close nothing silently.
+      for (const bot of this.deps.bots.values()) {
+        const position = bot.store.getPosition(id);
+        if (!position || position.status !== 'open') continue;
+        log.warn(`Manual close from dashboard: ${bot.name} / ${position.symbol ?? position.mint}`);
+        await bot.positions.closeOut(position, 'manual', 'closed from dashboard');
+        this.json(res, 200, { ok: true });
         return;
       }
-      log.warn(`Manual close requested from dashboard: ${position.symbol ?? position.mint}`);
-      await this.deps.positions.closeOut(position, 'manual', 'closed from dashboard');
-      this.json(res, 200, { ok: true });
+      this.json(res, 404, { error: 'no such open position' });
+      return;
+    }
+
+    // --- bot control ------------------------------------------------------
+
+    if (req.method === 'POST' && path === '/api/bots/toggle') {
+      if (!this.tokenOk(req)) return this.json(res, 403, { error: 'bad token' });
+      const body = await readJson(req);
+      const id = String(body?.id ?? '') as BotId;
+      if (!this.deps.bots.has(id)) return this.json(res, 404, { error: 'no such bot' });
+      const result = this.deps.setBotEnabled(id, body?.enabled === true);
+      this.json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+
+    if (req.method === 'POST' && path === '/api/bots/pause') {
+      if (!this.tokenOk(req)) return this.json(res, 403, { error: 'bad token' });
+      const body = await readJson(req);
+      const bot = this.deps.bots.get(String(body?.id ?? '') as BotId);
+      if (!bot) return this.json(res, 404, { error: 'no such bot' });
+      bot.setPaused(body?.paused === true);
+      this.json(res, 200, { ok: true, paused: bot.paused });
+      return;
+    }
+
+    // --- settings ---------------------------------------------------------
+
+    if (req.method === 'POST' && path === '/api/settings') {
+      if (!this.tokenOk(req)) return this.json(res, 403, { error: 'bad token' });
+      const body = await readJson(req);
+      const patch = body?.patch;
+      if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+        return this.json(res, 400, { error: 'patch must be an object' });
+      }
+      const result = this.deps.settings.apply(patch as Record<string, unknown>);
+      // A rejected patch changes nothing, so the running config is still the
+      // one the browser was showing — no reload needed, just the error.
+      this.json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+
+    if (req.method === 'POST' && path === '/api/settings/reset') {
+      if (!this.tokenOk(req)) return this.json(res, 403, { error: 'bad token' });
+      const result = this.deps.settings.reset();
+      this.json(res, result.ok ? 200 : 400, result);
       return;
     }
 
@@ -242,16 +292,87 @@ export class Dashboard {
   }
 
   private async snapshot(): Promise<Snapshot> {
+    const cfg = this.deps.cfg;
+    const enabled: Record<BotId, boolean> = {
+      screener: cfg.BOT_SCREENER_ENABLED,
+      sniper: cfg.BOT_SNIPER_ENABLED,
+      copy: cfg.BOT_COPY_ENABLED,
+    };
+
     return buildSnapshot({
-      cfg: this.deps.cfg,
-      store: this.deps.store,
-      stats: this.deps.stats(),
+      cfg,
       startedAt: this.deps.startedAt,
       discovery: this.deps.discoveryName,
       killSwitch: existsSync(this.deps.killSwitchPath),
       walletBalanceSol: await this.walletBalance(),
-      ai: this.deps.ai?.() ?? null,
+      solUsd: this.deps.solPrice.usd,
+      solPriceLive: this.deps.solPrice.isLive,
+      settings: { fields: FIELDS, values: this.deps.settings.values() },
+      bots: [...this.deps.bots.values()].map((bot) => ({
+        id: bot.id,
+        name: bot.name,
+        enabled: enabled[bot.id],
+        running: bot.running,
+        paused: bot.paused,
+        store: bot.store,
+        stats: bot.snapshotStats(),
+        ai: this.aiView(bot),
+        copy: this.copyView(bot),
+      })),
     });
+  }
+
+  private aiView(bot: TradingBot): AiView | null {
+    if (!bot.ai) return null;
+    const s = bot.ai.snapshotStats();
+    const u = bot.ai.usage;
+    return {
+      enabled: true,
+      model: this.deps.cfg.AI_MODEL,
+      entryMode: this.deps.cfg.ENTRY_MODE,
+      watching: s.watching,
+      evaluated: s.evaluated,
+      bought: s.bought,
+      passed: s.passed,
+      reviews: s.reviews,
+      budgetBlocked: s.budgetBlocked,
+      calls: u.calls,
+      refusals: u.refusals,
+      errors: u.errors,
+      estimatedCostUsd: u.estimatedCostUsd,
+      dailyBudgetUsd: this.deps.cfg.AI_DAILY_BUDGET_USD,
+      cacheReadTokens: u.cacheReadTokens,
+      inputTokens: u.inputTokens,
+      outputTokens: u.outputTokens,
+      screenMatched: s.screenMatched,
+      socialsFetched: s.socialsFetched,
+      blockedByRisk: s.blockedByRisk,
+      buyFailed: s.buyFailed,
+      lastBlockReason: s.lastBlockReason,
+      screenRejects: s.screenRejects,
+      solUsd: bot.ai.solUsd,
+      solPriceLive: bot.ai.solPriceIsLive,
+    };
+  }
+
+  private copyView(bot: TradingBot): CopyView | null {
+    if (!bot.copy || !bot.watcher) return null;
+    const w = bot.watcher.snapshot;
+    const c = bot.copy.snapshotStats();
+    return {
+      wallets: this.deps.cfg.COPY_WALLETS.map((address) => ({
+        address,
+        holdings: bot.watcher!.holdingsOf(address).length,
+      })),
+      tracking: w.tracking,
+      polls: w.polls,
+      errors: w.errors,
+      tradesSeen: w.tradesSeen,
+      bought: c.bought,
+      sold: c.sold,
+      skips: c.skips,
+      lastSkipReason: c.lastSkipReason,
+    };
   }
 
   private send(ws: WebSocket, snapshot: Snapshot): void {

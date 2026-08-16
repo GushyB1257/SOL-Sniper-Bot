@@ -1,0 +1,313 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { CopyTrader } from '../src/copy/copy-trader.js';
+import { PositionManager } from '../src/strategy/position-manager.js';
+import { PaperExecutor } from '../src/execution/paper.js';
+import { RiskManager } from '../src/risk/risk-manager.js';
+import { Store } from '../src/state/store.js';
+import { decideExit } from '../src/strategy/exit-planner.js';
+import { loadConfig, type Config } from '../src/config.js';
+import type { PriceSource } from '../src/execution/pricing.js';
+import type { BondingCurveState } from '../src/execution/bonding-curve.js';
+import type { WalletTrade } from '../src/copy/wallet-watcher.js';
+import type { Position } from '../src/types.js';
+
+const WALLET = 'FoLLoW1111111111111111111111111111111111111';
+const OTHER = 'oTHeR22222222222222222222222222222222222222';
+const MINT = 'Mint1111111111111111111111111111111111111';
+
+/** Curve with 45 vSOL — one token is worth about 6.3e-8 SOL. */
+class StubPrices implements PriceSource {
+  complete = false;
+  missing = false;
+  vSol = 45;
+
+  async curve(): Promise<BondingCurveState | null> {
+    if (this.missing) return null;
+    const k = 30 * 1_073_000_000;
+    return {
+      virtualSolReserves: BigInt(Math.round(this.vSol * 1e9)),
+      virtualTokenReserves: BigInt(Math.round((k / this.vSol) * 1e6)),
+      realSolReserves: 15_000_000_000n,
+      realTokenReserves: 0n,
+      tokenTotalSupply: 1_000_000_000_000_000n,
+      complete: this.complete,
+    };
+  }
+  async price(): Promise<number | null> {
+    const k = 30 * 1_073_000_000;
+    return this.vSol / (k / this.vSol);
+  }
+}
+
+let dir: string;
+let cfg: Config;
+let store: Store;
+let prices: StubPrices;
+let trader: CopyTrader;
+let positions: PositionManager;
+
+function build(overrides: Record<string, string> = {}): void {
+  dir = mkdtempSync(join(tmpdir(), 'sniper-copy-'));
+  cfg = loadConfig({
+    RPC_HTTP_URL: 'https://rpc.example.com',
+    RPC_WS_URL: 'wss://rpc.example.com',
+    MODE: 'paper',
+    ANTHROPIC_API_KEY: 'sk-ant-test',
+    BOT_COPY_ENABLED: 'true',
+    COPY_WALLETS: WALLET,
+    DATA_DIR: dir,
+    ...overrides,
+  } as unknown as NodeJS.ProcessEnv);
+
+  store = new Store(dir, 'copy');
+  prices = new StubPrices();
+  const exec = new PaperExecutor(cfg, prices);
+  const risk = new RiskManager(cfg, store, join(dir, 'nostop'));
+  positions = new PositionManager(cfg, store, exec, risk);
+
+  trader = new CopyTrader({
+    cfg,
+    store,
+    executor: exec,
+    risk,
+    positions,
+    prices,
+    walletBalance: async () => 10,
+    solUsd: () => 200,
+  });
+}
+
+/** Their buy of `tokens`, which at the stub curve is tokens x ~6.3e-8 SOL. */
+function theirBuy(tokens: number, wallet = WALLET): WalletTrade {
+  return {
+    wallet,
+    mint: MINT,
+    side: 'buy',
+    tokenDelta: tokens,
+    balanceAfter: tokens,
+    fraction: 1,
+    isNewPosition: true,
+    at: Date.now(),
+  };
+}
+
+function theirSell(fraction: number, balanceAfter: number, wallet = WALLET): WalletTrade {
+  return {
+    wallet,
+    mint: MINT,
+    side: 'sell',
+    tokenDelta: 1,
+    balanceAfter,
+    fraction,
+    isNewPosition: false,
+    at: Date.now(),
+  };
+}
+
+/** Lets the serialised entry chain drain. */
+const settle = () => new Promise((r) => setTimeout(r, 20));
+
+beforeEach(() => build());
+afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+describe('mirroring a buy', () => {
+  it('follows a real position', async () => {
+    // 32M tokens x 6.3e-8 ≈ 2 SOL, comfortably over the 0.5 SOL floor.
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+
+    const open = store.openPositions();
+    expect(open).toHaveLength(1);
+    expect(open[0]!.managedBy).toBe('copy');
+    expect(open[0]!.copiedFrom).toBe(WALLET);
+    expect(open[0]!.costSol).toBeGreaterThan(0);
+  });
+
+  it('ignores a dust buy used to bump volume', async () => {
+    // The filter that matters most: a wallet nudging a token up a screener's
+    // volume ranking has not taken a position, and following it means holding
+    // something they never committed to.
+    trader.onWalletTrade(theirBuy(1_000_000)); // ~0.06 SOL
+    await settle();
+
+    expect(store.openPositions()).toHaveLength(0);
+    expect(trader.snapshotStats().skips.too_small).toBe(1);
+    expect(trader.snapshotStats().lastSkipReason).toMatch(/volume bump/);
+  });
+
+  it('prices the filter in SOL, not token count', async () => {
+    // Same token count is a different amount of money on a different curve.
+    prices.vSol = 31; // barely moved off launch, so tokens are cheap
+    trader.onWalletTrade(theirBuy(10_000_000));
+    await settle();
+    expect(store.openPositions()).toHaveLength(0);
+
+    build();
+    prices.vSol = 80; // far up the curve, same count is worth much more
+    trader.onWalletTrade(theirBuy(10_000_000));
+    await settle();
+    expect(store.openPositions()).toHaveLength(1);
+  });
+
+  it('ignores a buy bigger than the ceiling', async () => {
+    build({ COPY_MAX_BUY_SOL: '1' });
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+    expect(trader.snapshotStats().skips.too_large).toBe(1);
+  });
+
+  it('sizes a fixed position regardless of theirs', async () => {
+    build({ COPY_BUY_AMOUNT_SOL: '0.3' });
+    trader.onWalletTrade(theirBuy(50_000_000));
+    await settle();
+    expect(store.openPositions()[0]!.notionalSol).toBeCloseTo(0.3);
+  });
+
+  it('sizes proportionally when asked, capped', async () => {
+    build({ COPY_SIZE_MODE: 'proportional', COPY_RATIO: '0.5', COPY_MAX_POSITION_SOL: '0.4' });
+    trader.onWalletTrade(theirBuy(32_000_000)); // ~2 SOL x 0.5 = 1, capped to 0.4
+    await settle();
+    expect(store.openPositions()[0]!.notionalSol).toBeCloseTo(0.4);
+  });
+
+  it('stamps the market cap it entered at', async () => {
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+    const p = store.openPositions()[0]!;
+    expect(p.entryMarketCapSol).toBeGreaterThan(0);
+    expect(p.entryMarketCapUsd).toBeCloseTo(p.entryMarketCapSol! * 200);
+  });
+
+  it('does not chase a token it already holds', async () => {
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+    expect(store.openPositions()).toHaveLength(1);
+    expect(trader.snapshotStats().skips.already_held).toBe(1);
+  });
+
+  it('will not follow them off the curve', async () => {
+    prices.complete = true;
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+    expect(trader.snapshotStats().skips.graduated).toBe(1);
+  });
+
+  it('skips a token it cannot price rather than guessing', async () => {
+    prices.missing = true;
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+    expect(store.openPositions()).toHaveLength(0);
+    expect(trader.snapshotStats().skips.no_curve).toBe(1);
+  });
+});
+
+describe('mirroring a sell', () => {
+  async function openOne(): Promise<Position> {
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+    return store.openPositions()[0]!;
+  }
+
+  it('sells the same fraction of our bag that they sold of theirs', async () => {
+    const p = await openOne();
+    const before = p.remainingQty;
+
+    trader.onWalletTrade(theirSell(0.4, 19_200_000));
+    await settle();
+
+    const after = store.getPosition(p.id)!;
+    expect(after.status).toBe('open');
+    expect(after.remainingQty / before).toBeCloseTo(0.6, 1);
+  });
+
+  it('closes fully once they are essentially out', async () => {
+    const p = await openOne();
+    trader.onWalletTrade(theirSell(0.95, 100));
+    await settle();
+    expect(store.getPosition(p.id)!.status).toBe('closed');
+  });
+
+  it('closes fully when their balance hits zero', async () => {
+    const p = await openOne();
+    trader.onWalletTrade(theirSell(0.5, 0));
+    await settle();
+    expect(store.getPosition(p.id)!.status).toBe('closed');
+  });
+
+  it('can exit faster than they do', async () => {
+    build({ COPY_SELL_MULTIPLIER: '2' });
+    const p = await openOne();
+    const before = p.remainingQty;
+
+    trader.onWalletTrade(theirSell(0.3, 20_000_000));
+    await settle();
+    // 30% of theirs mirrors as 60% of ours.
+    expect(store.getPosition(p.id)!.remainingQty / before).toBeCloseTo(0.4, 1);
+  });
+
+  it('ignores a different tracked wallet selling the same token', async () => {
+    // We entered on one wallet's signal; another's exit is not that signal.
+    const p = await openOne();
+    trader.onWalletTrade(theirSell(1, 0, OTHER));
+    await settle();
+    expect(store.getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('ignores a sell in a token we never copied', async () => {
+    trader.onWalletTrade(theirSell(1, 0));
+    await settle();
+    expect(store.openPositions()).toHaveLength(0);
+  });
+});
+
+describe('the exit planner leaves copied positions alone', () => {
+  it('holds through a crash that would trip every other rule', async () => {
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+    const p = store.openPositions()[0]!;
+
+    // Down 95%, an hour old, well past every checkpoint. Still held, because
+    // the wallet we are following has not sold.
+    const order = decideExit({
+      position: p,
+      price: p.entryPrice * 0.05,
+      cfg,
+      now: p.openedAt + 3_600_000,
+    });
+    expect(order).toBeNull();
+  });
+
+  it('still has a backstop if the wallet never sells', async () => {
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+    const p = store.openPositions()[0]!;
+
+    const order = decideExit({
+      position: p,
+      price: p.entryPrice,
+      cfg,
+      now: p.openedAt + (cfg.COPY_MAX_HOLD_SECONDS + 60) * 1000,
+    });
+    expect(order?.reason).toBe('max_hold');
+    expect(order?.closeAll).toBe(true);
+  });
+});
+
+describe('config guards', () => {
+  it('refuses to enable the copy bot with no wallets', () => {
+    expect(() => build({ COPY_WALLETS: '' })).toThrow(/nothing to copy/);
+  });
+
+  it('rejects an address that is not base58', () => {
+    expect(() => build({ COPY_WALLETS: 'not-a-wallet' })).toThrow(/base58/);
+  });
+
+  it('rejects a size window nothing can pass', () => {
+    expect(() => build({ COPY_MIN_BUY_SOL: '5', COPY_MAX_BUY_SOL: '1' })).toThrow(/must be below/);
+  });
+});

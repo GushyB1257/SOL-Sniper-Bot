@@ -99,6 +99,26 @@ const poolListSchema = z.string().transform((raw, ctx) => {
   return parts as unknown as Array<(typeof POOLS)[number]>;
 });
 
+/** Parses a comma-separated list of base58 wallet addresses. */
+const walletListSchema = z.string().transform((raw, ctx) => {
+  const parts = raw
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const w of parts) {
+    // Length and alphabet only — a full curve check needs web3.js and this
+    // module is imported by everything, including tests with no chain.
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(w)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `"${w}" is not a base58 Solana address`,
+      });
+      return z.NEVER;
+    }
+  }
+  return [...new Set(parts)];
+});
+
 const schema = z.object({
   MODE: z.enum(['paper', 'live']).default('paper'),
 
@@ -143,6 +163,49 @@ const schema = z.object({
   MAX_CONSECUTIVE_LOSSES: num(1, 100).default(6),
   BREAKER_COOLDOWN_SECONDS: num(0, 86400).default(900),
   HOURLY_SPEND_CAP_SOL: num(0, 1000).default(5),
+
+  // === Which bots run ===
+  // Each runs independently with its own positions, P&L and risk counters, so
+  // one strategy's bad day cannot spend another's budget or muddy its numbers.
+  BOT_SCREENER_ENABLED: bool.default('true'),
+  BOT_SNIPER_ENABLED: bool.default('false'),
+  BOT_COPY_ENABLED: bool.default('false'),
+
+  // === Copy trading (BOT_COPY_ENABLED) ===
+  /** Wallets to mirror, comma separated. */
+  COPY_WALLETS: walletListSchema.default(''),
+  /**
+   * Ignore buys smaller than this. Wallets routinely make dust buys to bump a
+   * token's volume on screeners; following those is how you end up holding
+   * something the "insider" never actually took a position in.
+   */
+  COPY_MIN_BUY_SOL: num(0, 1000).default(0.5),
+  /** Ignore buys larger than this — a whale's size is not your size. */
+  COPY_MAX_BUY_SOL: num(0, 100_000).default(0),
+  /**
+   * fixed        : always buy COPY_BUY_AMOUNT_SOL.
+   * proportional : buy COPY_RATIO x whatever they spent, clamped by the caps.
+   */
+  COPY_SIZE_MODE: z.enum(['fixed', 'proportional']).default('fixed'),
+  COPY_BUY_AMOUNT_SOL: num(0.0001, 100).default(0.25),
+  COPY_RATIO: num(0.0001, 100).default(0.1),
+  /** Hard ceiling on a single copied position, whatever the sizing says. */
+  COPY_MAX_POSITION_SOL: num(0.0001, 100).default(0.5),
+  /** Venues to follow them into. */
+  COPY_ALLOWED_POOLS: poolListSchema.default('pump,pump-amm'),
+  /**
+   * Multiplier on the fraction they sell. 1 mirrors them exactly; 1.5 exits
+   * half again as fast, which front-runs a tracker who unwinds in stages.
+   */
+  COPY_SELL_MULTIPLIER: num(0.1, 5).default(1),
+  /** Close fully once they are below this share of their peak holding. */
+  COPY_FULL_EXIT_AT_PCT: num(0, 100).default(90),
+  /** Backstop: close a copied position after this long regardless. */
+  COPY_MAX_HOLD_SECONDS: num(60, 604_800).default(86_400),
+  /** How often tracked wallets' token balances are re-read. */
+  COPY_POLL_INTERVAL_MS: num(500, 60_000).default(2000),
+  /** Do not follow a wallet into a token it already held before we started. */
+  COPY_SKIP_PREEXISTING: bool.default('true'),
 
   // === Entry path ===
   /**
@@ -394,6 +457,24 @@ function crossValidate(cfg: Config): string[] {
         'for STRATEGY=ai. Set STRATEGY=ai (no API key is needed unless ' +
         'ENTRY_MODE=ai or AI_MANAGE_EXITS=true), or set ENTRY_MODE=rules.',
     );
+  }
+
+  if (cfg.BOT_COPY_ENABLED && cfg.COPY_WALLETS.length === 0) {
+    errors.push(
+      'BOT_COPY_ENABLED=true but COPY_WALLETS is empty — there is nothing to copy. ' +
+        'Add wallets on the Copy tab of the dashboard, or in COPY_WALLETS.',
+    );
+  }
+
+  if (cfg.COPY_MAX_BUY_SOL > 0 && cfg.COPY_MIN_BUY_SOL >= cfg.COPY_MAX_BUY_SOL) {
+    errors.push(
+      `COPY_MIN_BUY_SOL (${cfg.COPY_MIN_BUY_SOL}) must be below COPY_MAX_BUY_SOL ` +
+        `(${cfg.COPY_MAX_BUY_SOL}); no buy would ever qualify`,
+    );
+  }
+
+  if (!cfg.BOT_SCREENER_ENABLED && !cfg.BOT_SNIPER_ENABLED && !cfg.BOT_COPY_ENABLED) {
+    errors.push('every bot is disabled — nothing would run. Enable at least one.');
   }
 
   // The screener is a stopwatch on a filter, not a judgment call — pairing it

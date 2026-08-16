@@ -270,6 +270,46 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
   border: 1px solid var(--border);
 }
 .banner.warn { background: var(--neg-wash); color: var(--ink); }
+
+/* ---- Bot switcher ---- */
+.botbar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.botbtn {
+  display: flex; align-items: center; gap: 9px;
+  padding: 10px 14px; border-radius: 10px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border);
+  box-shadow: var(--shadow); font-size: 13px; font-weight: 550; color: var(--ink-2);
+}
+.botbtn:hover { color: var(--ink); }
+.botbtn[aria-selected="true"] { color: var(--ink); border-color: var(--series); }
+.botbtn .bname { font-weight: 620; }
+.botbtn .bpnl { font-variant-numeric: tabular-nums; font-weight: 500; }
+.botctl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.botctl .state { font-size: 12.5px; color: var(--muted); }
+
+/* ---- Settings form ---- */
+.set-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px 18px; }
+.set-field { display: flex; flex-direction: column; gap: 4px; }
+.set-field label { font-size: 12px; color: var(--ink-2); font-weight: 550; }
+.set-field .help { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.set-field input, .set-field select {
+  font: inherit; font-size: 13px; padding: 6px 9px;
+  color: var(--ink); background: var(--plane);
+  border: 1px solid var(--border); border-radius: 7px; width: 100%;
+}
+.set-field input:focus, .set-field select:focus { outline: 2px solid var(--series); outline-offset: 1px; }
+.set-field.changed input, .set-field.changed select { border-color: var(--warning); }
+.set-actions {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--grid);
+}
+.set-msg { font-size: 12.5px; }
+.set-msg.ok { color: var(--good); }
+.set-msg.err { color: var(--critical); }
+button.primary { color: #fff; background: var(--series); border-color: transparent; font-weight: 600; }
+button.primary:hover { filter: brightness(1.08); color: #fff; }
+.wallet-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 12.5px; border-bottom: 1px solid var(--grid); }
+.wallet-row:last-child { border-bottom: none; }
+.wallet-addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--ink-2); }
 .hidden { display: none !important; }
 .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 </style>
@@ -287,6 +327,14 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
     <button id="cvdBtn" title="Swap profit green for a colorblind-safe blue">CVD</button>
     <button id="themeBtn" title="Toggle light/dark">Theme</button>
     <button id="killBtn">Kill switch</button>
+  </div>
+
+  <div class="botbar" id="botBar" role="tablist"></div>
+
+  <div class="botctl">
+    <button id="botToggle">—</button>
+    <button id="botPause">—</button>
+    <span class="state" id="botState"></span>
   </div>
 
   <div id="banners"></div>
@@ -314,6 +362,17 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
     <div class="card"><h2>Seen</h2><div class="tile-val num" id="kSeen">—</div><div class="tile-note" id="kSeenSub">—</div></div>
   </div>
 
+  <div class="grid g-half hidden" id="copyRow">
+    <div class="card">
+      <h2>Tracked wallets</h2>
+      <div id="copyWallets"></div>
+    </div>
+    <div class="card">
+      <h2>Why buys were skipped <span class="sub">per wallet trade seen</span></h2>
+      <div id="copySkips"></div>
+    </div>
+  </div>
+
   <div class="grid g-half hidden" id="aiRow">
     <div class="card">
       <h2>Funnel <span class="sub" id="aiModel"></span></h2>
@@ -331,8 +390,9 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
       <div class="scroll"><table>
         <thead><tr>
           <th>Token</th><th class="r">Age</th><th class="r">Cost</th>
+          <th class="r">MCap in → now</th>
           <th class="r">Entry → Now</th><th class="r">Gain</th><th class="r">P&amp;L</th>
-          <th class="r">Left</th><th>Ladder</th><th class="r">To stop</th><th class="r">Safety</th><th></th>
+          <th class="r">Left</th><th>State</th><th class="r" id="thStopCol">To stop</th><th class="r">Safety</th><th></th>
         </tr></thead>
         <tbody id="posBody"></tbody>
       </table></div>
@@ -347,7 +407,8 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
     <div class="card">
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" data-tab="trades" aria-selected="true">Trades</button>
-        <button class="tab" role="tab" data-tab="config" aria-selected="false">Config</button>
+        <button class="tab" role="tab" data-tab="settings" aria-selected="false">Settings</button>
+        <button class="tab" role="tab" data-tab="config" aria-selected="false">All config</button>
         <button class="tab" role="tab" data-tab="log" aria-selected="false">Activity</button>
       </div>
       <div id="tab-trades">
@@ -358,6 +419,15 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
           </tr></thead>
           <tbody id="tradeBody"></tbody>
         </table></div>
+      </div>
+      <div id="tab-settings" class="hidden">
+        <div id="setForm"></div>
+        <div class="set-actions">
+          <button class="primary" id="setSave">Save changes</button>
+          <button id="setRevert">Revert</button>
+          <button id="setReset" class="danger">Reset all to .env</button>
+          <span class="set-msg" id="setMsg"></span>
+        </div>
       </div>
       <div id="tab-config" class="hidden"></div>
       <div id="tab-log" class="hidden"><div class="log" id="logBody"></div></div>
@@ -404,6 +474,12 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
   function price(p) {
     if (!isFinite(p) || p <= 0) return '—';
     return p < 0.0001 ? p.toExponential(2) : p.toFixed(6);
+  }
+  function usdShort(n) {
+    if (n === null || n === undefined || !isFinite(n) || n <= 0) return '\u2014';
+    if (n >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1000) return '$' + (n / 1000).toFixed(1) + 'k';
+    return '$' + Math.round(n);
   }
   function clock(ts) {
     var d = new Date(ts);
@@ -595,7 +671,7 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
     if (!list || list.length === 0) {
       var tr = el('tr');
       var td = el('td', 'empty', 'No open positions.');
-      td.colSpan = 11;
+      td.colSpan = 12;
       tr.appendChild(td);
       body.appendChild(tr);
       return;
@@ -615,11 +691,33 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
         });
       });
       tdTok.appendChild(mint);
+      if (p.copiedFrom) {
+        var src = el('div', 'mint', 'copy ' + p.copiedFrom.slice(0, 8) + '\u2026');
+        src.title = 'Mirroring ' + p.copiedFrom;
+        tdTok.appendChild(src);
+      }
       if (p.notes && p.notes.length) tdTok.title = p.notes.join('\\n');
       tr.appendChild(tdTok);
 
       tr.appendChild(el('td', 'r mono', dur(p.ageSeconds)));
       tr.appendChild(el('td', 'r mono', plain(p.costSol, 4)));
+
+      // The cap you bought at, next to the cap now. That pair is the whole
+      // story of a memecoin position, and the entry number cannot be
+      // reconstructed later once tokens have been sold.
+      var tdM = el('td', 'r mono');
+      if (p.entryMarketCapUsd) {
+        tdM.appendChild(el('span', null, usdShort(p.entryMarketCapUsd)));
+        if (p.marketCapUsd) {
+          tdM.appendChild(el('span', signClass(p.marketCapUsd - p.entryMarketCapUsd),
+            ' \u2192 ' + usdShort(p.marketCapUsd)));
+        }
+        tdM.title = 'Bought at ' + usdShort(p.entryMarketCapUsd) + ' market cap';
+      } else {
+        tdM.textContent = '\u2014';
+      }
+      tr.appendChild(tdM);
+
       tr.appendChild(el('td', 'r mono', price(p.entryPrice) + ' → ' + price(p.lastPrice)));
 
       var tdG = el('td', 'r mono ' + signClass(p.gainPct), signed(p.gainPct, 1) + '%');
@@ -629,21 +727,43 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
       tr.appendChild(el('td', 'r mono', p.remainingPct.toFixed(0) + '%'));
 
       var tdL = el('td');
-      var pips = el('div', 'pips');
-      p.ladder.forEach(function (t) {
-        var pip = el('span', 'pip' + (t.filled ? ' filled' : ''));
-        pip.title = '+' + t.gainPct + '% → sell ' + t.sellPctOfOriginal + '%' + (t.filled ? ' (filled)' : '');
-        pips.appendChild(pip);
-      });
-      if (p.moonbagArmed) {
-        var moon = el('span', 'pip moon');
-        moon.title = 'Moonbag armed — ladder complete, remainder riding a trailing stop';
-        pips.appendChild(moon);
+      if (p.nextCheckpointSeconds !== null) {
+        // Ratchet mode: the ladder is meaningless here, and the only thing that
+        // matters is whether this beats its last checkpoint before the clock
+        // runs out. Show that, not a stop that does not exist.
+        var state = el('div', 'mono' + (p.costRecovered ? ' pos' : ''),
+          p.costRecovered ? 'FREE RIDE' : 'proving');
+        state.title = p.costRecovered
+          ? 'Stake already recovered — everything still held is profit'
+          : 'Stake still at risk; must clear fees by the next checkpoint';
+        tdL.appendChild(state);
+      } else {
+        var pips = el('div', 'pips');
+        p.ladder.forEach(function (t) {
+          var pip = el('span', 'pip' + (t.filled ? ' filled' : ''));
+          pip.title = '+' + t.gainPct + '% → sell ' + t.sellPctOfOriginal + '%' + (t.filled ? ' (filled)' : '');
+          pips.appendChild(pip);
+        });
+        if (p.moonbagArmed) {
+          var moon = el('span', 'pip moon');
+          moon.title = 'Moonbag armed — ladder complete, remainder riding a trailing stop';
+          pips.appendChild(moon);
+        }
+        tdL.appendChild(pips);
       }
-      tdL.appendChild(pips);
       tr.appendChild(tdL);
 
-      tr.appendChild(el('td', 'r mono', signed(p.distanceToStopPct, 1) + '%'));
+      if (p.nextCheckpointSeconds !== null) {
+        var need = p.checkpointPrice > 0 ? ((p.lastPrice / p.checkpointPrice) - 1) * 100 : 0;
+        var tdC = el('td', 'r mono ' + (need > 0 ? 'pos' : 'neg'),
+          Math.ceil(p.nextCheckpointSeconds) + 's / ' + signed(need, 1) + '%');
+        tdC.title = need > 0
+          ? 'Ahead of the last checkpoint — survives when the clock runs out'
+          : 'Behind the last checkpoint — closes when the clock runs out';
+        tr.appendChild(tdC);
+      } else {
+        tr.appendChild(el('td', 'r mono', signed(p.distanceToStopPct, 1) + '%'));
+      }
       tr.appendChild(el('td', 'r mono', p.safetyScore));
 
       var tdA = el('td', 'r');
@@ -768,21 +888,27 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
   }
 
   // ---- banners ---------------------------------------------------------
-  function renderBanners(s) {
+  function renderBanners(s, bot) {
     var host = $('banners');
     host.innerHTML = '';
     function add(text) {
-      var b = el('div', 'banner warn');
-      b.appendChild(el('span', null, text));
-      host.appendChild(b);
+      var n = el('div', 'banner warn');
+      n.appendChild(el('span', null, text));
+      host.appendChild(n);
     }
-    if (s.risk.killSwitch) add('Kill switch engaged — no new entries. Open positions are still managed.');
-    if (s.risk.breakerActive) {
-      add('Circuit breaker active until ' + new Date(s.risk.breakerUntil).toLocaleTimeString() +
-          ' after ' + s.risk.maxConsecutiveLosses + ' consecutive losses.');
+    // The kill switch is global; everything else is this bot's own limit, so
+    // the wording says which so a paused screener is not read as a dead bot.
+    if (s.killSwitch) add('Kill switch engaged — no new entries on ANY bot. Open positions are still managed.');
+    if (!bot.enabled) add(bot.name + ' is stopped. Open positions are still managed and can be closed here.');
+    else if (bot.paused) add(bot.name + ' is paused — no new entries.');
+    if (bot.risk.breakerActive) {
+      add(bot.name + ': circuit breaker active until ' +
+          new Date(bot.risk.breakerUntil).toLocaleTimeString() +
+          ' after ' + bot.risk.maxConsecutiveLosses + ' consecutive losses.');
     }
-    if (-s.risk.todayPnlSol >= s.risk.dailyLossLimitSol && s.risk.dailyLossLimitSol > 0) {
-      add('Daily loss limit reached (' + plain(s.risk.todayPnlSol, 3) + ' SOL). No new entries until UTC midnight.');
+    if (-bot.risk.todayPnlSol >= bot.risk.dailyLossLimitSol && bot.risk.dailyLossLimitSol > 0) {
+      add(bot.name + ': daily loss limit reached (' + plain(bot.risk.todayPnlSol, 3) +
+          ' SOL). No new entries until UTC midnight.');
     }
   }
 
@@ -880,9 +1006,221 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
     trow('Served from cache', ai.cacheReadTokens.toLocaleString());
   }
 
+  // ---- bot switching ---------------------------------------------------
+  var activeBot = null;
+  try { activeBot = localStorage.getItem('sniper-bot'); } catch (e) {}
+
+  function currentBot(s) {
+    var found = null;
+    for (var i = 0; i < s.bots.length; i++) if (s.bots[i].id === activeBot) found = s.bots[i];
+    return found || s.bots[0];
+  }
+
+  function renderBotBar(s, active) {
+    var bar = $('botBar');
+    bar.innerHTML = '';
+    s.bots.forEach(function (b) {
+      var btn = el('div', 'botbtn');
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', String(b.id === active.id));
+
+      var dot = el('span', 'dot' + (b.running ? (b.paused ? '' : ' on') : ' off'));
+      dot.title = b.running ? (b.paused ? 'paused' : 'running') : 'stopped';
+      btn.appendChild(dot);
+      btn.appendChild(el('span', 'bname', b.name));
+      btn.appendChild(el('span', 'bpnl ' + signClass(b.pnl.netSol),
+        b.pnl.trades || b.risk.openPositions ? signed(b.pnl.netSol, 3) : '—'));
+
+      btn.addEventListener('click', function () {
+        activeBot = b.id;
+        try { localStorage.setItem('sniper-bot', b.id); } catch (e) {}
+        // Settings are per-tab, so a pending edit belongs to the tab it was
+        // typed on. Dropping it on switch is safer than carrying it across.
+        pendingSettings = {};
+        if (snap) render(snap);
+      });
+      bar.appendChild(btn);
+    });
+  }
+
+  function renderBotControls(b) {
+    var toggle = $('botToggle');
+    toggle.textContent = b.enabled ? 'Stop ' + b.name : 'Start ' + b.name;
+    toggle.className = b.enabled ? '' : 'primary';
+
+    var pause = $('botPause');
+    pause.textContent = b.paused ? 'Resume entries' : 'Pause entries';
+    pause.className = b.paused ? 'armed' : '';
+    pause.disabled = !b.enabled;
+
+    $('botState').textContent = !b.enabled
+      ? 'stopped — open positions are still managed'
+      : b.paused
+        ? 'paused — no new entries, existing positions still managed'
+        : 'running';
+  }
+
+  // ---- settings --------------------------------------------------------
+  var pendingSettings = {};
+
+  function renderSettings(s, botId) {
+    var host = $('setForm');
+    host.innerHTML = '';
+    var fields = s.settings.fields.filter(function (f) {
+      return f.bot === botId || f.bot === 'shared';
+    });
+
+    var groups = {}, order = [];
+    fields.forEach(function (f) {
+      var g = (f.bot === 'shared' ? 'Shared · ' : '') + f.group;
+      if (!groups[g]) { groups[g] = []; order.push(g); }
+      groups[g].push(f);
+    });
+
+    order.forEach(function (g) {
+      var box = el('div', 'cfg-group');
+      box.appendChild(el('h3', null, g));
+      var grid = el('div', 'set-grid');
+      groups[g].forEach(function (f) {
+        grid.appendChild(settingField(f, s.settings.values[f.key]));
+      });
+      box.appendChild(grid);
+      host.appendChild(box);
+    });
+  }
+
+  function settingField(f, value) {
+    var wrap = el('div', 'set-field');
+    if (Object.prototype.hasOwnProperty.call(pendingSettings, f.key)) wrap.className += ' changed';
+
+    var lab = el('label', null, f.label);
+    lab.htmlFor = 'set-' + f.key;
+    wrap.appendChild(lab);
+
+    var input;
+    if (f.kind === 'enum') {
+      input = document.createElement('select');
+      (f.options || []).forEach(function (o) {
+        var opt = document.createElement('option');
+        opt.value = o; opt.textContent = o;
+        input.appendChild(opt);
+      });
+    } else if (f.kind === 'boolean') {
+      input = document.createElement('select');
+      ['true', 'false'].forEach(function (o) {
+        var opt = document.createElement('option');
+        opt.value = o; opt.textContent = o === 'true' ? 'on' : 'off';
+        input.appendChild(opt);
+      });
+    } else {
+      input = document.createElement('input');
+      input.type = f.kind === 'number' ? 'number' : 'text';
+      if (f.min !== undefined) input.min = f.min;
+      if (f.max !== undefined) input.max = f.max;
+      if (f.step !== undefined) input.step = f.step;
+      if (f.placeholder) input.placeholder = f.placeholder;
+    }
+    input.id = 'set-' + f.key;
+    // A pending edit wins over the server value, so a live refresh cannot
+    // overwrite what is being typed.
+    input.value = Object.prototype.hasOwnProperty.call(pendingSettings, f.key)
+      ? pendingSettings[f.key]
+      : value;
+    input.addEventListener('input', function () {
+      if (input.value === value) delete pendingSettings[f.key];
+      else pendingSettings[f.key] = input.value;
+      wrap.className = 'set-field' + (pendingSettings[f.key] !== undefined ? ' changed' : '');
+    });
+    wrap.appendChild(input);
+
+    if (f.help) wrap.appendChild(el('div', 'help', f.help));
+    return wrap;
+  }
+
+  function setMsg(text, cls) {
+    var m = $('setMsg');
+    m.textContent = text;
+    m.className = 'set-msg ' + (cls || '');
+  }
+
+  // ---- copy panel ------------------------------------------------------
+  var COPY_SKIP_LABELS = {
+    too_small: 'Buy too small (volume bump)',
+    too_large: 'Buy too large',
+    already_held: 'Already holding it',
+    already_traded: 'Already traded once',
+    no_curve: 'No readable curve',
+    graduated: 'Already graduated',
+    no_price: 'Could not price it',
+    risk: 'Blocked by a risk limit',
+    busy: 'Another entry in flight',
+    buy_failed: 'Buy failed',
+    zero_size: 'Sizing produced nothing'
+  };
+
+  function renderCopy(c) {
+    var row = $('copyRow');
+    if (!c) { row.classList.add('hidden'); return; }
+    row.classList.remove('hidden');
+
+    var host = $('copyWallets');
+    host.innerHTML = '';
+    if (!c.wallets.length) {
+      host.appendChild(el('div', 'tile-note',
+        'No wallets configured. Add them under Settings on this tab.'));
+    } else {
+      c.wallets.forEach(function (w) {
+        var r = el('div', 'wallet-row');
+        var a = el('span', 'wallet-addr', w.address.slice(0, 6) + '\u2026' + w.address.slice(-4));
+        a.title = w.address;
+        r.appendChild(a);
+        r.appendChild(el('span', 'mono', w.holdings + ' token' + (w.holdings === 1 ? '' : 's')));
+        host.appendChild(r);
+      });
+    }
+    var sub = el('div', 'hero-stats');
+    host.appendChild(sub);
+    function srow(label, text, cls) {
+      var r = el('div', 'hs-row');
+      r.appendChild(el('span', 'hs-lab', label));
+      r.appendChild(el('span', 'hs-val ' + (cls || ''), text));
+      sub.appendChild(r);
+    }
+    srow('Wallet reads', c.polls.toLocaleString());
+    srow('Trades observed', c.tradesSeen);
+    srow('Copied in', c.bought, c.bought > 0 ? 'pos' : '');
+    srow('Mirrored out', c.sold);
+    if (c.errors > 0) srow('RPC errors', c.errors, 'neg');
+
+    var skips = $('copySkips');
+    skips.innerHTML = '';
+    var keys = Object.keys(c.skips || {});
+    if (!keys.length) {
+      skips.appendChild(el('div', 'tile-note',
+        c.tracking ? 'Nothing skipped yet.' : 'Not tracking any wallets.'));
+      return;
+    }
+    var total = 0;
+    keys.forEach(function (k) { total += c.skips[k]; });
+    keys.sort(function (a, b) { return c.skips[b] - c.skips[a]; });
+    keys.forEach(function (k) {
+      var n = c.skips[k];
+      skips.appendChild(meter(COPY_SKIP_LABELS[k] || k,
+        n.toLocaleString() + ' (' + Math.round((n / total) * 100) + '%)',
+        total > 0 ? n / total : 0, null));
+    });
+  }
+
   // ---- main render -----------------------------------------------------
   function render(s) {
     snap = s;
+    if (!s.bots || !s.bots.length) return;
+    var b = currentBot(s);
+    activeBot = b.id;
+    renderBotBar(s, b);
+    renderBotControls(b);
+    renderSettings(s, b.id);
+    renderCopy(b.copy);
 
     var badge = $('modeBadge');
     badge.textContent = s.mode === 'live' ? 'LIVE — REAL FUNDS' : 'PAPER';
@@ -890,14 +1228,14 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 
     $('topMeta').textContent =
       s.executor + ' · ' + s.discovery + ' · up ' + dur(s.uptimeSeconds) +
-      ' · ' + s.creatorsTracked + ' deployers tracked';
+      ' · SOL $' + (s.solUsd ? s.solUsd.toFixed(2) : '?') + (s.solPriceLive ? '' : ' (fallback)');
 
     var hero = $('heroPnl');
-    hero.textContent = signed(s.pnl.netSol, 4) + ' SOL';
-    hero.className = 'hero-val num ' + signClass(s.pnl.netSol);
+    hero.textContent = signed(b.pnl.netSol, 4) + ' SOL';
+    hero.className = 'hero-val num ' + signClass(b.pnl.netSol);
     $('heroSub').textContent =
-      'realised ' + signed(s.pnl.realizedSol, 4) + ' · open ' + signed(s.pnl.unrealizedSol, 4) +
-      ' · ' + s.pnl.trades + ' closed trades';
+      'realised ' + signed(b.pnl.realizedSol, 4) + ' · open ' + signed(b.pnl.unrealizedSol, 4) +
+      ' · ' + b.pnl.trades + ' closed trades';
 
     var hs = $('heroStats');
     hs.innerHTML = '';
@@ -908,57 +1246,103 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
       hs.appendChild(r);
     }
     hrow('Return on capital deployed',
-      s.pnl.trades ? signed(s.pnl.returnPct, 1) + '%' : '—', signClass(s.pnl.returnPct));
-    hrow('Total deployed', plain(s.pnl.deployedSol, 4) + ' SOL');
-    hrow('Best trade', s.pnl.trades ? signed(s.pnl.bestSol, 4) : '—', signClass(s.pnl.bestSol));
-    hrow('Worst trade', s.pnl.trades ? signed(s.pnl.worstSol, 4) : '—', signClass(s.pnl.worstSol));
-    hrow('Average winner', s.pnl.wins ? signed(s.pnl.avgWinSol, 4) : '—', 'pos');
-    hrow('Average loser', s.pnl.losses ? signed(s.pnl.avgLossSol, 4) : '—', 'neg');
+      b.pnl.trades ? signed(b.pnl.returnPct, 1) + '%' : '—', signClass(b.pnl.returnPct));
+    hrow('Total deployed', plain(b.pnl.deployedSol, 4) + ' SOL');
+    hrow('Best trade', b.pnl.trades ? signed(b.pnl.bestSol, 4) : '—', signClass(b.pnl.bestSol));
+    hrow('Worst trade', b.pnl.trades ? signed(b.pnl.worstSol, 4) : '—', signClass(b.pnl.worstSol));
+    hrow('Average winner', b.pnl.wins ? signed(b.pnl.avgWinSol, 4) : '—', 'pos');
+    hrow('Average loser', b.pnl.losses ? signed(b.pnl.avgLossSol, 4) : '—', 'neg');
 
-    $('kWin').textContent = s.pnl.trades ? s.pnl.winRatePct.toFixed(0) + '%' : '—';
-    $('kWinSub').textContent = s.pnl.wins + 'W / ' + s.pnl.losses + 'L';
+    $('kWin').textContent = b.pnl.trades ? b.pnl.winRatePct.toFixed(0) + '%' : '—';
+    $('kWinSub').textContent = b.pnl.wins + 'W / ' + b.pnl.losses + 'L';
 
     var pf = $('kPf');
-    if (s.pnl.profitFactor === null) { pf.textContent = '∞'; pf.className = 'tile-val num pos'; }
-    else if (!s.pnl.trades) { pf.textContent = '—'; pf.className = 'tile-val num'; }
+    if (b.pnl.profitFactor === null) { pf.textContent = '∞'; pf.className = 'tile-val num pos'; }
+    else if (!b.pnl.trades) { pf.textContent = '—'; pf.className = 'tile-val num'; }
     else {
-      pf.textContent = s.pnl.profitFactor.toFixed(2);
-      pf.className = 'tile-val num ' + (s.pnl.profitFactor >= 1 ? 'pos' : 'neg');
+      pf.textContent = b.pnl.profitFactor.toFixed(2);
+      pf.className = 'tile-val num ' + (b.pnl.profitFactor >= 1 ? 'pos' : 'neg');
     }
 
     var today = $('kToday');
-    today.textContent = signed(s.pnl.todaySol, 4);
-    today.className = 'tile-val num ' + signClass(s.pnl.todaySol);
-    $('kTodaySub').textContent = 'limit ' + plain(s.risk.dailyLossLimitSol, 2) + ' SOL';
+    today.textContent = signed(b.pnl.todaySol, 4);
+    today.className = 'tile-val num ' + signClass(b.pnl.todaySol);
+    $('kTodaySub').textContent = 'limit ' + plain(b.risk.dailyLossLimitSol, 2) + ' SOL';
 
-    $('kOpen').textContent = s.risk.openPositions + ' / ' + s.risk.maxConcurrentPositions;
-    $('kOpenSub').textContent = s.stats.bought + ' bought this session';
+    $('kOpen').textContent = b.risk.openPositions + ' / ' + b.risk.maxConcurrentPositions;
+    $('kOpenSub').textContent = b.stats.bought + ' bought this session';
 
-    $('kWallet').textContent = s.risk.walletBalanceSol === null ? '—' : plain(s.risk.walletBalanceSol, 3);
-    $('kWalletSub').textContent = s.mode === 'paper' ? 'simulated' : 'reserve ' + plain(s.risk.minWalletReserveSol, 2);
+    $('kWallet').textContent = b.risk.walletBalanceSol === null ? '—' : plain(b.risk.walletBalanceSol, 3);
+    $('kWalletSub').textContent = s.mode === 'paper' ? 'simulated' : 'reserve ' + plain(b.risk.minWalletReserveSol, 2);
 
-    $('kSeen').textContent = s.stats.seen;
-    $('kSeenSub').textContent = s.stats.evaluated + ' screened · ' + s.stats.rejected + ' rejected';
+    $('kSeen').textContent = b.stats.seen;
+    $('kSeenSub').textContent = b.stats.evaluated + ' screened · ' + b.stats.rejected + ' rejected';
 
-    renderAi(s.ai);
-    renderBanners(s);
-    drawEquity(s.equity);
-    renderMeters(s.risk);
-    renderPositions(s.positions);
-    renderTrades(s.journal);
-    renderReasons(s.exitReasons);
+    renderAi(b.ai);
+    renderBanners(s, b);
+    drawEquity(b.equity);
+    renderMeters(b.risk);
+    renderPositions(b.positions);
+    renderTrades(b.journal);
+    renderReasons(b.exitReasons);
     renderConfig(s.config);
     renderLog(s.log);
 
     var kill = $('killBtn');
-    kill.textContent = s.risk.killSwitch ? 'Release kill switch' : 'Kill switch';
-    kill.className = s.risk.killSwitch ? 'armed' : '';
+    kill.textContent = s.killSwitch ? 'Release kill switch' : 'Kill switch';
+    kill.className = s.killSwitch ? 'armed' : '';
   }
 
   // ---- controls --------------------------------------------------------
+  $('botToggle').addEventListener('click', function () {
+    if (!snap) return;
+    var b = currentBot(snap);
+    var next = !b.enabled;
+    if (!next && !window.confirm('Stop ' + b.name + '? Open positions keep being managed.')) return;
+    post('/api/bots/toggle', { id: b.id, enabled: next })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (j && j.error) setMsg(j.error, 'err'); });
+  });
+
+  $('botPause').addEventListener('click', function () {
+    if (!snap) return;
+    var b = currentBot(snap);
+    post('/api/bots/pause', { id: b.id, paused: !b.paused });
+  });
+
+  $('setSave').addEventListener('click', function () {
+    var keys = Object.keys(pendingSettings);
+    if (!keys.length) { setMsg('Nothing changed.', ''); return; }
+    setMsg('Saving\u2026', '');
+    post('/api/settings', { patch: pendingSettings })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+      .then(function (res) {
+        if (!res.ok) { setMsg(res.body.error || 'Rejected', 'err'); return; }
+        pendingSettings = {};
+        setMsg('Applied ' + res.body.changed.length + ' change(s) — live now, no restart.', 'ok');
+      })
+      .catch(function () { setMsg('Request failed', 'err'); });
+  });
+
+  $('setRevert').addEventListener('click', function () {
+    pendingSettings = {};
+    setMsg('Reverted to the running values.', '');
+    if (snap) render(snap);
+  });
+
+  $('setReset').addEventListener('click', function () {
+    if (!window.confirm('Discard every saved setting and go back to what .env says?')) return;
+    post('/api/settings/reset')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        pendingSettings = {};
+        setMsg(j && j.error ? j.error : 'Reset to .env.', j && j.error ? 'err' : 'ok');
+      });
+  });
+
   $('killBtn').addEventListener('click', function () {
     if (!snap) return;
-    var next = !snap.risk.killSwitch;
+    var next = !snap.killSwitch;
     if (next && !window.confirm('Engage the kill switch? No new positions will be opened.')) return;
     post('/api/kill-switch', { enabled: next });
   });

@@ -89,7 +89,7 @@ export interface OrchestratorDeps {
   untrackTrades: (mints: string[]) => void;
   /** Test seam: stand in for the off-chain metadata fetch. */
   socialsFetcher?: (uri: string | undefined) => Promise<TokenSocials>;
-  /** Test seam: stand in for the live SOL/USD feed. */
+  /** Live SOL/USD. Shared across bots so entries are stamped at one rate. */
   solPrice?: { readonly usd: number; readonly isLive: boolean };
   /** RPC connection for reading bonding curves. Omitted in tests. */
   connection?: Connection;
@@ -385,6 +385,15 @@ export class AiOrchestrator {
       this.stats.bought += 1;
       const position = this.deps.positions.open(candidate, fill, 0);
       position.notionalSol = size;
+      position.managedBy = 'screener';
+
+      // Stamp what the token was worth at the moment of the buy. Reconstructing
+      // it later from the price is impossible once tokens have been sold.
+      const token = this.watchlist.get(candidate.mint);
+      if (token && token.latestMarketCapSol > 0) {
+        position.entryMarketCapSol = token.latestMarketCapSol;
+        position.entryMarketCapUsd = token.latestMarketCapSol * this.solPrice.usd;
+      }
       // The entry condition is written onto the position so the trade journal
       // records what the filter looked like at the moment of the buy. Without
       // that, tuning the thresholds later is guesswork.

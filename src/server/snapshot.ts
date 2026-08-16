@@ -49,6 +49,13 @@ export interface PositionView {
   checkpointPrice: number | null;
   /** True once the stake has been taken back out and the rest is house money. */
   costRecovered: boolean;
+  /** Market cap at the moment of the buy — the number you screened on. */
+  entryMarketCapUsd: number | null;
+  entryMarketCapSol: number | null;
+  /** Market cap right now, so the pair reads as a before/after. */
+  marketCapUsd: number | null;
+  /** Wallet this was copied from, when the copy bot opened it. */
+  copiedFrom: string | null;
   notes: string[];
 }
 
@@ -124,6 +131,43 @@ export interface AiView {
   solPriceLive: boolean;
 }
 
+/** What the copy bot is doing, for its tab. */
+export interface CopyView {
+  wallets: Array<{ address: string; holdings: number }>;
+  tracking: number;
+  polls: number;
+  errors: number;
+  tradesSeen: number;
+  bought: number;
+  sold: number;
+  skips: Record<string, number>;
+  lastSkipReason?: string;
+}
+
+/** One bot's own books. Nothing here is shared with another bot. */
+export interface BotView {
+  id: string;
+  name: string;
+  /** Configured to run. */
+  enabled: boolean;
+  /** Actually ticking right now. */
+  running: boolean;
+  /** New entries suspended, existing positions still managed. */
+  paused: boolean;
+  stats: SessionStats;
+  pnl: PnlSummary;
+  risk: RiskView;
+  positions: PositionView[];
+  journal: TradeJournalEntry[];
+  equity: { t: number; cum: number; pnl: number; symbol: string }[];
+  exitReasons: { reason: string; count: number; pnlSol: number }[];
+  creatorsTracked: number;
+  /** Screener funnel and analyst spend. Only the screener bot has one. */
+  ai: AiView | null;
+  /** Only the copy bot has one. */
+  copy: CopyView | null;
+}
+
 export interface Snapshot {
   now: number;
   startedAt: number;
@@ -131,18 +175,16 @@ export interface Snapshot {
   mode: string;
   executor: string;
   discovery: string;
-  stats: SessionStats;
-  pnl: PnlSummary;
-  risk: RiskView;
-  positions: PositionView[];
-  journal: TradeJournalEntry[];
-  /** Cumulative realised PnL after each closed trade, for the equity curve. */
-  equity: { t: number; cum: number; pnl: number; symbol: string }[];
-  exitReasons: { reason: string; count: number; pnlSol: number }[];
+  killSwitch: boolean;
+  walletBalanceSol: number | null;
+  solUsd: number;
+  solPriceLive: boolean;
+  bots: BotView[];
+  /** Read-only view of everything the bot is running with. */
   config: ConfigRow[];
+  /** Editable settings: the field specs and their current values. */
+  settings: { fields: unknown[]; values: Record<string, string> };
   log: LogEntry[];
-  creatorsTracked: number;
-  ai: AiView | null;
 }
 
 /** Settings whose values must never reach the browser. */
@@ -266,7 +308,7 @@ export function configRows(cfg: Config): ConfigRow[] {
   return rows;
 }
 
-function view(p: Position, cfg: Config, now: number): PositionView {
+function view(p: Position, cfg: Config, now: number, solUsd: number): PositionView {
   const price = p.lastPrice;
   const gainPct = pctChange(p.entryPrice, price);
   const unrealized = p.remainingQty * price;
@@ -330,6 +372,15 @@ function view(p: Position, cfg: Config, now: number): PositionView {
       : null,
     checkpointPrice: ratchet ? (p.checkpointPrice ?? p.entryPrice) : null,
     costRecovered: p.costRecovered === true,
+    entryMarketCapUsd: p.entryMarketCapUsd ?? null,
+    entryMarketCapSol: p.entryMarketCapSol ?? null,
+    // Current cap scales with price on a constant-product curve, so the entry
+    // cap times the price ratio is exact without a second chain read.
+    marketCapUsd:
+      p.entryMarketCapSol !== undefined && p.entryPrice > 0
+        ? p.entryMarketCapSol * (price / p.entryPrice) * solUsd
+        : null,
+    copiedFrom: p.copiedFrom ?? null,
     notes: p.notes.slice(-6),
   };
 }
@@ -371,23 +422,34 @@ export function summarisePnl(
   };
 }
 
-export interface SnapshotInput {
-  cfg: Config;
+export interface BotInput {
+  id: string;
+  name: string;
+  enabled: boolean;
+  running: boolean;
+  paused: boolean;
   store: Store;
   stats: SessionStats;
+  ai: AiView | null;
+  copy: CopyView | null;
+}
+
+export interface SnapshotInput {
+  cfg: Config;
+  bots: BotInput[];
   startedAt: number;
   discovery: string;
   killSwitch: boolean;
   walletBalanceSol: number | null;
-  ai: AiView | null;
+  solUsd: number;
+  solPriceLive: boolean;
+  settings: { fields: unknown[]; values: Record<string, string> };
 }
 
-export function buildSnapshot(input: SnapshotInput): Snapshot {
-  const { cfg, store, stats, startedAt, discovery, killSwitch, walletBalanceSol, ai } = input;
-  const now = Date.now();
-
-  const open = store.openPositions();
-  const journal = [...store.journal()];
+/** Builds one bot's slice of the snapshot from its own store. */
+export function buildBotView(input: BotInput, cfg: Config, solUsd: number, now: number): BotView {
+  const open = input.store.openPositions();
+  const journal = [...input.store.journal()];
 
   let cum = 0;
   const equity = journal.map((t) => {
@@ -405,40 +467,65 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
   }
 
   return {
-    now,
-    startedAt,
-    uptimeSeconds: (now - startedAt) / 1000,
-    mode: cfg.MODE,
-    executor: cfg.EXECUTOR,
-    discovery,
-    stats,
-    pnl: summarisePnl(journal, open, store.todayPnl()),
+    id: input.id,
+    name: input.name,
+    enabled: input.enabled,
+    running: input.running,
+    paused: input.paused,
+    stats: input.stats,
+    pnl: summarisePnl(journal, open, input.store.todayPnl()),
     risk: {
-      killSwitch,
-      breakerActive: now < store.breakerUntil,
-      breakerUntil: store.breakerUntil,
-      consecutiveLosses: store.consecutiveLosses,
+      killSwitch: false,
+      breakerActive: now < input.store.breakerUntil,
+      breakerUntil: input.store.breakerUntil,
+      consecutiveLosses: input.store.consecutiveLosses,
       maxConsecutiveLosses: cfg.MAX_CONSECUTIVE_LOSSES,
-      todayPnlSol: store.todayPnl(),
+      todayPnlSol: input.store.todayPnl(),
       dailyLossLimitSol: cfg.DAILY_LOSS_LIMIT_SOL,
-      spendLastHourSol: store.spendLastHour(),
+      spendLastHourSol: input.store.spendLastHour(),
       hourlySpendCapSol: cfg.HOURLY_SPEND_CAP_SOL,
       openPositions: open.length,
       maxConcurrentPositions: cfg.MAX_CONCURRENT_POSITIONS,
-      walletBalanceSol,
+      walletBalanceSol: null,
       minWalletReserveSol: cfg.MIN_WALLET_RESERVE_SOL,
     },
     positions: open
-      .map((p) => view(p, cfg, now))
+      .map((p) => view(p, cfg, now, solUsd))
       .sort((a, b) => a.ageSeconds - b.ageSeconds),
     journal: journal.slice(-100).reverse(),
     equity,
     exitReasons: [...reasons]
       .map(([reason, v]) => ({ reason, ...v }))
       .sort((a, b) => b.count - a.count),
-    config: configRows(cfg),
+    creatorsTracked: input.store.creatorCount(),
+    ai: input.ai,
+    copy: input.copy,
+  };
+}
+
+export function buildSnapshot(input: SnapshotInput): Snapshot {
+  const now = Date.now();
+  return {
+    now,
+    startedAt: input.startedAt,
+    uptimeSeconds: (now - input.startedAt) / 1000,
+    mode: input.cfg.MODE,
+    executor: input.cfg.EXECUTOR,
+    discovery: input.discovery,
+    killSwitch: input.killSwitch,
+    walletBalanceSol: input.walletBalanceSol,
+    solUsd: input.solUsd,
+    solPriceLive: input.solPriceLive,
+    bots: input.bots.map((b) => {
+      const view = buildBotView(b, input.cfg, input.solUsd, now);
+      // The kill switch and the wallet are global, but they are what a bot's
+      // risk panel is actually gated on, so each copy carries them.
+      view.risk.killSwitch = input.killSwitch;
+      view.risk.walletBalanceSol = input.walletBalanceSol;
+      return view;
+    }),
+    config: configRows(input.cfg),
+    settings: input.settings,
     log: [...recentLogs(150)].reverse(),
-    creatorsTracked: store.creatorCount(),
-    ai,
   };
 }

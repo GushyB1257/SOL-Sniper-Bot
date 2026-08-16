@@ -45,8 +45,17 @@ export class Store {
   private dirty = false;
   private flushTimer: NodeJS.Timeout | null = null;
 
-  constructor(dataDir: string) {
-    this.file = join(dataDir, 'state.json');
+  /**
+   * `namespace` keeps each bot's positions, journal and risk counters separate.
+   * Without it three strategies share one daily loss limit and one P&L figure,
+   * and you cannot tell which of them is actually making money.
+   *
+   * The screener keeps the original `state.json` filename so an existing run's
+   * history survives the move to multiple bots.
+   */
+  constructor(dataDir: string, namespace = '') {
+    const name = namespace && namespace !== 'screener' ? `state-${namespace}.json` : 'state.json';
+    this.file = join(dataDir, name);
     mkdirSync(dirname(this.file), { recursive: true });
     this.data = this.read();
   }

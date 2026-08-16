@@ -88,8 +88,21 @@ export interface Position {
   remainingQty: number;
   /** SOL per token at entry. */
   entryPrice: number;
+  /** Market cap in SOL at the moment of the buy. */
+  entryMarketCapSol?: number;
+  /** Market cap in USD at the moment of the buy, at the SOL price then. */
+  entryMarketCapUsd?: number;
   entryTx?: string;
   openedAt: number;
+
+  /**
+   * Which bot owns this position. The exit planner defers entirely to the copy
+   * trader for its positions — a mechanical exit firing underneath it would
+   * break the "sell when they sell" contract.
+   */
+  managedBy?: 'screener' | 'sniper' | 'copy';
+  /** Copy trading: the wallet whose buy this position mirrors. */
+  copiedFrom?: string;
 
   /** Best price seen since entry, for trailing stops. */
   peakPrice: number;

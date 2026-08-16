@@ -8,7 +8,70 @@ manages the position with deterministic risk controls underneath.
 Runs in **paper mode by default**. It will not touch real money until you
 explicitly change two settings.
 
-Four entry modes ship in the box, set by `ENTRY_MODE`:
+## Three bots, three tabs
+
+The dashboard runs three independent strategies side by side. Each has its own
+positions, P&L, journal and risk limits — sharing them would mean one strategy's
+losing streak trips the breaker on the others, and a single blended number that
+cannot answer *which of these actually works*. The wallet and the executor are
+shared, because there is only one wallet.
+
+| Tab | What it does |
+|---|---|
+| **Screener** | Applies a volume / market-cap / socials filter to every launch and enters the instant one matches |
+| **Sniper** | The original creation-time sniper: full safety battery, buys at launch |
+| **Copy trader** | Mirrors wallets you nominate — buys when they buy, sells the same fraction when they sell |
+
+Start, stop and pause each one from its tab. **Every setting is editable from
+the page** — filters, sizing, exits, risk limits, tracked wallets — and applies
+live, with no restart and no editing `.env`. Values are validated by exactly the
+same code the process boots with, so a bad number is rejected whole with the
+message you would have seen at startup, and the running config is untouched.
+Saved settings live in `data/settings.json` and layer over `.env`.
+
+Two things are deliberately **not** editable from the browser: `MODE`,
+`EXECUTOR`, the wallet key and the RPC URLs. Whether the bot is spending real
+money should require touching the machine.
+
+---
+
+## The copy trader
+
+Give it wallets; it mirrors them.
+
+**Buys are filtered, sells are not.** Not every buy is a position — wallets
+routinely make dust purchases purely to push a token up a screener's volume
+ranking, and a copy trader that follows those ends up holding things the wallet
+never committed to. `COPY_MIN_BUY_SOL` (default 0.5) is the filter that matters,
+and it is enforced on the **SOL value** of their buy, priced through the bonding
+curve, rather than on a token count that means nothing across different
+supplies. Sells have no filter at all and mirror the **fraction**: they dump 40%
+of their bag, you sell 40% of yours. Any filter on the sell side is a way to
+still be holding after the person you are following has left.
+
+**It reads balances, not trades.** The obvious implementation subscribes to
+their trades. This polls their token accounts instead, for two reasons: the
+feed we would subscribe to has already been observed to stop delivering
+silently, and a balance tells you the truth *right now* whereas a trade stream
+only tells you what happened while you were listening. A missed message costs a
+trade; a missed poll costs one interval. Reading balances also hands you the
+number that matters most for mirroring an exit — the fraction of their holding
+they just sold — which would otherwise have to be reconstructed from partial
+fills.
+
+The cost is latency: you react a poll interval late (2s by default) rather than
+in the same block. For following a wallet's position that is fine. For racing
+them into a launch it is not, and this does not pretend otherwise.
+
+The mechanical exits are **disabled** for copied positions. A ratchet or a stop
+firing underneath one would exit on your schedule while the wallet you are
+copying is still holding, which is the one thing a copy trader must never do.
+The only exit of its own is `COPY_MAX_HOLD_SECONDS`, a backstop for a wallet
+that goes quiet holding a dead token.
+
+---
+
+Four entry modes ship in the box for the screener bot, set by `ENTRY_MODE`:
 
 | `ENTRY_MODE` | What it does | Model in the entry path? |
 |---|---|---|
@@ -419,8 +482,9 @@ Live over a websocket, ~1s refresh, with polling fallback if the socket drops.
   crosshair and tooltip. Zero baseline drawn, since the value crosses it.
 - **KPI row** — win rate, profit factor, today's P&L against the daily limit,
   open positions, wallet balance, launches seen/screened/rejected.
-- **Open positions** — age, cost, entry → current price, gain, P&L, how much of
-  the position is left, **ladder progress as pips** (filled rungs, plus an amber
+- **Open positions** — age, cost, **the market cap you bought at next to the
+  market cap now**, entry → current price, gain, P&L, how much of the position
+  is left, **ladder progress as pips** (filled rungs, plus an amber
   pip once the moonbag is armed), distance to the nearest active stop, and the
   safety score it was bought on. Click a mint to copy it.
 - **Risk meters** — daily loss, hourly spend, position count and loss streak,
@@ -587,7 +651,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 243 tests
+npm test           # 284 tests
 npm run typecheck
 npm run build
 ```

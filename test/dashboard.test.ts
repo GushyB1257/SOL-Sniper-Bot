@@ -7,7 +7,9 @@ import { Dashboard } from '../src/server/dashboard.js';
 import { buildSnapshot, redactUrl, summarisePnl, configRows } from '../src/server/snapshot.js';
 import { renderPage } from '../src/server/ui.js';
 import { Store } from '../src/state/store.js';
-import { PositionManager } from '../src/strategy/position-manager.js';
+import { TradingBot } from '../src/bots/bot.js';
+import { RuntimeSettings } from '../src/settings/runtime.js';
+import { SolPrice } from '../src/util/solprice.js';
 import { PaperExecutor } from '../src/execution/paper.js';
 import { RiskManager } from '../src/risk/risk-manager.js';
 import { loadConfig, type Config } from '../src/config.js';
@@ -33,6 +35,7 @@ function env(dir: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv
 let dir: string;
 let cfg: Config;
 let store: Store;
+let bot: TradingBot;
 let dash: Dashboard;
 let base: string;
 let killPath: string;
@@ -71,19 +74,34 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'sniper-dash-'));
   killPath = join(dir, 'STOP');
   cfg = loadConfig(env(dir));
-  store = new Store(dir);
   const exec = new PaperExecutor(cfg);
-  const risk = new RiskManager(cfg, store, killPath);
+
+  bot = new TradingBot('screener', 'Screener', {
+    cfg,
+    dataDir: dir,
+    executor: exec,
+    prices: { curve: async () => null, price: async () => null },
+    connection: {} as never,
+    walletBalance: async () => 3.5,
+    killSwitchPath: killPath,
+    solPrice: new SolPrice(200),
+    trackTrades: () => {},
+    untrackTrades: () => {},
+  });
+  // The bot owns the screener's store, which is the same `state.json` the test
+  // writes positions into, so `store` and `bot.store` are the same file.
+  store = bot.store;
 
   dash = new Dashboard({
     cfg,
-    store,
-    positions: new PositionManager(cfg, store, exec, risk),
-    stats: () => ({ seen: 12, evaluated: 5, rejected: 4, bought: 1, skipped: 7 }),
+    settings: new RuntimeSettings(cfg, env(dir), dir),
+    bots: new Map([['screener', bot]]),
     walletBalance: async () => 3.5,
     discoveryName: 'test',
     startedAt: Date.now() - 60_000,
     killSwitchPath: killPath,
+    solPrice: new SolPrice(200),
+    setBotEnabled: () => ({ ok: true }),
   });
 
   await dash.start();
@@ -140,8 +158,11 @@ describe('dashboard serving', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.mode).toBe('paper');
-    expect(body.stats.seen).toBe(12);
-    expect(body.risk.maxConcurrentPositions).toBe(8);
+    // Every bot carries its own books, so nothing at the top level is a P&L.
+    expect(body.bots).toHaveLength(1);
+    expect(body.bots[0].id).toBe('screener');
+    expect(body.bots[0].risk.maxConcurrentPositions).toBe(8);
+    expect(body.settings.fields.length).toBeGreaterThan(10);
   });
 
   it('404s an unknown route', async () => {
@@ -337,6 +358,33 @@ describe('snapshot maths', () => {
   });
 });
 
+/** Builds a snapshot the way the dashboard does, from the bot's own store. */
+function snapshotOf() {
+  return buildSnapshot({
+    cfg,
+    startedAt: Date.now(),
+    discovery: 'test',
+    killSwitch: false,
+    walletBalanceSol: 1,
+    solUsd: 200,
+    solPriceLive: true,
+    settings: { fields: [], values: {} },
+    bots: [
+      {
+        id: 'screener',
+        name: 'Screener',
+        enabled: true,
+        running: true,
+        paused: false,
+        store,
+        stats: { seen: 0, evaluated: 0, rejected: 0, bought: 0, skipped: 0 },
+        ai: null,
+        copy: null,
+      },
+    ],
+  });
+}
+
 describe('position view', () => {
   it('reports the nearest stop and ladder state', () => {
     store.savePosition(
@@ -353,17 +401,7 @@ describe('position view', () => {
       }),
     );
 
-    const snap = buildSnapshot({
-      cfg,
-      store,
-      stats: { seen: 0, evaluated: 0, rejected: 0, bought: 0, skipped: 0 },
-      startedAt: Date.now(),
-      discovery: 'test',
-      killSwitch: false,
-      walletBalanceSol: 1,
-    });
-
-    const v = snap.positions[0]!;
+    const v = snapshotOf().bots[0]!.positions[0]!;
     expect(v.gainPct).toBeCloseTo(100);
     expect(v.remainingPct).toBeCloseTo(60);
     expect(v.ladder[0]!.filled).toBe(true);
@@ -375,16 +413,7 @@ describe('position view', () => {
 
   it('leaves the trailing stop unarmed before the first rung fills', () => {
     store.savePosition(position());
-    const snap = buildSnapshot({
-      cfg,
-      store,
-      stats: { seen: 0, evaluated: 0, rejected: 0, bought: 0, skipped: 0 },
-      startedAt: Date.now(),
-      discovery: 'test',
-      killSwitch: false,
-      walletBalanceSol: 1,
-    });
-    expect(snap.positions[0]!.trailPrice).toBeNull();
+    expect(snapshotOf().bots[0]!.positions[0]!.trailPrice).toBeNull();
   });
 });
 
@@ -407,6 +436,24 @@ describe('page render', () => {
   it('embeds the token as valid JSON', () => {
     const html = renderPage('abc123');
     expect(html).toContain('var TOKEN = "abc123"');
+  });
+
+  it('inlines a client script that actually parses', () => {
+    // The whole UI is one inlined script. A syntax error in it is invisible
+    // server-side and blanks the entire page, so it gets checked here rather
+    // than discovered by opening a browser.
+    const script = /<script>\n([\s\S]*?)<\/script>/.exec(renderPage('t'))?.[1];
+    expect(script).toBeTruthy();
+    expect(script!.length).toBeGreaterThan(1000);
+    expect(() => new Function(script!)).not.toThrow();
+  });
+
+  it('renders a tab for every bot and a settings form', () => {
+    const html = renderPage('t');
+    for (const id of ['botBar', 'botToggle', 'botPause', 'setForm', 'setSave']) {
+      expect(html, id).toContain('id="' + id + '"');
+    }
+    expect(html).toContain('MCap in');
   });
 
   it('references no external origins', () => {
