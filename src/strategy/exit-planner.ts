@@ -206,14 +206,21 @@ export function decideScalpExit(ctx: ExitContext): ExitOrder | null {
     return closeAll('stop_loss', `down ${gainPct.toFixed(1)}% (stop ${-stopPct}%)`);
   }
 
-  // 2. Breakeven stop. Once a trade has been meaningfully green, it should not
-  //    be allowed to become a loser — the whole point of a scalp is banking
-  //    small edges, and giving them back is what turns the arithmetic negative.
+  // 2. Give-back stop. Once a trade has been meaningfully green it should not
+  //    be allowed to become a loser — but "not a loser" is a low bar. These
+  //    tokens pop for a few seconds and then crash, so a position that peaked
+  //    at +30% and is now at +8% is not a trade still working; it is a trade
+  //    already over. The floor is the higher of breakeven and the share of the
+  //    peak gain we are willing to hand back, so it ratchets up as the trade
+  //    runs and never drops below flat.
   if (!runnerActive && peakGainPct >= breakeven + cfg.SCALP_BREAKEVEN_ARM_PCT) {
-    if (gainPct <= breakeven) {
+    const giveback = peakGainPct * (1 - cfg.SCALP_GIVEBACK_PCT / 100);
+    const floor = Math.max(breakeven, giveback);
+    if (gainPct <= floor) {
       return closeAll(
         'trailing_stop',
-        `fell back to breakeven (${breakeven.toFixed(1)}%) after peaking at ${peakGainPct.toFixed(1)}%`,
+        `gave back to ${gainPct.toFixed(1)}% from a ${peakGainPct.toFixed(1)}% peak ` +
+          `(floor ${floor.toFixed(1)}%)`,
       );
     }
   }

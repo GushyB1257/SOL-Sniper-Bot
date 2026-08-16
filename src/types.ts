@@ -222,4 +222,10 @@ export interface TradeJournalEntry {
   closeReason: string;
   safetyScore: number;
   holdSeconds: number;
+  /**
+   * What the entry filter looked like at the moment of the buy. Without this
+   * the journal records outcomes but not the conditions that produced them,
+   * which makes tuning the thresholds guesswork.
+   */
+  entryNote?: string;
 }

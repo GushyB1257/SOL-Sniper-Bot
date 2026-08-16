@@ -1,5 +1,6 @@
 import type { TokenCandidate } from '../types.js';
 import type { Config } from '../config.js';
+import { UNCHECKED, type TokenSocials } from './metadata.js';
 
 /** A single trade observed on a watched token. */
 export interface ObservedTrade {
@@ -39,6 +40,26 @@ export interface TrackedToken {
   latestVSol: number;
   peakVSol: number;
 
+  /**
+   * Volume that happened before we started streaming — in practice the
+   * deployer's creation buy. Screeners count it, so the screener does too.
+   */
+  seedVolumeSol: number;
+  /** Market cap in SOL: from the feed when it reports one, else derived. */
+  latestMarketCapSol: number;
+  peakMarketCapSol: number;
+  /** Constant-product k for the curve, for deriving market cap from reserves. */
+  curveK: number;
+
+  /**
+   * Off-chain socials. Fetched lazily — only for tokens that have already
+   * cleared every cheap filter — because an HTTP round trip per launch is
+   * thousands of pointless requests a day.
+   */
+  socials: TokenSocials;
+  /** True while a socials fetch is in flight, so only one is ever issued. */
+  socialsPending: boolean;
+
   /** True once the deployer has been observed selling. */
   deployerSold: boolean;
   deployerSoldSol: number;
@@ -73,10 +94,33 @@ export interface TractionMetrics {
   deployerSoldSol: number;
   /** Average SOL per buy — large averages mean few whales, not a crowd. */
   avgBuySizeSol: number;
+  /** Market cap in SOL. */
+  marketCapSol: number;
+  /** All traded volume since launch, both sides, including the creation buy. */
+  volumeSol: number;
 }
 
 const GRADUATION_VSOL = 85;
 const RECENT_WINDOW_MS = 60_000;
+
+/** pump.fun mints a fixed billion tokens, all of which count toward market cap. */
+const TOTAL_SUPPLY = 1_000_000_000;
+
+/** Virtual reserves every pump.fun curve starts with. */
+const DEFAULT_VSOL = 30;
+const DEFAULT_VTOKENS = 1_073_000_000;
+
+/**
+ * Market cap in SOL derived from the curve.
+ *
+ * On a constant-product curve vTokens = k / vSol, so the spot price is
+ * vSol² / k and the cap is that times the supply. Used only when the feed did
+ * not report a cap directly — its number is authoritative when present.
+ */
+export function marketCapFromCurve(vSol: number, curveK: number): number {
+  if (!(vSol > 0) || !(curveK > 0)) return 0;
+  return ((vSol * vSol) / curveK) * TOTAL_SUPPLY;
+}
 
 /**
  * Tracks freshly-launched tokens and surfaces the ones showing real traction.
@@ -116,10 +160,14 @@ export class Watchlist {
 
   add(candidate: TokenCandidate): boolean {
     if (this.tokens.has(candidate.mint)) return false;
-    if (this.tokens.size >= this.cfg.WATCHLIST_MAX_SIZE) return false;
+    if (this.tokens.size >= this.cfg.WATCHLIST_MAX_SIZE && !this.evictOldest()) return false;
 
     const now = Date.now();
-    const vSol = candidate.vSolInBondingCurve ?? 30;
+    const vSol = candidate.vSolInBondingCurve ?? DEFAULT_VSOL;
+    const vTokens = candidate.vTokensInBondingCurve ?? DEFAULT_VTOKENS;
+    const curveK = vSol > 0 && vTokens > 0 ? vSol * vTokens : DEFAULT_VSOL * DEFAULT_VTOKENS;
+    const seedVolumeSol = candidate.initialBuySol ?? 0;
+
     this.tokens.set(candidate.mint, {
       candidate,
       firstSeen: now,
@@ -134,11 +182,63 @@ export class Watchlist {
       samples: [{ at: now, vSol }],
       latestVSol: vSol,
       peakVSol: vSol,
+      seedVolumeSol,
+      curveK,
+      latestMarketCapSol: candidate.marketCapSol ?? marketCapFromCurve(vSol, curveK),
+      peakMarketCapSol: candidate.marketCapSol ?? marketCapFromCurve(vSol, curveK),
+      socials: UNCHECKED,
+      socialsPending: false,
       deployerSold: false,
       deployerSoldSol: 0,
       analysed: false,
     });
     return true;
+  }
+
+  /**
+   * Makes room by dropping the oldest token, so a full watchlist tracks the
+   * FRESHEST launches rather than the first ones it happened to see.
+   *
+   * Refusing new entries instead would be quietly fatal for the screener: the
+   * list fills within minutes of starting and the bot then spends the rest of
+   * the run watching tokens too old to ever match, while ignoring every launch
+   * that could have.
+   *
+   * Analysed tokens are skipped — those are ones we have traded or adopted from
+   * an open position, and their flow data is still being used. The scan is
+   * bounded so a list dominated by them degrades to refusing rather than
+   * walking the whole map on every launch.
+   */
+  private evictOldest(): boolean {
+    let scanned = 0;
+    // Map iteration is insertion order, so the front of it is the oldest.
+    for (const [mint, t] of this.tokens) {
+      if (!t.analysed) {
+        this.tokens.delete(mint);
+        return true;
+      }
+      if (++scanned >= 64) break;
+    }
+    return false;
+  }
+
+  /**
+   * Claims the socials fetch for a token. Returns false if it is already done
+   * or already in flight, so callers on the trade stream — which fires many
+   * times a second — issue exactly one request per token.
+   */
+  claimSocialsFetch(mint: string): boolean {
+    const t = this.tokens.get(mint);
+    if (!t || t.socials.checked || t.socialsPending) return false;
+    t.socialsPending = true;
+    return true;
+  }
+
+  setSocials(mint: string, socials: TokenSocials): void {
+    const t = this.tokens.get(mint);
+    if (!t) return;
+    t.socials = socials;
+    t.socialsPending = false;
   }
 
   recordTrade(trade: ObservedTrade): void {
@@ -173,6 +273,17 @@ export class Watchlist {
       if (trade.vSolInCurve > t.peakVSol) t.peakVSol = trade.vSolInCurve;
       t.samples.push({ at: trade.at, vSol: trade.vSolInCurve });
       if (t.samples.length > 300) t.samples = t.samples.slice(-300);
+    }
+
+    // The feed's own cap is authoritative; the curve derivation is the fallback
+    // for feeds (and tests) that do not report one.
+    const cap =
+      trade.marketCapSol !== undefined && trade.marketCapSol > 0
+        ? trade.marketCapSol
+        : marketCapFromCurve(t.latestVSol, t.curveK);
+    if (cap > 0) {
+      t.latestMarketCapSol = cap;
+      if (cap > t.peakMarketCapSol) t.peakMarketCapSol = cap;
     }
   }
 
@@ -210,6 +321,8 @@ export class Watchlist {
       deployerSold: t.deployerSold,
       deployerSoldSol: t.deployerSoldSol,
       avgBuySizeSol: t.buyCount > 0 ? t.buyVolumeSol / t.buyCount : 0,
+      marketCapSol: t.latestMarketCapSol,
+      volumeSol: t.seedVolumeSol + t.buyVolumeSol + t.sellVolumeSol,
     };
   }
 
@@ -259,16 +372,28 @@ export class Watchlist {
     if (t) t.analysed = true;
   }
 
+  /**
+   * How long a token stays watchable, which is the window the active entry mode
+   * can still act inside. Getting this wrong is expensive in the screener's
+   * case: an hour-long retention keeps thousands of dead mints subscribed to
+   * the trade feed for tokens that stopped being eligible after five minutes.
+   */
+  private get retentionSeconds(): number {
+    // No grace factor for the screener: past its age ceiling a token can never
+    // match again, and every one kept past that is a live trade-feed
+    // subscription spent on something that cannot produce a trade.
+    return this.cfg.ENTRY_MODE === 'screener'
+      ? this.cfg.SCREEN_MAX_AGE_SECONDS
+      : this.cfg.WATCH_MAX_AGE_SECONDS * 2;
+  }
+
   /** Drops tokens that are too old to be interesting or have gone silent. */
   prune(now = Date.now()): number {
     let removed = 0;
     for (const [mint, t] of this.tokens) {
       const ageSeconds = (now - t.firstSeen) / 1000;
       const silentSeconds = (now - t.lastTradeAt) / 1000;
-      if (
-        ageSeconds > this.cfg.WATCH_MAX_AGE_SECONDS * 2 ||
-        (silentSeconds > 120 && t.buyCount === 0)
-      ) {
+      if (ageSeconds > this.retentionSeconds || (silentSeconds > 120 && t.buyCount === 0)) {
         this.tokens.delete(mint);
         removed += 1;
       }

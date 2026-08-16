@@ -5,9 +5,63 @@
  */
 import { config } from '../config.js';
 import { Store } from '../state/store.js';
+import type { TradeJournalEntry } from '../types.js';
 
 function pad(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s.padEnd(n);
+}
+
+/** Pulls a number back out of the entry note the orchestrator wrote. */
+function numberFrom(note: string | undefined, re: RegExp): number | null {
+  const m = note?.match(re);
+  if (!m?.[1]) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Labels a value by which of the given cut points it falls between. */
+function band(v: number, cuts: number[], unit: string): string {
+  for (let i = 0; i < cuts.length; i++) {
+    if (v < cuts[i]!) return i === 0 ? `< ${cuts[0]}${unit}` : `${cuts[i - 1]}-${cuts[i]}${unit}`;
+  }
+  return `${cuts[cuts.length - 1]}${unit}+`;
+}
+
+/**
+ * Groups closed trades by some property of the entry and prints PnL per group.
+ *
+ * A single blended win rate cannot tell you which threshold to move. Split the
+ * same trades by the conditions they were taken under and the answer usually
+ * falls out: one band is carrying the strategy and another is bleeding.
+ */
+function bucketReport(
+  title: string,
+  journal: readonly TradeJournalEntry[],
+  keyOf: (t: TradeJournalEntry) => string | null,
+): void {
+  const buckets = new Map<string, { n: number; wins: number; pnl: number }>();
+  for (const t of journal) {
+    const key = keyOf(t);
+    if (key === null) continue;
+    const cur = buckets.get(key) ?? { n: 0, wins: 0, pnl: 0 };
+    cur.n += 1;
+    if (t.pnlSol > 0) cur.wins += 1;
+    cur.pnl += t.pnlSol;
+    buckets.set(key, cur);
+  }
+  if (buckets.size < 2) return; // one bucket compares with nothing
+
+  console.log(`\n${title}:`);
+  const rows = [...buckets].sort((a, b) => b[1].n - a[1].n);
+  for (const [key, v] of rows) {
+    const colour = v.pnl >= 0 ? '\x1b[32m' : '\x1b[31m';
+    const thin = v.n < 10 ? '  (thin)' : '';
+    console.log(
+      `  ${pad(key, 16)}${String(v.n).padStart(4)} trades  ` +
+        `${String(Math.round((v.wins / v.n) * 100)).padStart(3)}% win  ` +
+        `${colour}${v.pnl >= 0 ? '+' : ''}${v.pnl.toFixed(4)} SOL\x1b[0m${thin}`,
+    );
+  }
 }
 
 function main(): void {
@@ -73,6 +127,28 @@ function main(): void {
   for (const [reason, v] of [...byReason].sort((a, b) => b[1].n - a[1].n)) {
     console.log(`  ${pad(reason, 24)}${String(v.n).padStart(4)}  ${v.pnl >= 0 ? '+' : ''}${v.pnl.toFixed(4)} SOL`);
   }
+
+  // Entry-condition breakdown. The exit reasons say how trades ended; this says
+  // which entries were worth taking. Move the threshold whose worst bucket is
+  // both large and negative — that is the whole tuning loop, and it needs data
+  // rather than opinion.
+  bucketReport('Entry market cap', journal, (t) => {
+    const v = numberFrom(t.entryNote, /\$([\d.]+)k mcap/);
+    return v === null ? null : band(v, [8, 12, 18], 'k');
+  });
+  bucketReport('Entry volume', journal, (t) => {
+    const v = numberFrom(t.entryNote, /\$([\d.]+)k volume/);
+    return v === null ? null : band(v, [5, 10, 20], 'k');
+  });
+  bucketReport('Age at entry', journal, (t) => {
+    const v = numberFrom(t.entryNote, /(\d+)s old/);
+    return v === null ? null : band(v, [15, 45, 120], 's');
+  });
+  bucketReport('Socials', journal, (t) => {
+    const v = numberFrom(t.entryNote, /(\d+) socials?/);
+    return v === null ? null : `${v} social${v === 1 ? '' : 's'}`;
+  });
+  bucketReport('Hold time', journal, (t) => band(t.holdSeconds, [15, 45, 120], 's'));
 
   // --- the part that actually answers "is this working" -------------------
 

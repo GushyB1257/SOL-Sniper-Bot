@@ -75,6 +75,30 @@ const ladderSchema = z
     return tiers;
   });
 
+const POOLS = ['pump', 'pump-amm', 'raydium', 'raydium-cpmm', 'launchlab', 'bonk', 'auto'] as const;
+
+/** Parses "pump,pump-amm" into a list of venues the screener will accept. */
+const poolListSchema = z.string().transform((raw, ctx) => {
+  const parts = raw
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (parts.length === 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'SCREEN_ALLOWED_POOLS is empty' });
+    return z.NEVER;
+  }
+  for (const p of parts) {
+    if (!(POOLS as readonly string[]).includes(p)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `unknown pool "${p}"; valid values are ${POOLS.join(', ')}`,
+      });
+      return z.NEVER;
+    }
+  }
+  return parts as unknown as Array<(typeof POOLS)[number]>;
+});
+
 const schema = z.object({
   MODE: z.enum(['paper', 'live']).default('paper'),
 
@@ -83,9 +107,16 @@ const schema = z.object({
 
   WALLET_PRIVATE_KEY: z.string().default(''),
 
-  BUY_AMOUNT_SOL: num(0.0001, 100).default(0.05),
+  /**
+   * Position size is the single most decisive parameter in a scalp strategy,
+   * because the priority fee is FIXED per transaction and therefore a larger
+   * share of a smaller position. At 0.05 SOL the round-trip breakeven move is
+   * 6.3%; at 0.25 SOL it is 3.7%. Sizing down does not reduce risk here so much
+   * as it raises the bar the trade has to clear to be worth taking at all.
+   */
+  BUY_AMOUNT_SOL: num(0.0001, 100).default(0.25),
   MAX_CONCURRENT_POSITIONS: num(1, 50).default(8),
-  MIN_WALLET_RESERVE_SOL: num(0, 100).default(0.05),
+  MIN_WALLET_RESERVE_SOL: num(0, 100).default(0.1),
 
   BUY_SLIPPAGE_PCT: num(0.1, 100).default(15),
   SELL_SLIPPAGE_PCT: num(0.1, 100).default(25),
@@ -108,20 +139,38 @@ const schema = z.object({
   REQUIRE_SOCIALS: bool.default('true'),
   DUPLICATE_NAME_WINDOW_MINUTES: num(0, 1440).default(60),
 
-  DAILY_LOSS_LIMIT_SOL: num(0, 1000).default(0.5),
-  MAX_CONSECUTIVE_LOSSES: num(1, 100).default(4),
-  BREAKER_COOLDOWN_SECONDS: num(0, 86400).default(1800),
-  HOURLY_SPEND_CAP_SOL: num(0, 1000).default(0.5),
+  DAILY_LOSS_LIMIT_SOL: num(0, 1000).default(1.5),
+  MAX_CONSECUTIVE_LOSSES: num(1, 100).default(6),
+  BREAKER_COOLDOWN_SECONDS: num(0, 86400).default(900),
+  HOURLY_SPEND_CAP_SOL: num(0, 1000).default(5),
 
   // === Entry path ===
   /**
-   * fast   : deterministic momentum trigger, fires in microseconds on the trade
-   *          stream. No model in the entry path. AI still manages exits.
-   * ai     : Claude decides entries. Slower — the model thinks for seconds, so
-   *          moves that complete in seconds are gone before it answers.
-   * rules  : original creation-time sniper.
+   * screener : the filter a human watches, applied automatically — pool,
+   *            volume, market cap, socials. Enters the instant a token matches.
+   * fast     : deterministic momentum trigger on the trade stream.
+   * ai       : Claude decides entries. Slower — the model thinks for seconds, so
+   *            moves that complete in seconds are gone before it answers.
+   * rules    : original creation-time sniper.
    */
-  ENTRY_MODE: z.enum(['fast', 'ai', 'rules']).default('fast'),
+  ENTRY_MODE: z.enum(['screener', 'fast', 'ai', 'rules']).default('screener'),
+
+  // === Screener entry (ENTRY_MODE=screener) ===
+  /** Venues to accept. "pump" alone means pump.fun standard coins only. */
+  SCREEN_ALLOWED_POOLS: poolListSchema.default('pump'),
+  /** Total traded volume, both sides, including the deployer's creation buy. */
+  SCREEN_MIN_VOLUME_USD: num(0, 100_000_000).default(3000),
+  SCREEN_MIN_MCAP_USD: num(0, 100_000_000).default(6000),
+  /** Ceiling on entry market cap. 0 disables it. */
+  SCREEN_MAX_MCAP_USD: num(0, 100_000_000).default(25_000),
+  /** Distinct social links (twitter/telegram/website) in the token metadata. */
+  SCREEN_MIN_SOCIALS: num(0, 3).default(1),
+  SCREEN_MIN_AGE_SECONDS: num(0, 86_400).default(0),
+  SCREEN_MAX_AGE_SECONDS: num(5, 86_400).default(300),
+  /** Distinct buying wallets seen. A crowd, not one whale round-tripping. */
+  SCREEN_MIN_BUYERS: num(0, 10_000).default(4),
+  /** Used to convert SOL to USD when the live price feed is unreachable. */
+  SOL_USD_FALLBACK: num(1, 100_000).default(190),
 
   // === Momentum trigger (ENTRY_MODE=fast) ===
   MOMENTUM_WINDOW_SECONDS: num(5, 600).default(30),
@@ -146,9 +195,16 @@ const schema = z.object({
   /** Net profit target as a percent of the SOL committed, AFTER all fees. */
   SCALP_TARGET_NET_PCT: num(0.1, 1000).default(8),
   SCALP_STOP_LOSS_PCT: num(0.5, 95).default(18),
-  SCALP_TIME_STOP_SECONDS: num(5, 3600).default(120),
+  SCALP_TIME_STOP_SECONDS: num(5, 3600).default(60),
   /** Once gross gain clears breakeven by this much, the stop moves to breakeven. */
   SCALP_BREAKEVEN_ARM_PCT: num(0, 100).default(3),
+  /**
+   * Percent of the peak GAIN that may be given back before exiting, once the
+   * trade is meaningfully green. This is the one that matters for tokens that
+   * pop for a few seconds and then crash: waiting for a +30% trade to fall all
+   * the way back to breakeven hands back every point it made.
+   */
+  SCALP_GIVEBACK_PCT: num(1, 100).default(40),
   /** Percent of the position kept running after the target fills. */
   SCALP_RUNNER_PCT: num(0, 60).default(20),
   SCALP_RUNNER_TRAILING_STOP_PCT: num(1, 99).default(35),
@@ -168,11 +224,21 @@ const schema = z.object({
   AI_MAX_CALLS_PER_HOUR: num(1, 10_000).default(60),
   /** Stop making calls once estimated spend for the UTC day exceeds this. */
   AI_DAILY_BUDGET_USD: num(0, 10_000).default(10),
-  /** Let Claude review and exit open positions. Entry stays deterministic. */
-  AI_MANAGE_EXITS: bool.default('true'),
+  /**
+   * Let Claude review and exit open positions. Off by default: the screener
+   * strategy holds for under a minute, so a review on a 90-second cadence never
+   * arrives before the mechanical exit does. Turn it on for longer holds.
+   */
+  AI_MANAGE_EXITS: bool.default('false'),
 
   // === Watchlist / traction gate ===
-  WATCHLIST_MAX_SIZE: num(10, 20_000).default(1500),
+  /**
+   * pump.fun launches tens of tokens a minute, and the screener has to be
+   * streaming a token's trades from launch to see the volume that makes it
+   * match. Sized for the screener's age window; when full, the oldest entry is
+   * evicted so the list always holds the freshest launches.
+   */
+  WATCHLIST_MAX_SIZE: num(10, 50_000).default(6000),
   WATCH_MIN_AGE_SECONDS: num(5, 3600).default(20),
   WATCH_MAX_AGE_SECONDS: num(30, 86_400).default(1800),
   MIN_UNIQUE_BUYERS: num(1, 10_000).default(8),
@@ -229,6 +295,41 @@ function crossValidate(cfg: Config): string[] {
 
   if (cfg.SCALP_MODE && cfg.SCALP_RUNNER_PCT >= 100) {
     errors.push('SCALP_RUNNER_PCT must be below 100 — something has to be sold at the target');
+  }
+
+  if (cfg.SCREEN_MIN_AGE_SECONDS >= cfg.SCREEN_MAX_AGE_SECONDS) {
+    errors.push(
+      `SCREEN_MIN_AGE_SECONDS (${cfg.SCREEN_MIN_AGE_SECONDS}) must be below ` +
+        `SCREEN_MAX_AGE_SECONDS (${cfg.SCREEN_MAX_AGE_SECONDS}); nothing would ever match`,
+    );
+  }
+
+  if (cfg.SCREEN_MAX_MCAP_USD > 0 && cfg.SCREEN_MIN_MCAP_USD >= cfg.SCREEN_MAX_MCAP_USD) {
+    errors.push(
+      `SCREEN_MIN_MCAP_USD (${cfg.SCREEN_MIN_MCAP_USD}) must be below ` +
+        `SCREEN_MAX_MCAP_USD (${cfg.SCREEN_MAX_MCAP_USD}); nothing would ever match`,
+    );
+  }
+
+  // ENTRY_MODE only has an effect inside the watchlist orchestrator, which is
+  // only built for STRATEGY=ai. Silently running the creation-time sniper
+  // instead would look like the screener working and finding nothing.
+  if (cfg.ENTRY_MODE !== 'rules' && cfg.STRATEGY !== 'ai') {
+    errors.push(
+      `ENTRY_MODE=${cfg.ENTRY_MODE} runs inside the watchlist, which only exists ` +
+        'for STRATEGY=ai. Set STRATEGY=ai (no API key is needed unless ' +
+        'ENTRY_MODE=ai or AI_MANAGE_EXITS=true), or set ENTRY_MODE=rules.',
+    );
+  }
+
+  // The screener is a stopwatch on a filter, not a judgment call — pairing it
+  // with the long ladder means holding a scalp entry for hours.
+  if (cfg.ENTRY_MODE === 'screener' && !cfg.SCALP_MODE) {
+    errors.push(
+      'ENTRY_MODE=screener enters on a filter crossing, which is a scalp setup. ' +
+        'Running it with SCALP_MODE=false holds those entries against the long ' +
+        'ladder instead. Set SCALP_MODE=true, or pick a different ENTRY_MODE.',
+    );
   }
 
   if (cfg.WATCH_MIN_AGE_SECONDS >= cfg.WATCH_MAX_AGE_SECONDS) {

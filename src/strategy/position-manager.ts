@@ -306,6 +306,7 @@ export class PositionManager {
       closeReason: p.closeReason ?? 'unknown',
       safetyScore: p.safetyScore,
       holdSeconds,
+      entryNote: p.notes.find((n) => n.startsWith('screen:') || n.startsWith('momentum:')),
     });
 
     this.risk.recordOutcome(pnlSol);

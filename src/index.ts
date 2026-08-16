@@ -15,6 +15,7 @@ import { AiOrchestrator } from './ai/orchestrator.js';
 import type { Discovery, Executor, TokenCandidate } from './types.js';
 import { connection, lamportsToSol, loadKeypair } from './util/solana.js';
 import { errMessage } from './util/async.js';
+import { breakevenGrossPct, costModel, requiredWinRatePct, targetGrossPct } from './strategy/costs.js';
 
 const log = logger('main');
 
@@ -178,22 +179,54 @@ class SniperBot {
     const c = this.cfg;
     const ladder = c.EXIT_LADDER.map((t) => `+${t.gainPct}%→sell ${t.sellPctOfOriginal}%`).join(', ');
     const moonbag = 100 - c.EXIT_LADDER.reduce((a, t) => a + t.sellPctOfOriginal, 0);
+    const k = (n: number) => (n >= 1000 ? `$${(n / 1000).toFixed(0)}k` : `$${n}`);
 
     log.info('─'.repeat(72));
     log.info(
-      `  SOL Trader — mode=${c.MODE.toUpperCase()} strategy=${c.STRATEGY} executor=${c.EXECUTOR}`,
+      `  SOL Trader — mode=${c.MODE.toUpperCase()} entry=${c.ENTRY_MODE} executor=${c.EXECUTOR}`,
     );
-    if (c.STRATEGY === 'ai') {
+    if (c.ENTRY_MODE === 'screener') {
+      log.info(
+        `  Filter      ${c.SCREEN_ALLOWED_POOLS.join('/')} · mcap ${k(c.SCREEN_MIN_MCAP_USD)}` +
+          `${c.SCREEN_MAX_MCAP_USD > 0 ? `-${k(c.SCREEN_MAX_MCAP_USD)}` : '+'}` +
+          ` · volume ≥${k(c.SCREEN_MIN_VOLUME_USD)} · ≥${c.SCREEN_MIN_SOCIALS} social` +
+          ` · ≥${c.SCREEN_MIN_BUYERS} buyers · age ${c.SCREEN_MIN_AGE_SECONDS}-${c.SCREEN_MAX_AGE_SECONDS}s`,
+      );
+    } else if (c.ENTRY_MODE === 'fast') {
+      log.info(
+        `  Momentum    +${c.MOMENTUM_MIN_GAIN_PCT}% in ${c.MOMENTUM_WINDOW_SECONDS}s, ` +
+          `≥${c.MOMENTUM_MIN_BUYERS} buyers, ≥${c.MOMENTUM_MIN_VOLUME_SOL} SOL`,
+      );
+    } else if (c.ENTRY_MODE === 'ai') {
       log.info(`  Analyst     ${c.AI_MODEL} @ effort=${c.AI_EFFORT}, min confidence ${c.AI_MIN_CONFIDENCE}`);
       log.info(`  Gate        age ${c.WATCH_MIN_AGE_SECONDS}-${c.WATCH_MAX_AGE_SECONDS}s, ≥${c.MIN_UNIQUE_BUYERS} buyers, ≥${c.MIN_BUY_VOLUME_SOL} SOL volume`);
+    }
+    if (c.ENTRY_MODE === 'ai' || c.AI_MANAGE_EXITS) {
       log.info(`  AI budget   ${c.AI_MAX_CALLS_PER_HOUR} calls/h, $${c.AI_DAILY_BUDGET_USD}/day, review every ${c.AI_REVIEW_INTERVAL_SECONDS}s`);
     }
     log.info(`  Size        ${c.BUY_AMOUNT_SOL} SOL/position, max ${c.MAX_CONCURRENT_POSITIONS} concurrent`);
-    log.info(`  Ladder      ${ladder}, moonbag ${moonbag}%`);
-    log.info(`  Stops       hard -${c.STOP_LOSS_PCT}%, trailing -${c.TRAILING_STOP_PCT}%, moonbag -${c.MOONBAG_TRAILING_STOP_PCT}%`);
-    log.info(`  Time stop   ${c.TIME_STOP_SECONDS}s below +${c.TIME_STOP_MIN_GAIN_PCT}%`);
+    if (c.SCALP_MODE) {
+      const model = costModel(c, c.BUY_AMOUNT_SOL);
+      const be = breakevenGrossPct(model);
+      const tgt = targetGrossPct(model, c.SCALP_TARGET_NET_PCT);
+      log.info(
+        `  Exit        breakeven +${be.toFixed(1)}% → target +${tgt.toFixed(1)}% ` +
+          `(net +${c.SCALP_TARGET_NET_PCT}%), keep ${c.SCALP_RUNNER_PCT}% runner`,
+      );
+      log.info(
+        `  Stops       hard -${c.SCALP_STOP_LOSS_PCT}%, give back ${c.SCALP_GIVEBACK_PCT}% of peak, ` +
+          `time stop ${c.SCALP_TIME_STOP_SECONDS}s`,
+      );
+      log.info(
+        `  Win rate    needs ${requiredWinRatePct(model, c.SCALP_TARGET_NET_PCT, c.SCALP_STOP_LOSS_PCT).toFixed(0)}% ` +
+          'of trades to hit target rather than stop, just to break even',
+      );
+    } else {
+      log.info(`  Ladder      ${ladder}, moonbag ${moonbag}%`);
+      log.info(`  Stops       hard -${c.STOP_LOSS_PCT}%, trailing -${c.TRAILING_STOP_PCT}%, moonbag -${c.MOONBAG_TRAILING_STOP_PCT}%`);
+      log.info(`  Time stop   ${c.TIME_STOP_SECONDS}s below +${c.TIME_STOP_MIN_GAIN_PCT}%`);
+    }
     log.info(`  Risk        daily -${c.DAILY_LOSS_LIMIT_SOL} SOL, ${c.HOURLY_SPEND_CAP_SOL} SOL/h, breaker at ${c.MAX_CONSECUTIVE_LOSSES} losses`);
-    log.info(`  Safety      min score ${c.MIN_SAFETY_SCORE}/100, max dev buy ${c.MAX_DEV_BUY_PCT}%`);
     log.info('─'.repeat(72));
 
     if (c.MODE === 'live') {
@@ -299,6 +332,12 @@ class SniperBot {
     return {
       enabled: true,
       model: this.cfg.AI_MODEL,
+      entryMode: this.cfg.ENTRY_MODE,
+      screenMatched: s.screenMatched,
+      socialsFetched: s.socialsFetched,
+      screenRejects: s.screenRejects,
+      solUsd: this.ai.solUsd,
+      solPriceLive: this.ai.solPriceIsLive,
       watching: s.watching,
       evaluated: s.evaluated,
       bought: s.bought,

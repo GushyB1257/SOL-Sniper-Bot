@@ -219,7 +219,29 @@ describe('scalp exit', () => {
     // Peaked at +15% (breakeven 6.3% + arm 3%), now back at +2%.
     const order = decideScalpExit({ position: p, price: p.entryPrice * 1.02, cfg, now: Date.now() });
     expect(order?.reason).toBe('trailing_stop');
-    expect(order?.detail).toMatch(/breakeven/);
+    expect(order?.detail).toMatch(/gave back/);
+  });
+
+  it('exits on a give-back well before the trade round-trips to breakeven', () => {
+    // The pattern the screener is built around: a pop that then rolls over. At
+    // a 40% give-back a +13% peak floors at +7.8%, not at the 6.3% breakeven —
+    // so the trade is cut while it is still meaningfully green.
+    const p = position({ peakPrice: 5e-8 * 1.13 });
+    expect(
+      decideScalpExit({ position: p, price: p.entryPrice * 1.1, cfg, now: Date.now() }),
+    ).toBeNull();
+
+    const order = decideScalpExit({ position: p, price: p.entryPrice * 1.075, cfg, now: Date.now() });
+    expect(order?.reason).toBe('trailing_stop');
+    expect(order?.detail).toMatch(/gave back/);
+  });
+
+  it('never sets the give-back floor below breakeven', () => {
+    // A small peak scaled by the give-back would sit under breakeven, which
+    // would turn "protect the gain" into "exit at a loss".
+    const p = position({ peakPrice: 5e-8 * 1.1 });
+    const floorPrice = p.entryPrice * 1.07; // above breakeven (6.3%)
+    expect(decideScalpExit({ position: p, price: floorPrice, cfg, now: Date.now() })).toBeNull();
   });
 
   it('does not arm breakeven on a trade that was never green', () => {

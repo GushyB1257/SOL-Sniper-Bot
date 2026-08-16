@@ -12,6 +12,7 @@ import {
   requiredWinRatePct,
   targetGrossPct,
 } from '../strategy/costs.js';
+import { SolPrice } from '../util/solprice.js';
 
 const ok = (m: string) => console.log(`  \x1b[32m✓\x1b[0m ${m}`);
 const bad = (m: string) => console.log(`  \x1b[31m✗\x1b[0m ${m}`);
@@ -76,6 +77,43 @@ async function main(): Promise<void> {
     ok('paper mode — no wallet needed, no transactions will be sent');
   }
 
+  // --- screener ----------------------------------------------------------
+  if (cfg.ENTRY_MODE === 'screener') {
+    console.log('');
+    ok(
+      `filter: ${cfg.SCREEN_ALLOWED_POOLS.join('/')}, mcap $${cfg.SCREEN_MIN_MCAP_USD.toLocaleString()}` +
+        (cfg.SCREEN_MAX_MCAP_USD > 0 ? `-$${cfg.SCREEN_MAX_MCAP_USD.toLocaleString()}` : '+') +
+        `, volume ≥$${cfg.SCREEN_MIN_VOLUME_USD.toLocaleString()}, ` +
+        `≥${cfg.SCREEN_MIN_SOCIALS} social(s), ≥${cfg.SCREEN_MIN_BUYERS} buyers`,
+    );
+
+    try {
+      const sol = new SolPrice(cfg.SOL_USD_FALLBACK);
+      await sol.refresh();
+      if (sol.isLive) {
+        ok(`SOL/USD live at $${sol.usd.toFixed(2)} — the USD thresholds convert correctly`);
+      } else {
+        warn(
+          `SOL/USD feed unreachable; falling back to SOL_USD_FALLBACK=$${cfg.SOL_USD_FALLBACK}. ` +
+            'If that is stale every USD threshold is scaled wrong.',
+        );
+      }
+    } catch (err) {
+      warn(`SOL/USD check failed: ${errMessage(err)}`);
+    }
+
+    if (cfg.DISCOVERY_SOURCE !== 'pumpportal') {
+      bad('the screener needs the pumpportal trade feed for volume — set DISCOVERY_SOURCE=pumpportal');
+      fatal++;
+    }
+    if (cfg.SCREEN_MIN_SOCIALS > 0 && cfg.SCREEN_MAX_AGE_SECONDS < 15) {
+      warn(
+        `the socials check costs one HTTP round trip, so a ${cfg.SCREEN_MAX_AGE_SECONDS}s age ` +
+          'window may close before the metadata comes back',
+      );
+    }
+  }
+
   // --- fee arithmetic ----------------------------------------------------
   // The single most decisive number for a quick in-and-out strategy, and the
   // one most people never compute.
@@ -90,10 +128,10 @@ async function main(): Promise<void> {
     ok(`needs a ${target.toFixed(1)}% gross move to net +${cfg.SCALP_TARGET_NET_PCT}%`);
     ok(`needs >${winRate.toFixed(0)}% of trades to win, against a ${cfg.SCALP_STOP_LOSS_PCT}% stop`);
 
-    if (be > 8) {
+    if (be > 5) {
       warn(
         `breakeven is ${be.toFixed(1)}% — fixed priority fees dominate at this size. ` +
-          `Raise BUY_AMOUNT_SOL (0.25+) or lower PRIORITY_FEE_SOL.`,
+          'Raise BUY_AMOUNT_SOL (0.25+) or lower PRIORITY_FEE_SOL.',
       );
     }
     if (cfg.SCALP_TARGET_NET_PCT < be / 2) {
@@ -102,10 +140,12 @@ async function main(): Promise<void> {
           'most of each winner is paid to the program and the validator',
       );
     }
-    if (winRate > 75) {
+    if (winRate > 70) {
       warn(
-        `a ${winRate.toFixed(0)}% win rate is a demanding bar. Widen the target or ` +
-          'tighten the stop to improve the risk/reward.',
+        `a ${winRate.toFixed(0)}% win rate is a demanding bar — and this figure is ` +
+          'OPTIMISTIC, because the give-back floor exits most winners below the ' +
+          `full target. Tightening SCALP_STOP_LOSS_PCT (currently ${cfg.SCALP_STOP_LOSS_PCT}%) ` +
+          'moves it down fastest. Only paper data will tell you which trade-off is right.',
       );
     }
   }

@@ -4,11 +4,14 @@ import type { Executor, LadderTier, Position, TokenCandidate } from '../types.js
 import type { RiskManager } from '../risk/risk-manager.js';
 import type { PositionManager } from '../strategy/position-manager.js';
 import { Watchlist, type ObservedTrade } from '../watchlist/watchlist.js';
+import { fetchSocials, type TokenSocials } from '../watchlist/metadata.js';
 import { TokenAnalyst } from './analyst.js';
 import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
 import { pctChange } from '../util/solana.js';
 import { momentumSignal } from '../strategy/momentum.js';
+import { screenerSignal } from '../strategy/screener.js';
+import { SolPrice } from '../util/solprice.js';
 
 const log = logger('ai-strategy');
 
@@ -20,6 +23,34 @@ export interface AiStats {
   passed: number;
   reviews: number;
   budgetBlocked: number;
+  /** Tokens that cleared every filter, whether or not the buy then landed. */
+  screenMatched: number;
+  /** Metadata fetches issued — only for tokens that cleared everything else. */
+  socialsFetched: number;
+  /**
+   * Why tokens were turned away, keyed by the failing filter. This is the
+   * tuning instrument: "nothing is trading" and "everything is trading" are
+   * both answered by looking at which line dominates.
+   */
+  screenRejects: Record<string, number>;
+}
+
+/** The filter each rejection reason belongs to, for the tuning breakdown. */
+const REJECT_BUCKETS: ReadonlyArray<[RegExp, string]> = [
+  [/^pool /, 'pool'],
+  [/^deployer sold/, 'deployer_sold'],
+  [/old \(min/, 'too_young'],
+  [/old \(max/, 'too_old'],
+  [/^mcap .* below/, 'mcap_low'],
+  [/^mcap .* above/, 'mcap_high'],
+  [/^volume /, 'volume'],
+  [/buyers \(need/, 'buyers'],
+  [/socials \(need/, 'socials'],
+];
+
+function bucketOf(reason: string): string {
+  for (const [re, name] of REJECT_BUCKETS) if (re.test(reason)) return name;
+  return 'other';
 }
 
 export interface OrchestratorDeps {
@@ -32,6 +63,10 @@ export interface OrchestratorDeps {
   /** Subscribe/unsubscribe the trade feed for these mints. */
   trackTrades: (mints: string[]) => void;
   untrackTrades: (mints: string[]) => void;
+  /** Test seam: stand in for the off-chain metadata fetch. */
+  socialsFetcher?: (uri: string | undefined) => Promise<TokenSocials>;
+  /** Test seam: stand in for the live SOL/USD feed. */
+  solPrice?: { readonly usd: number; readonly isLive: boolean };
 }
 
 /**
@@ -54,6 +89,8 @@ export interface OrchestratorDeps {
 export class AiOrchestrator {
   readonly watchlist: Watchlist;
   private readonly analyst: TokenAnalyst;
+  private readonly solPrice: { readonly usd: number; readonly isLive: boolean };
+  private readonly socialsFetcher: (uri: string | undefined) => Promise<TokenSocials>;
 
   private stats: AiStats = {
     watching: 0,
@@ -63,6 +100,9 @@ export class AiOrchestrator {
     passed: 0,
     reviews: 0,
     budgetBlocked: 0,
+    screenMatched: 0,
+    socialsFetched: 0,
+    screenRejects: {},
   };
 
   /** Timestamps of analyst calls, for the rolling hourly cap. */
@@ -71,24 +111,56 @@ export class AiOrchestrator {
   private evaluating = false;
   private entering = false;
   private subscribed = new Set<string>();
+  private subscribeTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.watchlist = new Watchlist(deps.cfg);
     this.analyst = new TokenAnalyst(deps.cfg, deps.store);
+    this.solPrice = deps.solPrice ?? new SolPrice(deps.cfg.SOL_USD_FALLBACK);
+    this.socialsFetcher = deps.socialsFetcher ?? fetchSocials;
+    // Warm the price before the first launch arrives. Reading it lazily would
+    // screen the first tokens of a run against the fallback rate, which is the
+    // one case where a wrong number is invisible.
+    if (deps.cfg.ENTRY_MODE === 'screener') void this.solPrice.usd;
   }
 
   get usage() {
     return this.analyst.usage;
   }
 
+  get solUsd(): number {
+    return this.solPrice.usd;
+  }
+
+  get solPriceIsLive(): boolean {
+    return this.solPrice.isLive;
+  }
+
   snapshotStats(): AiStats {
-    return { ...this.stats, watching: this.watchlist.size };
+    return {
+      ...this.stats,
+      watching: this.watchlist.size,
+      screenRejects: { ...this.stats.screenRejects },
+    };
   }
 
   /** Every new launch goes on the watchlist; none are bought at creation. */
   observe(candidate: TokenCandidate): void {
     if (this.deps.store.hasTraded(candidate.mint)) return;
-    this.watchlist.add(candidate);
+    if (!this.watchlist.add(candidate)) return;
+
+    // The screener cannot see a token's volume until the trade feed is
+    // streaming it, and waiting for the next 10s sweep to subscribe means
+    // missing the first ten seconds of every launch — which for a filter that
+    // trips within a minute is most of the signal. Subscribe on a short
+    // debounce instead, batching the launches that arrive together.
+    if (this.deps.cfg.ENTRY_MODE === 'screener' && !this.subscribeTimer) {
+      this.subscribeTimer = setTimeout(() => {
+        this.subscribeTimer = null;
+        this.syncSubscriptions();
+      }, 250);
+      this.subscribeTimer.unref?.();
+    }
   }
 
   /**
@@ -101,7 +173,13 @@ export class AiOrchestrator {
    */
   recordTrade(trade: ObservedTrade): void {
     this.watchlist.recordTrade(trade);
-    if (this.deps.cfg.ENTRY_MODE !== 'fast') return;
+
+    const mode = this.deps.cfg.ENTRY_MODE;
+    if (mode === 'screener') {
+      this.screenTrade(trade);
+      return;
+    }
+    if (mode !== 'fast') return;
     if (trade.side !== 'buy') return;
 
     const token = this.watchlist.get(trade.mint);
@@ -119,6 +197,48 @@ export class AiOrchestrator {
     );
   }
 
+  /**
+   * Re-runs the screener on every trade for a watched token.
+   *
+   * A filter crossing is an event, not a state — the tokens worth catching sit
+   * above the thresholds for seconds. So the check runs on the same event that
+   * moved the numbers, rather than on a timer that would sample the condition
+   * after it had already passed.
+   */
+  private screenTrade(trade: ObservedTrade): void {
+    const token = this.watchlist.get(trade.mint);
+    if (!token || token.analysed) return;
+
+    const verdict = screenerSignal(token, this.deps.cfg, this.solPrice.usd, trade.at);
+
+    if (verdict.outcome === 'needs-socials') {
+      // Everything measurable already passed; the only unknown is one HTTP
+      // request away. Fetch it once and let the next trade event decide.
+      if (this.watchlist.claimSocialsFetch(trade.mint)) {
+        this.stats.socialsFetched += 1;
+        void this.socialsFetcher(token.candidate.uri)
+          .then((s) => this.watchlist.setSocials(trade.mint, s))
+          .catch(() => this.watchlist.setSocials(trade.mint, { checked: true, count: 0 }));
+      }
+      return;
+    }
+
+    if (verdict.outcome === 'reject') {
+      const bucket = bucketOf(verdict.reason);
+      this.stats.screenRejects[bucket] = (this.stats.screenRejects[bucket] ?? 0) + 1;
+      return;
+    }
+
+    // Claim it synchronously so a burst of trades cannot fire twice.
+    this.watchlist.markAnalysed(trade.mint);
+    this.stats.screenMatched += 1;
+    this.stats.graduated += 1;
+
+    void this.fastEntry(token.candidate, verdict.reason).catch((err) =>
+      log.error(`Screener entry failed for ${trade.mint}: ${errMessage(err)}`),
+    );
+  }
+
   /** Deterministic entry: risk check, then buy. No model in this path. */
   private async fastEntry(candidate: TokenCandidate, reason: string): Promise<void> {
     if (this.deps.store.hasTraded(candidate.mint)) return;
@@ -131,7 +251,8 @@ export class AiOrchestrator {
         return;
       }
 
-      log.info(`FAST ENTRY ${candidate.symbol ?? candidate.mint.slice(0, 8)} — ${reason}`);
+      const label = this.deps.cfg.ENTRY_MODE === 'screener' ? 'MATCH' : 'FAST ENTRY';
+      log.info(`${label} ${candidate.symbol ?? candidate.mint.slice(0, 8)} — ${reason}`);
       this.deps.store.recordCreatorLaunch(candidate.creator, candidate.mint);
 
       const size = this.deps.risk.sizeFor(100);
@@ -145,7 +266,12 @@ export class AiOrchestrator {
       this.stats.bought += 1;
       const position = this.deps.positions.open(candidate, fill, 0);
       position.notionalSol = size;
-      position.notes.push(`momentum: ${reason}`);
+      // The entry condition is written onto the position so the trade journal
+      // records what the filter looked like at the moment of the buy. Without
+      // that, tuning the thresholds later is guesswork.
+      position.notes.push(
+        `${this.deps.cfg.ENTRY_MODE === 'screener' ? 'screen' : 'momentum'}: ${reason}`,
+      );
       this.deps.store.savePosition(position);
     } finally {
       this.entering = false;

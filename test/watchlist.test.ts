@@ -68,6 +68,33 @@ describe('watchlist tracking', () => {
     expect(capped.size).toBe(10);
   });
 
+  it('keeps the newest launches, not the first ones it saw', () => {
+    // Refusing new entries once full would leave the bot watching stale tokens
+    // and ignoring every launch that could still match.
+    const small = loadConfig({ ...BASE_ENV, WATCHLIST_MAX_SIZE: '10' });
+    const capped = new Watchlist(small);
+    for (let i = 0; i < 50; i++) {
+      capped.add({ ...CANDIDATE, mint: `mint-${i}` });
+    }
+    expect(capped.has('mint-49')).toBe(true);
+    expect(capped.has('mint-0')).toBe(false);
+  });
+
+  it('will not evict a token it is still using', () => {
+    const small = loadConfig({ ...BASE_ENV, WATCHLIST_MAX_SIZE: '10' });
+    const capped = new Watchlist(small);
+    for (let i = 0; i < 10; i++) {
+      capped.add({ ...CANDIDATE, mint: `held-${i}` });
+      capped.markAnalysed(`held-${i}`);
+    }
+
+    // Every slot holds something we are still managing, so the new launch is
+    // refused rather than costing us flow data on a token we own.
+    expect(capped.add({ ...CANDIDATE, mint: 'fresh' })).toBe(false);
+    expect(capped.has('held-0')).toBe(true);
+    expect(capped.has('held-9')).toBe(true);
+  });
+
   it('accumulates buy and sell flow', () => {
     wl.add(CANDIDATE);
     const now = Date.now();

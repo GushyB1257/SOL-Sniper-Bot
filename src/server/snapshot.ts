@@ -88,6 +88,7 @@ export interface ConfigRow {
 export interface AiView {
   enabled: boolean;
   model: string;
+  entryMode: string;
   watching: number;
   evaluated: number;
   bought: number;
@@ -102,6 +103,13 @@ export interface AiView {
   cacheReadTokens: number;
   inputTokens: number;
   outputTokens: number;
+  /** Tokens that cleared every screener filter. */
+  screenMatched: number;
+  socialsFetched: number;
+  /** Rejections by failing filter — the knob-tuning instrument. */
+  screenRejects: Record<string, number>;
+  solUsd: number;
+  solPriceLive: boolean;
 }
 
 export interface Snapshot {
@@ -152,7 +160,18 @@ export function redactUrl(raw: string): string {
 }
 
 const CONFIG_GROUPS: Record<string, string[]> = {
-  Mode: ['MODE', 'EXECUTOR', 'DISCOVERY_SOURCE'],
+  Mode: ['MODE', 'ENTRY_MODE', 'EXECUTOR', 'DISCOVERY_SOURCE'],
+  Screener: [
+    'SCREEN_ALLOWED_POOLS',
+    'SCREEN_MIN_MCAP_USD',
+    'SCREEN_MAX_MCAP_USD',
+    'SCREEN_MIN_VOLUME_USD',
+    'SCREEN_MIN_SOCIALS',
+    'SCREEN_MIN_BUYERS',
+    'SCREEN_MIN_AGE_SECONDS',
+    'SCREEN_MAX_AGE_SECONDS',
+    'SOL_USD_FALLBACK',
+  ],
   Sizing: ['BUY_AMOUNT_SOL', 'MAX_CONCURRENT_POSITIONS', 'MIN_WALLET_RESERVE_SOL'],
   Execution: [
     'BUY_SLIPPAGE_PCT',
@@ -160,6 +179,17 @@ const CONFIG_GROUPS: Record<string, string[]> = {
     'PRIORITY_FEE_SOL',
     'JITO_TIP_SOL',
     'MAX_CANDIDATE_AGE_MS',
+  ],
+  'Scalp exit': [
+    'SCALP_MODE',
+    'SCALP_TARGET_NET_PCT',
+    'SCALP_STOP_LOSS_PCT',
+    'SCALP_GIVEBACK_PCT',
+    'SCALP_TIME_STOP_SECONDS',
+    'SCALP_RUNNER_PCT',
+    'SCALP_RUNNER_TRAILING_STOP_PCT',
+    'PROGRAM_FEE_PCT',
+    'ROUTER_FEE_PCT',
   ],
   Exits: [
     'EXIT_LADDER',
@@ -203,6 +233,10 @@ export function configRows(cfg: Config): ConfigRow[] {
           .join(', ');
       } else if (key.endsWith('_URL')) {
         value = redactUrl(String(raw));
+      } else if (Array.isArray(raw)) {
+        value = raw.join(', ');
+      } else if (key.endsWith('_USD') && typeof raw === 'number') {
+        value = raw === 0 ? 'off' : `$${raw.toLocaleString('en-US')}`;
       } else {
         value = String(raw);
       }

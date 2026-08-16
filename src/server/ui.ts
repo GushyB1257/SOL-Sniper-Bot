@@ -316,11 +316,11 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 
   <div class="grid g-half hidden" id="aiRow">
     <div class="card">
-      <h2>AI analyst <span class="sub" id="aiModel"></span></h2>
+      <h2>Funnel <span class="sub" id="aiModel"></span></h2>
       <div id="aiStats"></div>
     </div>
     <div class="card">
-      <h2>AI spend <span class="sub">estimated, at list prices</span></h2>
+      <h2 id="aiRightTitle">AI spend <span class="sub">estimated, at list prices</span></h2>
       <div id="aiSpend"></div>
     </div>
   </div>
@@ -784,7 +784,10 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
     var row = $('aiRow');
     if (!ai || !ai.enabled) { row.classList.add('hidden'); return; }
     row.classList.remove('hidden');
-    $('aiModel').textContent = ai.model;
+    var screening = ai.entryMode === 'screener';
+    $('aiModel').textContent = screening
+      ? 'screener · SOL $' + ai.solUsd.toFixed(0) + (ai.solPriceLive ? '' : ' (fallback)')
+      : ai.model;
 
     var stats = $('aiStats');
     stats.innerHTML = '';
@@ -795,16 +798,51 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
       stats.appendChild(r);
     }
     srow('Tokens on watchlist', ai.watching);
-    srow('Sent to analyst', ai.evaluated);
+    if (screening) {
+      srow('Matched the filter', ai.screenMatched, ai.screenMatched > 0 ? 'pos' : '');
+      srow('Metadata fetched', ai.socialsFetched);
+    } else {
+      srow('Sent to analyst', ai.evaluated);
+      srow('Passed', ai.passed);
+    }
     srow('Bought', ai.bought, ai.bought > 0 ? 'pos' : '');
-    srow('Passed', ai.passed);
-    srow('Position reviews', ai.reviews);
+    if (ai.reviews > 0) srow('Position reviews', ai.reviews);
     if (ai.refusals > 0) srow('Refusals', ai.refusals, 'neg');
     if (ai.errors > 0) srow('API errors', ai.errors, 'neg');
     if (ai.budgetBlocked > 0) srow('Blocked by budget', ai.budgetBlocked, 'neg');
 
     var spend = $('aiSpend');
     spend.innerHTML = '';
+
+    // In screener mode the analyst is usually off, so the right-hand card
+    // shows the thing actually worth watching: which filter is turning tokens
+    // away. That breakdown is what tells you which threshold to move.
+    if (screening && ai.calls === 0) {
+      $('aiRightTitle').innerHTML =
+        'Why entries were skipped <span class="sub">per filter check — move the one that dominates</span>';
+      var names = {
+        pool: 'Wrong venue', deployer_sold: 'Deployer sold', too_young: 'Too young',
+        too_old: 'Too old', mcap_low: 'Market cap below floor', mcap_high: 'Market cap above ceiling',
+        volume: 'Not enough volume', buyers: 'Too few buyers', socials: 'No socials', other: 'Other'
+      };
+      var keys = Object.keys(ai.screenRejects || {});
+      if (keys.length === 0) {
+        spend.appendChild(el('div', 'tile-note', 'No trades screened yet.'));
+      } else {
+        var total = 0;
+        keys.forEach(function (k) { total += ai.screenRejects[k]; });
+        keys.sort(function (a, b) { return ai.screenRejects[b] - ai.screenRejects[a]; });
+        keys.forEach(function (k) {
+          var n = ai.screenRejects[k];
+          spend.appendChild(meter(names[k] || k,
+            n.toLocaleString() + ' (' + Math.round((n / total) * 100) + '%)',
+            total > 0 ? n / total : 0, null));
+        });
+      }
+      return;
+    }
+
+    $('aiRightTitle').innerHTML = 'AI spend <span class="sub">estimated, at list prices</span>';
     var used = ai.estimatedCostUsd;
     var cap = ai.dailyBudgetUsd;
     spend.appendChild(meter('Daily AI budget', '$' + used.toFixed(3) + ' / $' + cap.toFixed(2),

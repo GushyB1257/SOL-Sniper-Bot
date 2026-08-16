@@ -105,9 +105,28 @@ Go to **http://127.0.0.1:4321** in your browser.
 
 Empty at first. As launches come in you will see them screened and rejected in
 the **Activity** tab — most get rejected, which is the filters working. When one
-passes, a position appears and you can watch the ladder fill in real time.
+matches, a position appears and you can watch it work in real time.
+
+The **Why entries were skipped** panel is the one to watch early on. It shows
+which filter is turning tokens away, so if nothing is trading you can see the
+reason immediately instead of guessing.
 
 To stop the bot: click the terminal and press **Ctrl-C**.
+
+### What it is actually looking for
+
+The default strategy is a screener, not a predictor. It applies one filter to
+every launch on the network continuously:
+
+```
+only pump standard coins  ·  ≥ $3k volume  ·  ≥ $6k market cap  ·  ≥ 1 social
+```
+
+and buys the moment a token matches. Tokens crossing that filter tend to pop for
+a few seconds and then either crash, stall and crash, or bond. The bot is not
+trying to tell those apart — it is trying to be in at the crossing and out
+before the crash, over and over. Every one of those numbers is adjustable in
+`.env`, and Step 10 is about finding better ones from your own data.
 
 ---
 
@@ -149,15 +168,17 @@ Leave it running. Longer is better. Realistically:
 | 2–3 days | An early read. Provisional. |
 | 1–2 weeks | Enough to make a real decision. |
 
-You need **trades**, not hours. Because most launches get filtered out, expect
-only a handful of entries per day at the default settings.
+You need **trades**, not hours. Most launches get filtered out, but the screener
+is far more permissive than the old strategy — expect entries through the day
+rather than a handful. If you are getting none at all after an hour, check the
+**Why entries were skipped** panel; one filter will be doing all the rejecting.
 
 **To gather data faster in paper mode**, raise these in `.env` — there is no
 real capital at risk, so the limits exist only to slow down data collection:
 
 ```ini
-MAX_CONCURRENT_POSITIONS=10
-HOURLY_SPEND_CAP_SOL=5
+MAX_CONCURRENT_POSITIONS=12
+HOURLY_SPEND_CAP_SOL=20
 DAILY_LOSS_LIMIT_SOL=10
 ```
 
@@ -185,18 +206,39 @@ to catch one big winner. Look at these instead:
 | 1.0 – 1.3 | Marginal. Will not survive real-world slippage and missed fills. |
 | Above 1.5 | Genuinely promising — on paper. |
 
-**Reached the first rung** — the share of entries that survived to the first
-take-profit. The whole ladder depends on this. If it is very low, entries are
-dying before the strategy can do anything, and the fix is tighter filters or a
-lower first rung, not more capital.
+**Exits by reason** — which rule is closing your positions, and what each one
+earned:
 
-**Exits by reason** — which rule is closing your positions. If nearly everything
-exits on `time_stop`, you are buying launches that go nowhere: tighten the
-safety filters. If nearly everything is `stop_loss`, you are buying dumps:
-lower `MAX_DEV_BUY_PCT` and raise `MIN_SAFETY_SCORE`.
+| Mostly | What it means | Try |
+|---|---|---|
+| `time_stop` | You are buying tokens that go nowhere | Tighten `SCREEN_MIN_VOLUME_USD`, narrow `SCREEN_MAX_AGE_SECONDS` |
+| `stop_loss` | You are buying the top of the pop | Lower `SCREEN_MAX_MCAP_USD` |
+| `trailing_stop` with positive P&L | Working as designed — the give-back floor is banking gains | Nothing |
+| `ladder` | Hitting the full target | Consider raising `SCALP_TARGET_NET_PCT` |
+
+**The entry breakdowns** — the report splits your closed trades by entry market
+cap, entry volume, age at entry, socials and hold time. This is the tuning loop:
+find the bucket that is both large and losing money, and move that threshold.
+For example, if `18k+` market caps are consistently negative while `8-12k` is
+positive, lower `SCREEN_MAX_MCAP_USD`. Buckets marked `(thin)` have under 10
+trades and mean nothing yet.
 
 **Sample size** — the report tells you directly whether you have enough data.
 Under ~30 trades it will refuse to draw a conclusion, and it is right to.
+
+### Step 10b: Change one thing at a time
+
+Adjust a single threshold, then delete `data/state.json` so the old trades do
+not contaminate the new read, and run again. Changing three settings at once
+tells you nothing about which one helped.
+
+The settings worth trying first, roughly in order of how much they move the
+result:
+
+1. `SCALP_GIVEBACK_PCT` — 30 banks sooner and more often, 60 lets winners run.
+2. `SCREEN_MAX_AGE_SECONDS=60` — only trade the first minute after launch.
+3. `SCREEN_MAX_MCAP_USD` — lower stops you buying the top of the move.
+4. `SCALP_TIME_STOP_SECONDS` — how long a flat position keeps its slot.
 
 ### Step 11: Decide
 
@@ -243,18 +285,32 @@ In `.env`:
 ```ini
 MODE=live
 EXECUTOR=onchain
-BUY_AMOUNT_SOL=0.01
 ```
 
-Start at `0.01` — smaller than feels worth it. Your first live trades exist to
-find out how far reality diverges from paper, not to make money.
+**Do not shrink `BUY_AMOUNT_SOL` to feel safer.** This is the one place where
+the instinct is actively wrong. The priority fee is a fixed cost per
+transaction, so cutting the position size raises the move every trade needs
+just to break even:
 
-Make sure the risk limits are back to sane values:
+| `BUY_AMOUNT_SOL` | Round-trip breakeven move |
+|---|---|
+| 0.05 | 6.3% |
+| 0.10 | 4.6% |
+| 0.25 | 3.7% |
+| 0.50 | 3.2% |
+
+At 0.01 SOL the breakeven move is over 19% and the strategy cannot work at all.
+Control your risk with `MAX_CONCURRENT_POSITIONS` and `DAILY_LOSS_LIMIT_SOL`,
+which cap total exposure without breaking the arithmetic of each trade. Run
+`npm run doctor` — it prints the exact numbers for your settings.
+
+Sane live limits to start with:
 
 ```ini
+BUY_AMOUNT_SOL=0.25
 MAX_CONCURRENT_POSITIONS=3
-HOURLY_SPEND_CAP_SOL=0.5
-DAILY_LOSS_LIMIT_SOL=0.5
+HOURLY_SPEND_CAP_SOL=1.5
+DAILY_LOSS_LIMIT_SOL=1
 ```
 
 ### Step 15: Pre-flight, then go

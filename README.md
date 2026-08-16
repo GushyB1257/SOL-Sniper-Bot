@@ -8,12 +8,18 @@ manages the position with deterministic risk controls underneath.
 Runs in **paper mode by default**. It will not touch real money until you
 explicitly change two settings.
 
-Two strategies ship in the box:
+Four entry modes ship in the box, set by `ENTRY_MODE`:
 
-| `STRATEGY` | What it does |
-|---|---|
-| `ai` (default) | Watchlist → traction gate → Claude entry decision → laddered exit with Claude re-reviewing the thesis |
-| `rules` | The original deterministic sniper: buys at creation on hard filters |
+| `ENTRY_MODE` | What it does | Model in the entry path? |
+|---|---|---|
+| `screener` (default) | Applies a screener filter — venue, market cap, volume, socials — to every launch continuously, and enters the instant one matches | No |
+| `fast` | Deterministic momentum trigger on the trade stream | No |
+| `ai` | Claude reads an evidence pack and decides | Yes |
+| `rules` | The original sniper: buys at creation on hard filters | No |
+
+The first two are reflexes and fire in microseconds. The third is judgment and
+takes seconds. Which one you want depends entirely on how fast the thing you are
+trading moves — see below.
 
 ---
 
@@ -111,9 +117,71 @@ documented seam: if Axiom ever ships a real API, implement five methods and set
 
 ---
 
+## The screener strategy (default)
+
+This is the filter a human sits and watches, applied automatically to every
+launch on the network at once:
+
+```
+only pump standard coins  ·  ≥ $3k volume  ·  ≥ $6k market cap  ·  ≥ 1 social
+```
+
+Tokens crossing that filter tend to do one of three things: pop for a few
+seconds and crash, stall and then crash, or bond. The strategy is built around
+that shape rather than around predicting which is which. **Be in at the
+crossing; be out before the crash.** Nothing here forecasts anything — it is a
+stopwatch on a condition.
+
+**Why it is fast.** The check is a pure function over state the bot already has,
+so it runs on the *same websocket event that moved the numbers*, not on a timer
+that would sample the condition after it had passed. No model, no network call,
+no I/O — microseconds per trade event. The one thing it cannot answer locally is
+socials, which needs an HTTP fetch, so that check is deliberately **last**: only
+tokens that already cleared every other filter ever cost a request.
+
+**Two filters that aren't in the human version**, both defensive:
+
+- `SCREEN_MIN_BUYERS` (default 4) — one wallet can manufacture the volume and
+  market cap the other filters look at. Distinct buyers is what makes those
+  numbers mean something.
+- `SCREEN_MAX_MCAP_USD` (default $25k) — above the ceiling the move being
+  screened for has already happened, and buying there means buying from whoever
+  caught it. Set to 0 to disable.
+
+**The exit is fee-aware, not a round number.** You name a NET target and the bot
+computes the gross move that delivers it after both program fees, both router
+fees and both priority fees. Underneath it sits a **give-back floor**
+(`SCALP_GIVEBACK_PCT`, default 40%): once a trade is meaningfully green, it exits
+if it hands back that share of its peak gain. A position that peaked at +30% is
+cut near +18% rather than being allowed to ride back to flat. For tokens that
+spike and then roll over inside a minute, that single parameter matters more
+than the entry filter does.
+
+**Position size is the parameter people get wrong.** The priority fee is fixed
+per transaction, so it is a far larger share of a small position. At 0.05 SOL
+the round-trip breakeven move is **6.3%** — a "quick 5% scalp" at that size is a
+guaranteed loss however well it is timed. At 0.25 SOL it is **3.7%**. That is
+why `BUY_AMOUNT_SOL` defaults to 0.25. `npm run doctor` prints the arithmetic
+for whatever you set, including the win rate your target and stop require.
+
+### Tuning it with data instead of opinion
+
+Every threshold is adjustable and every default is a guess until you have paper
+trades behind it. Two instruments make the loop empirical:
+
+- **The dashboard** shows why entries were *skipped*, broken down by which
+  filter turned them away. If one line dominates, that is the threshold holding
+  you back — and if nothing is trading, this tells you why in one glance.
+- **`npm run report`** breaks closed trades down by entry market cap, entry
+  volume, age at entry, socials and hold time. Move the threshold whose worst
+  bucket is both large and losing money.
+
+Under ~30 trades, none of it means anything; the report says so rather than
+letting a lucky run look like an edge.
+
 ## How it works
 
-### AI strategy (`STRATEGY=ai`, the default)
+### AI mode (`ENTRY_MODE=ai`)
 
 A funnel, because analyst calls cost real money and most tokens don't deserve one:
 
@@ -303,7 +371,10 @@ Live over a websocket, ~1s refresh, with polling fallback if the socket drops.
 - **Trades / Config / Activity** tabs — full journal, every setting the bot is
   running with, and a live log including the reason each launch was rejected.
 - **Exits by reason** — which exit rule is actually closing your positions and
-  what each one earned. The single most useful chart for tuning the ladder.
+  what each one earned. The single most useful chart for tuning the exit.
+- **Why entries were skipped** — in screener mode, every filter check that came
+  back negative, broken down by the filter responsible. If nothing is trading,
+  this says which threshold to move, in one glance rather than a log trawl.
 - **Kill switch** and per-position **force sell**, both behind a confirmation.
 
 Colour is not the only channel: every P&L figure carries an explicit `+`/`−`
@@ -403,18 +474,39 @@ Start with `BUY_AMOUNT_SOL` far smaller than you think you want.
 
 ## Tuning
 
+Screener entries:
+
+| Want | Change |
+|---|---|
+| More trades | Lower `SCREEN_MIN_VOLUME_USD`, raise `SCREEN_MAX_MCAP_USD`, set `SCREEN_MIN_SOCIALS=0` |
+| Fewer, cleaner trades | Raise `SCREEN_MIN_VOLUME_USD` and `SCREEN_MIN_BUYERS` |
+| Catch the move earlier | Narrow the window: `SCREEN_MAX_AGE_SECONDS=60`, lower `SCREEN_MIN_MCAP_USD` |
+| Stop buying tops | Lower `SCREEN_MAX_MCAP_USD` |
+| Include migrated coins | `SCREEN_ALLOWED_POOLS=pump,pump-amm` |
+
+Screener exits:
+
+| Want | Change |
+|---|---|
+| Bank profits sooner | Lower `SCALP_GIVEBACK_PCT` (30) and `SCALP_TARGET_NET_PCT` |
+| Let winners run | Raise `SCALP_GIVEBACK_PCT` (60) and `SCALP_RUNNER_PCT` |
+| Turn capital over faster | Lower `SCALP_TIME_STOP_SECONDS` |
+| Make small targets viable | Raise `BUY_AMOUNT_SOL`; lower `PRIORITY_FEE_SOL` |
+
+Ladder strategy (`SCALP_MODE=false`):
+
 | Want | Change |
 |---|---|
 | Take profit sooner | Lower the first rung: `EXIT_LADDER=40:50,120:30,300:15` |
 | Bigger moonbag | Reduce the rung percentages — the remainder is the moonbag |
 | Survive more chop | Raise `STOP_LOSS_PCT` and `TRAILING_STOP_PCT` |
-| Fewer, higher-conviction entries | Raise `MIN_SAFETY_SCORE` to 85, lower `MAX_DEV_BUY_PCT` to 5 |
-| More entries (riskier) | Lower `MIN_SAFETY_SCORE`, set `REQUIRE_SOCIALS=false` |
 | Land more snipes | Raise `PRIORITY_FEE_SOL`; get a faster RPC |
 
 The config loader rejects incoherent settings at boot rather than letting them
 silently mis-size a position: non-ascending rungs, ladders selling >100%,
-ladders leaving no moonbag, or a trailing stop tighter than the hard stop.
+ladders leaving no moonbag, a trailing stop tighter than the hard stop, an
+unknown venue in `SCREEN_ALLOWED_POOLS`, a screener band nothing can pass, or
+`ENTRY_MODE=screener` paired with the long ladder.
 
 ## Operating
 
@@ -428,7 +520,7 @@ ladders leaving no moonbag, or a trailing stop tighter than the hard stop.
 ## Development
 
 ```bash
-npm test           # 120 tests
+npm test           # 192 tests
 npm run typecheck
 npm run build
 ```
