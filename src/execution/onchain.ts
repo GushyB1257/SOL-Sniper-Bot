@@ -98,15 +98,24 @@ export class OnchainExecutor implements Executor {
     if (before <= 0) {
       return { ok: false, soldQty: 0, receivedSol: 0, price: 0, error: 'no token balance' };
     }
-    const sellQty = closeAll ? before : Math.min(qty, before);
+    // `closeAll` closes THIS POSITION, not the wallet's whole holding of the
+    // mint. With three bots sharing one wallet the same token is often held by
+    // more than one of them, and a "sell 100%" would dump the others' tokens
+    // too — real money, not just bookkeeping.
+    const want = closeAll ? position.remainingQty : Math.min(qty, position.remainingQty);
+    const sellQty = Math.min(want, before);
+    // The percentage shortcut avoids dust left by decimal rounding, but it is
+    // only safe when this position IS essentially the whole balance.
+    const soleHolder = sellQty >= before * 0.999;
 
     try {
       const sig = await this.trade({
         action: 'sell',
         mint: position.mint,
         // A percentage string makes the program compute the exact amount, which
-        // avoids dust left behind by decimal rounding on a full exit.
-        amount: closeAll ? '100%' : sellQty,
+        // avoids dust left behind by decimal rounding on a full exit — but only
+        // when nothing else in the wallet holds this mint.
+        amount: closeAll && soleHolder ? '100%' : sellQty,
         denominatedInSol: 'false',
         slippage: this.cfg.SELL_SLIPPAGE_PCT,
         pool: position.pool === 'auto' ? 'auto' : position.pool,

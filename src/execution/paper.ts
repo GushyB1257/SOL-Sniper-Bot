@@ -98,7 +98,15 @@ export class PaperExecutor implements Executor {
 
   async sell(position: Position, qty: number, closeAll: boolean): Promise<SellResult> {
     const held = this.balances.get(position.mint) ?? 0;
-    const sellQty = closeAll ? held : Math.min(qty, held);
+
+    // `closeAll` means "exit THIS POSITION", never "sell every token of this
+    // mint the wallet holds". The three bots run against one wallet and one
+    // balance per mint, so they routinely end up holding the same token at the
+    // same time — and selling the pooled balance to close one position empties
+    // the others, which then fail with "no balance to sell" and get booked at
+    // -100% despite the token being perfectly tradeable.
+    const want = closeAll ? position.remainingQty : Math.min(qty, position.remainingQty);
+    const sellQty = Math.min(want, held);
     if (sellQty <= 0) {
       return { ok: false, soldQty: 0, receivedSol: 0, price: 0, error: 'no balance to sell' };
     }

@@ -68,6 +68,19 @@ The cost is latency: you react a poll interval late (2s by default) rather than
 in the same block. For following a wallet's position that is fine. For racing
 them into a launch it is not, and this does not pretend otherwise.
 
+**Closing a position sells that position, not the wallet.** The three bots
+share one wallet and one balance per mint, so they routinely hold the same
+token at once — the sniper buys a launch at creation, the screener buys it
+again when it crosses the filter, the copy trader buys it because a tracked
+wallet did. A "close" that sold the whole mint balance emptied the other two,
+which then failed with *no balance to sell* and were booked at **-100% on a
+token that had just been sold at a profit**. `closeAll` now means *exit this
+position*: never more than its own quantity, and the on-chain `100%` shortcut
+is used only when this position really is the entire holding. Reconciliation
+against the chain only ever revises a position DOWN for the same reason — the
+per-mint balance is larger than one position's share whenever another bot is in
+the same token.
+
 **A price you cannot read is not a rug.** Once a token graduates off the
 bonding curve its price comes from a Jupiter quote, and a quote endpoint being
 unreachable used to look identical to a token having no liquidity: the position
@@ -832,7 +845,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 365 tests
+npm test           # 369 tests
 npm run typecheck
 npm run build
 ```

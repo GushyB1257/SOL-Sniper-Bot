@@ -266,11 +266,16 @@ export class PositionManager {
     // proceeds against the FULL cost, which is how a trade that was only
     // trimmed shows up in the journal as a loss. Keep our own number and let
     // the next tick reconcile once the chain agrees.
+    //
+    // And it only ever reconciles DOWNWARD. The balance is per mint across the
+    // whole wallet, so when two bots hold the same token it is larger than this
+    // position's share — adopting it would have one position claim the other's
+    // tokens and try to sell them.
     const onchain = await this.executor.balance(p.mint);
     const expected = p.remainingQty;
     const dust = p.originalQty * 0.01;
     if (onchain !== null && !(onchain <= 0 && !order.closeAll && expected > dust)) {
-      p.remainingQty = onchain;
+      p.remainingQty = Math.min(p.remainingQty, onchain);
     } else if (onchain !== null && onchain <= 0) {
       log.warn(
         `${label}: balance read says 0 after a partial sell but ${expected.toFixed(0)} tokens ` +
