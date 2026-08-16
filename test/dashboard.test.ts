@@ -450,10 +450,20 @@ describe('page render', () => {
 
   it('renders a tab for every bot and a settings form', () => {
     const html = renderPage('t');
-    for (const id of ['botBar', 'botToggle', 'botPause', 'setForm', 'setSave']) {
+    for (const id of ['botBar', 'botStatus', 'botToggle', 'botPause', 'setForm', 'setSave']) {
       expect(html, id).toContain('id="' + id + '"');
     }
     expect(html).toContain('MCap in');
+  });
+
+  it('keeps the run state on a label, not on the action button', () => {
+    // "Stop Copy trader" reads as a state as easily as an action, which is how
+    // a running bot gets reported as a broken Start button.
+    const script = /<script>\n([\s\S]*?)<\/script>/.exec(renderPage('t'))![1]!;
+    expect(script).toContain("'RUNNING'");
+    expect(script).toContain("'STOPPED'");
+    expect(script).toContain("'PAUSED'");
+    expect(script).toMatch(/toggle\.textContent = b\.enabled \? 'Stop' : 'Start'/);
   });
 
   it('references no external origins', () => {

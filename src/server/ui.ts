@@ -285,6 +285,18 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 .botbtn .bpnl { font-variant-numeric: tabular-nums; font-weight: 500; }
 .botctl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .botctl .state { font-size: 12.5px; color: var(--muted); }
+/* The status is a label, not a button. Reading the state off an action button
+   ("Stop X" — so is it running or not?) is a coin flip, so it gets its own
+   pill and the button only ever says what pressing it will do. */
+.status {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 12px; border-radius: 999px;
+  font-size: 12px; font-weight: 650; letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+}
+.status.run  { color: var(--good); background: var(--pos-wash); border-color: transparent; }
+.status.stop { color: var(--muted); }
+.status.hold { color: #0b0b0b; background: var(--warning); border-color: transparent; }
 
 /* ---- Settings form ---- */
 .set-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px 18px; }
@@ -332,6 +344,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
   <div class="botbar" id="botBar" role="tablist"></div>
 
   <div class="botctl">
+    <span class="status" id="botStatus">—</span>
     <button id="botToggle">—</button>
     <button id="botPause">—</button>
     <span class="state" id="botState"></span>
@@ -902,6 +915,15 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     if (s.killSwitch) add('Kill switch engaged — no new entries on ANY bot. Open positions are still managed.');
     if (!bot.enabled) add(bot.name + ' is stopped. Open positions are still managed and can be closed here.');
     else if (bot.paused) add(bot.name + ' is paused — no new entries.');
+    // The case that reads as a broken bot: it IS running, it just has nothing
+    // to follow, so the tab looks identical to one that never started.
+    else if (bot.copy && bot.copy.tracking === 0) {
+      add(bot.name + ' is RUNNING but has no wallets to track, so it will never trade. ' +
+          'Add addresses under Settings on this tab.');
+    } else if (bot.copy && bot.copy.polls === 0) {
+      add(bot.name + ' is running but has not completed a wallet read yet — ' +
+          'if this persists, your RPC is not answering.');
+    }
     if (bot.risk.breakerActive) {
       add(bot.name + ': circuit breaker active until ' +
           new Date(bot.risk.breakerUntil).toLocaleTimeString() +
@@ -1052,9 +1074,16 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       var m = $('botMsg');
       if (m) { m.textContent = ''; m.className = 'set-msg'; }
     }
+    var status = $('botStatus');
+    status.textContent = !b.enabled ? 'STOPPED' : b.paused ? 'PAUSED' : 'RUNNING';
+    status.className = 'status ' + (!b.enabled ? 'stop' : b.paused ? 'hold' : 'run');
+
     var toggle = $('botToggle');
-    toggle.textContent = b.enabled ? 'Stop ' + b.name : 'Start ' + b.name;
+    toggle.textContent = b.enabled ? 'Stop' : 'Start';
     toggle.className = b.enabled ? '' : 'primary';
+    toggle.title = b.enabled
+      ? 'Stop ' + b.name + '. Open positions keep being managed.'
+      : 'Start ' + b.name;
 
     var pause = $('botPause');
     pause.textContent = b.paused ? 'Resume entries' : 'Pause entries';
@@ -1062,10 +1091,10 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     pause.disabled = !b.enabled;
 
     $('botState').textContent = !b.enabled
-      ? 'stopped — open positions are still managed'
+      ? b.name + ' is not running. Open positions are still managed and can be closed here.'
       : b.paused
-        ? 'paused — no new entries, existing positions still managed'
-        : 'running';
+        ? 'No new entries. Existing positions are still managed.'
+        : b.name + ' is live.';
   }
 
   // ---- settings --------------------------------------------------------
@@ -1194,6 +1223,8 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       r.appendChild(el('span', 'hs-val ' + (cls || ''), text));
       sub.appendChild(r);
     }
+    srow('Wallets watched', c.primed + ' / ' + c.tracking,
+      c.tracking > 0 && c.primed === c.tracking ? 'pos' : c.tracking > 0 ? 'neg' : '');
     srow('Wallet reads', c.polls.toLocaleString());
     srow('Trades observed', c.tradesSeen);
     srow('Copied in', c.bought, c.bought > 0 ? 'pos' : '');
@@ -1326,6 +1357,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     var b = currentBot(snap);
     var next = !b.enabled;
     if (!next && !window.confirm('Stop ' + b.name + '? Open positions keep being managed.')) return;
+    botMsg('', '');
     botAction('/api/bots/toggle', { id: b.id, enabled: next }, next ? 'Starting' : 'Stopping');
   });
 

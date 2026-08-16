@@ -365,6 +365,7 @@ export class Dashboard {
         holdings: bot.watcher!.holdingsOf(address).length,
       })),
       tracking: w.tracking,
+      primed: w.walletsPrimed,
       polls: w.polls,
       errors: w.errors,
       tradesSeen: w.tradesSeen,

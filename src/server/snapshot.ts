@@ -134,6 +134,8 @@ export interface AiView {
 /** What the copy bot is doing, for its tab. */
 export interface CopyView {
   wallets: Array<{ address: string; holdings: number }>;
+  /** Wallets whose first balance read has completed — i.e. actually watched. */
+  primed: number;
   tracking: number;
   polls: number;
   errors: number;
