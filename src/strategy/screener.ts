@@ -32,6 +32,8 @@ export interface ScreenSnapshot {
   buyers: number;
   socials: number;
   socialsChecked: boolean;
+  /** The metadata could not be read at all, as opposed to having no links. */
+  socialsUnavailable: boolean;
   deployerSold: boolean;
 }
 
@@ -67,6 +69,7 @@ export function screenSnapshot(
     buyers: t.uniqueBuyers.size,
     socials: t.socials.count,
     socialsChecked: t.socials.checked,
+    socialsUnavailable: t.socials.failed,
     deployerSold: t.deployerSold,
   };
 }
@@ -134,7 +137,14 @@ export function screenerSignal(
     if (!s.socialsChecked) {
       return { outcome: 'needs-socials', fire: false, reason: 'socials not fetched yet', snapshot: s };
     }
-    if (s.socials < cfg.SCREEN_MIN_SOCIALS) {
+    // A gateway that timed out is not evidence about the token. Failing closed
+    // on it rejects tokens that do have socials, and does so invisibly — which
+    // is indistinguishable from the bot being broken.
+    if (s.socialsUnavailable) {
+      if (cfg.SCREEN_ON_SOCIALS_UNAVAILABLE === 'deny') {
+        return reject('socials unavailable (metadata unreadable)');
+      }
+    } else if (s.socials < cfg.SCREEN_MIN_SOCIALS) {
       return reject(`${s.socials} socials (need ${cfg.SCREEN_MIN_SOCIALS})`);
     }
   }
@@ -143,8 +153,9 @@ export function screenerSignal(
     outcome: 'fire',
     fire: true,
     reason:
-      `${usd(s.marketCapUsd)} mcap, ${usd(s.volumeUsd)} volume, ${s.socials} social` +
-      `${s.socials === 1 ? '' : 's'}, ${s.buyers} buyers, ${s.ageSeconds.toFixed(0)}s old`,
+      `${usd(s.marketCapUsd)} mcap, ${usd(s.volumeUsd)} volume, ` +
+      `${s.socialsUnavailable ? 'socials unknown' : `${s.socials} social${s.socials === 1 ? '' : 's'}`}, ` +
+      `${s.buyers} buyers, ${s.ageSeconds.toFixed(0)}s old`,
     snapshot: s,
   };
 }

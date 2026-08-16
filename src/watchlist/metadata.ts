@@ -11,15 +11,27 @@ import { withTimeout } from '../util/async.js';
 const ALLOWED_HOSTS = [
   'ipfs.io',
   'cf-ipfs.com',
+  'dweb.link',
+  'w3s.link',
   'nftstorage.link',
   'pinata.cloud',
+  'mypinata.cloud',
+  'ipfs.nftstorage.link',
+  'cloudflare-ipfs.com',
   'arweave.net',
-  'pump.mypinata.cloud',
+  'irys.xyz',
 ];
 
 export interface TokenSocials {
   /** The fetch has completed (successfully or not). */
   checked: boolean;
+  /**
+   * The document could not be read — network error, timeout, rate limit, or a
+   * host we will not fetch from. Distinct from a document that loaded and
+   * genuinely had no links, because treating the two the same silently rejects
+   * tokens that DO have socials whenever a public IPFS gateway is slow.
+   */
+  failed: boolean;
   twitter?: string;
   telegram?: string;
   website?: string;
@@ -28,7 +40,10 @@ export interface TokenSocials {
   count: number;
 }
 
-export const UNCHECKED: TokenSocials = { checked: false, count: 0 };
+export const UNCHECKED: TokenSocials = { checked: false, failed: false, count: 0 };
+
+const NONE: TokenSocials = { checked: true, failed: false, count: 0 };
+const FAILED: TokenSocials = { checked: true, failed: true, count: 0 };
 
 /**
  * Exact match or a subdomain of an allowlisted host — never a suffix match,
@@ -52,15 +67,16 @@ function safeUrl(raw: string): URL | null {
 
 /** Pulls the social links out of a token metadata document. */
 export function parseSocials(text: string): TokenSocials {
-  if (text.length > 256_000) return { checked: true, count: 0 };
+  // An unreadable document is a failed read, not a token without socials.
+  if (text.length > 256_000) return FAILED;
 
   let meta: { twitter?: unknown; telegram?: unknown; website?: unknown; image?: unknown };
   try {
     meta = JSON.parse(text) as typeof meta;
   } catch {
-    return { checked: true, count: 0 };
+    return FAILED;
   }
-  if (typeof meta !== 'object' || meta === null) return { checked: true, count: 0 };
+  if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) return FAILED;
 
   const str = (v: unknown) => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined);
   const twitter = str(meta.twitter);
@@ -69,6 +85,7 @@ export function parseSocials(text: string): TokenSocials {
 
   return {
     checked: true,
+    failed: false,
     twitter,
     telegram,
     website,
@@ -111,18 +128,29 @@ async function fetchAllowlisted(start: URL): Promise<Response | null> {
   return null;
 }
 
+/**
+ * Reads a token's metadata and reports which socials it declares.
+ *
+ * Retries once, because the public IPFS gateways these URIs point at are slow
+ * and rate-limited, and a single timeout would otherwise be recorded as "this
+ * token has no socials" — quietly rejecting tokens that do.
+ */
 export async function fetchSocials(uri: string | undefined): Promise<TokenSocials> {
-  if (!uri) return { checked: true, count: 0 };
+  // No URI at all is a real answer: the deployer declared no metadata.
+  if (!uri) return NONE;
   const url = safeUrl(uri);
-  if (!url) return { checked: true, count: 0 };
+  if (!url) return FAILED;
 
-  try {
-    const res = await fetchAllowlisted(url);
-    if (!res) return { checked: true, count: 0 };
-
-    const text = await withTimeout(res.text(), 3000, 'metadata body');
-    return parseSocials(text);
-  } catch {
-    return { checked: true, count: 0 };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetchAllowlisted(url);
+      if (!res) continue;
+      const text = await withTimeout(res.text(), 3000, 'metadata body');
+      const parsed = parseSocials(text);
+      if (!parsed.failed) return parsed;
+    } catch {
+      // fall through to the retry
+    }
   }
+  return FAILED;
 }

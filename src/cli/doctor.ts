@@ -80,12 +80,16 @@ async function main(): Promise<void> {
   // --- screener ----------------------------------------------------------
   if (cfg.ENTRY_MODE === 'screener') {
     console.log('');
-    ok(
-      `filter: ${cfg.SCREEN_ALLOWED_POOLS.join('/')}, mcap $${cfg.SCREEN_MIN_MCAP_USD.toLocaleString()}` +
-        (cfg.SCREEN_MAX_MCAP_USD > 0 ? `-$${cfg.SCREEN_MAX_MCAP_USD.toLocaleString()}` : '+') +
-        `, volume ≥$${cfg.SCREEN_MIN_VOLUME_USD.toLocaleString()}, ` +
-        `≥${cfg.SCREEN_MIN_SOCIALS} social(s), ≥${cfg.SCREEN_MIN_BUYERS} buyers`,
-    );
+    const parts = [
+      cfg.SCREEN_ALLOWED_POOLS.join('/'),
+      `mcap $${cfg.SCREEN_MIN_MCAP_USD.toLocaleString()}` +
+        (cfg.SCREEN_MAX_MCAP_USD > 0 ? `-$${cfg.SCREEN_MAX_MCAP_USD.toLocaleString()}` : '+'),
+      `volume ≥$${cfg.SCREEN_MIN_VOLUME_USD.toLocaleString()}`,
+      cfg.SCREEN_MIN_SOCIALS > 0 ? `≥${cfg.SCREEN_MIN_SOCIALS} social(s)` : 'socials not required',
+      `age ${cfg.SCREEN_MIN_AGE_SECONDS}-${cfg.SCREEN_MAX_AGE_SECONDS}s`,
+    ];
+    if (cfg.SCREEN_MIN_BUYERS > 0) parts.push(`≥${cfg.SCREEN_MIN_BUYERS} buyers`);
+    ok(`filter: ${parts.join(', ')}`);
 
     try {
       const sol = new SolPrice(cfg.SOL_USD_FALLBACK);

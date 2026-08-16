@@ -161,16 +161,38 @@ const schema = z.object({
   /** Total traded volume, both sides, including the deployer's creation buy. */
   SCREEN_MIN_VOLUME_USD: num(0, 100_000_000).default(3000),
   SCREEN_MIN_MCAP_USD: num(0, 100_000_000).default(6000),
-  /** Ceiling on entry market cap. 0 disables it. */
-  SCREEN_MAX_MCAP_USD: num(0, 100_000_000).default(25_000),
+  /**
+   * Optional ceiling on entry market cap. OFF by default, because it is not
+   * part of the filter as specified — a token above it has matched, and
+   * refusing to buy a match is the behaviour that makes the bot look broken.
+   * Turn it on once the report shows high-cap entries losing money.
+   */
+  SCREEN_MAX_MCAP_USD: num(0, 100_000_000).default(0),
   /** Distinct social links (twitter/telegram/website) in the token metadata. */
   SCREEN_MIN_SOCIALS: num(0, 3).default(1),
+  /**
+   * What to do when the metadata cannot be read at all — a slow or
+   * rate-limited IPFS gateway, not a token without socials. `allow` lets it
+   * through, because failing closed on someone else's outage silently rejects
+   * tokens that DO have socials. `deny` is the strict reading of the filter.
+   */
+  SCREEN_ON_SOCIALS_UNAVAILABLE: z.enum(['allow', 'deny']).default('allow'),
   SCREEN_MIN_AGE_SECONDS: num(0, 86_400).default(0),
-  SCREEN_MAX_AGE_SECONDS: num(5, 86_400).default(300),
-  /** Distinct buying wallets seen. A crowd, not one whale round-tripping. */
-  SCREEN_MIN_BUYERS: num(0, 10_000).default(4),
+  SCREEN_MAX_AGE_SECONDS: num(5, 86_400).default(600),
+  /**
+   * Optional minimum of distinct buying wallets. OFF by default for the same
+   * reason as the cap ceiling: it is a tightener, not part of the filter.
+   */
+  SCREEN_MIN_BUYERS: num(0, 10_000).default(0),
   /** Used to convert SOL to USD when the live price feed is unreachable. */
   SOL_USD_FALLBACK: num(1, 100_000).default(190),
+  /**
+   * Buys are serialised so two matches cannot both clear the position cap. A
+   * match that waits longer than this behind other entries is dropped rather
+   * than filled, because by then it is a different setup from the one that
+   * matched.
+   */
+  ENTRY_QUEUE_MAX_WAIT_SECONDS: num(1, 300).default(20),
 
   // === Momentum trigger (ENTRY_MODE=fast) ===
   MOMENTUM_WINDOW_SECONDS: num(5, 600).default(30),

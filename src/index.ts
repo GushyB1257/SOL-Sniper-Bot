@@ -172,6 +172,16 @@ class SniperBot {
 
     this.installSignalHandlers();
     log.info(`Watching for launches via ${this.discovery.name}. Ctrl-C to stop.`);
+    if (this.cfg.ENTRY_MODE === 'screener') {
+      // Worth saying out loud, because the symptom otherwise looks like a bug:
+      // the feed only carries NEW launches, so a coin already on your screener
+      // when the bot started was never on its watchlist and cannot be bought.
+      log.warn(
+        'Only launches from NOW ON are tracked. A coin already trading when the ' +
+          'bot started is invisible to it — give it a few minutes before ' +
+          'comparing against a screener you already had open.',
+      );
+    }
     if (this.dashboard) log.info(`Dashboard: ${this.dashboard.url}`);
   }
 
@@ -335,6 +345,9 @@ class SniperBot {
       entryMode: this.cfg.ENTRY_MODE,
       screenMatched: s.screenMatched,
       socialsFetched: s.socialsFetched,
+      blockedByRisk: s.blockedByRisk,
+      buyFailed: s.buyFailed,
+      lastBlockReason: s.lastBlockReason,
       screenRejects: s.screenRejects,
       solUsd: this.ai.solUsd,
       solPriceLive: this.ai.solPriceIsLive,

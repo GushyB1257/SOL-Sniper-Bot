@@ -106,6 +106,10 @@ export interface AiView {
   /** Tokens that cleared every screener filter. */
   screenMatched: number;
   socialsFetched: number;
+  /** Matches a risk limit refused — the gap between matched and bought. */
+  blockedByRisk: number;
+  buyFailed: number;
+  lastBlockReason?: string;
   /** Rejections by failing filter — the knob-tuning instrument. */
   screenRejects: Record<string, number>;
   solUsd: number;
@@ -167,6 +171,7 @@ const CONFIG_GROUPS: Record<string, string[]> = {
     'SCREEN_MAX_MCAP_USD',
     'SCREEN_MIN_VOLUME_USD',
     'SCREEN_MIN_SOCIALS',
+    'SCREEN_ON_SOCIALS_UNAVAILABLE',
     'SCREEN_MIN_BUYERS',
     'SCREEN_MIN_AGE_SECONDS',
     'SCREEN_MAX_AGE_SECONDS',

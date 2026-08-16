@@ -66,7 +66,7 @@ function build(overrides: Record<string, string> = {}): void {
   const exec = new PaperExecutor(cfg, new StubPrices());
   const risk = new RiskManager(cfg, store, join(dir, 'nostop'));
   socialsCalls = 0;
-  socials = { checked: true, count: 1, twitter: 'https://x.com/x' };
+  socials = { checked: true, failed: false, count: 1, twitter: 'https://x.com/x' };
 
   ai = new AiOrchestrator({
     cfg,
@@ -107,29 +107,22 @@ beforeEach(() => build());
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('screener entry path', () => {
-  it('fetches socials once, then buys on the next trade', async () => {
+  it('fetches socials once, then buys without waiting for another trade', async () => {
     ai.observe(CANDIDATE);
     pushVolume();
     await settle();
 
-    // The first pass could not know the socials, so it asked for them instead
-    // of buying blind — and asked exactly once despite six trade events.
+    // Asked exactly once despite six trade events, and re-screened as soon as
+    // the answer arrived. Waiting for the next trade would lose a token that
+    // went quiet during the fetch — which is when a fast mover is over.
     expect(socialsCalls).toBe(1);
-    expect(store.openPositions()).toHaveLength(0);
-
-    pushVolume();
-    await settle();
-
     const open = store.openPositions();
     expect(open).toHaveLength(1);
     expect(open[0]!.symbol).toBe('SCRN');
-    expect(socialsCalls).toBe(1);
   });
 
   it('writes the matching filter values onto the position', async () => {
     ai.observe(CANDIDATE);
-    pushVolume();
-    await settle();
     pushVolume();
     await settle();
 
@@ -141,17 +134,15 @@ describe('screener entry path', () => {
 
   it('opens exactly one position however many trades arrive', async () => {
     ai.observe(CANDIDATE);
-    pushVolume();
-    await settle();
-    for (let i = 0; i < 5; i++) pushVolume();
+    for (let i = 0; i < 6; i++) pushVolume();
     await settle();
 
     expect(store.openPositions()).toHaveLength(1);
     expect(ai.snapshotStats().screenMatched).toBe(1);
   });
 
-  it('does not buy when the metadata has no socials', async () => {
-    socials = { checked: true, count: 0 };
+  it('does not buy when the metadata loads and has no socials', async () => {
+    socials = { checked: true, failed: false, count: 0 };
     ai.observe(CANDIDATE);
     pushVolume();
     await settle();
@@ -160,6 +151,44 @@ describe('screener entry path', () => {
 
     expect(store.openPositions()).toHaveLength(0);
     expect(ai.snapshotStats().screenRejects.socials).toBeGreaterThan(0);
+  });
+
+  it('still buys when the metadata could not be read at all', async () => {
+    // A rate-limited IPFS gateway must not silently veto every entry.
+    socials = { checked: true, failed: true, count: 0 };
+    ai.observe(CANDIDATE);
+    pushVolume();
+    await settle();
+
+    expect(store.openPositions()).toHaveLength(1);
+  });
+
+  it('never drops a match because another entry was in flight', async () => {
+    // Two tokens matching at the same instant must both be bought, not one
+    // bought and the other silently discarded.
+    ai.observe(CANDIDATE);
+    ai.observe({ ...CANDIDATE, mint: 'Mint2222222222222222222222222222222222222', symbol: 'TWO' });
+    pushVolume(CANDIDATE.mint);
+    pushVolume('Mint2222222222222222222222222222222222222');
+    await new Promise((r) => setTimeout(r, 40));
+
+    const symbols = store.openPositions().map((p) => p.symbol).sort();
+    expect(symbols).toEqual(['SCRN', 'TWO']);
+  });
+
+  it('reports a match it could not act on rather than swallowing it', async () => {
+    build({ MAX_CONCURRENT_POSITIONS: '1' });
+    ai.observe(CANDIDATE);
+    ai.observe({ ...CANDIDATE, mint: 'Mint2222222222222222222222222222222222222', symbol: 'TWO' });
+    pushVolume(CANDIDATE.mint);
+    pushVolume('Mint2222222222222222222222222222222222222');
+    await new Promise((r) => setTimeout(r, 40));
+
+    const stats = ai.snapshotStats();
+    expect(stats.screenMatched).toBe(2);
+    expect(store.openPositions()).toHaveLength(1);
+    expect(stats.blockedByRisk).toBe(1);
+    expect(stats.lastBlockReason).toMatch(/position limit/);
   });
 
   it('does not spend a metadata fetch on a token failing a cheap filter', async () => {

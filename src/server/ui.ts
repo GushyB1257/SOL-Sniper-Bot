@@ -801,11 +801,20 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
     if (screening) {
       srow('Matched the filter', ai.screenMatched, ai.screenMatched > 0 ? 'pos' : '');
       srow('Metadata fetched', ai.socialsFetched);
+      if (ai.blockedByRisk > 0) srow('Blocked by a risk limit', ai.blockedByRisk, 'neg');
+      if (ai.buyFailed > 0) srow('Buy failed', ai.buyFailed, 'neg');
     } else {
       srow('Sent to analyst', ai.evaluated);
       srow('Passed', ai.passed);
     }
     srow('Bought', ai.bought, ai.bought > 0 ? 'pos' : '');
+    // A match that never became a position is the single most confusing thing
+    // this bot can do, so the reason gets its own line rather than a log entry.
+    if (screening && ai.lastBlockReason) {
+      var why = el('div', 'tile-note');
+      why.textContent = 'Last match not taken: ' + ai.lastBlockReason;
+      stats.appendChild(why);
+    }
     if (ai.reviews > 0) srow('Position reviews', ai.reviews);
     if (ai.refusals > 0) srow('Refusals', ai.refusals, 'neg');
     if (ai.errors > 0) srow('API errors', ai.errors, 'neg');

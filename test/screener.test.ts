@@ -59,6 +59,7 @@ function withSocials(mint: string, count: number): void {
   wl.claimSocialsFetch(mint);
   wl.setSocials(mint, {
     checked: true,
+    failed: false,
     count,
     twitter: count > 0 ? 'https://x.com/x' : undefined,
   });
@@ -159,7 +160,7 @@ describe('screenerSignal', () => {
       });
     }
     other.claimSocialsFetch('Mint2');
-    other.setSocials('Mint2', { checked: true, count: 2 });
+    other.setSocials('Mint2', { checked: true, failed: false, count: 2 });
     expect(screenerSignal(other.get('Mint2')!, c, SOL_USD).outcome).toBe('fire');
   });
 
@@ -172,19 +173,22 @@ describe('screenerSignal', () => {
     expect(v.reason).toMatch(/mcap .* below/);
   });
 
-  it('rejects a cap above the ceiling — the move already happened', () => {
+  it('rejects a cap above the ceiling when one is configured', () => {
+    const c = config({ SCREEN_MAX_MCAP_USD: '25000' });
     trade(CANDIDATE.mint, { buyers: 8, solEach: 5, vSol: 80 });
     withSocials(CANDIDATE.mint, 1);
-    const v = screenerSignal(wl.get(CANDIDATE.mint)!, cfg, SOL_USD);
+    const v = screenerSignal(wl.get(CANDIDATE.mint)!, c, SOL_USD);
     expect(v.outcome).toBe('reject');
     expect(v.reason).toMatch(/mcap .* above/);
   });
 
-  it('treats a zero ceiling as no ceiling', () => {
-    const c = config({ SCREEN_MAX_MCAP_USD: '0' });
+  it('has no ceiling by default — a match is a match', () => {
+    // The filter as specified has no upper bound. Refusing to buy something
+    // that matched is exactly what makes the bot look broken.
+    expect(cfg.SCREEN_MAX_MCAP_USD).toBe(0);
     trade(CANDIDATE.mint, { buyers: 8, solEach: 5, vSol: 80 });
     withSocials(CANDIDATE.mint, 1);
-    expect(screenerSignal(wl.get(CANDIDATE.mint)!, c, SOL_USD).outcome).toBe('fire');
+    expect(screenerSignal(wl.get(CANDIDATE.mint)!, cfg, SOL_USD).outcome).toBe('fire');
   });
 
   it('rejects thin volume', () => {
@@ -246,12 +250,41 @@ describe('screenerSignal', () => {
     expect(screenerSignal(wl.get(CANDIDATE.mint)!, c, SOL_USD).outcome).toBe('fire');
   });
 
-  it('rejects a cap reached by one wallet', () => {
+  it('rejects a cap reached by one wallet when a buyer floor is configured', () => {
+    const c = config({ SCREEN_MIN_BUYERS: '4' });
     trade(CANDIDATE.mint, { buyers: 1, solEach: 20, vSol: 45 });
     withSocials(CANDIDATE.mint, 1);
-    const v = screenerSignal(wl.get(CANDIDATE.mint)!, cfg, SOL_USD);
+    const v = screenerSignal(wl.get(CANDIDATE.mint)!, c, SOL_USD);
     expect(v.outcome).toBe('reject');
     expect(v.reason).toMatch(/buyers \(need/);
+  });
+
+  it('has no buyer floor by default', () => {
+    expect(cfg.SCREEN_MIN_BUYERS).toBe(0);
+    trade(CANDIDATE.mint, { buyers: 1, solEach: 20, vSol: 45 });
+    withSocials(CANDIDATE.mint, 1);
+    expect(screenerSignal(wl.get(CANDIDATE.mint)!, cfg, SOL_USD).outcome).toBe('fire');
+  });
+
+  it('lets a token through when the metadata could not be read', () => {
+    // Default is allow: a rate-limited IPFS gateway is not evidence that the
+    // token has no socials, and failing closed on it is invisible.
+    trade(CANDIDATE.mint, { buyers: 6, solEach: 3, vSol: 45 });
+    wl.claimSocialsFetch(CANDIDATE.mint);
+    wl.setSocials(CANDIDATE.mint, { checked: true, failed: true, count: 0 });
+    const v = screenerSignal(wl.get(CANDIDATE.mint)!, cfg, SOL_USD);
+    expect(v.outcome).toBe('fire');
+    expect(v.reason).toContain('socials unknown');
+  });
+
+  it('rejects an unreadable metadata doc when told to be strict', () => {
+    const c = config({ SCREEN_ON_SOCIALS_UNAVAILABLE: 'deny' });
+    trade(CANDIDATE.mint, { buyers: 6, solEach: 3, vSol: 45 });
+    wl.claimSocialsFetch(CANDIDATE.mint);
+    wl.setSocials(CANDIDATE.mint, { checked: true, failed: true, count: 0 });
+    const v = screenerSignal(wl.get(CANDIDATE.mint)!, c, SOL_USD);
+    expect(v.outcome).toBe('reject');
+    expect(v.reason).toMatch(/socials unavailable/);
   });
 
   it('scales every USD threshold with the SOL price', () => {
@@ -265,7 +298,7 @@ describe('screenerSignal', () => {
   it('claims the socials fetch exactly once', () => {
     expect(wl.claimSocialsFetch(CANDIDATE.mint)).toBe(true);
     expect(wl.claimSocialsFetch(CANDIDATE.mint)).toBe(false);
-    wl.setSocials(CANDIDATE.mint, { checked: true, count: 1 });
+    wl.setSocials(CANDIDATE.mint, { checked: true, failed: false, count: 1 });
     expect(wl.claimSocialsFetch(CANDIDATE.mint)).toBe(false);
   });
 });

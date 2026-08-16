@@ -60,7 +60,22 @@ describe('fetchSocials', () => {
   });
 
   it('rejects a malformed URI without throwing', async () => {
-    await expect(fetchSocials('not a url')).resolves.toEqual({ checked: true, count: 0 });
+    await expect(fetchSocials('not a url')).resolves.toEqual({
+      checked: true,
+      failed: true,
+      count: 0,
+    });
+  });
+
+  it('separates "no metadata declared" from "could not read it"', async () => {
+    // A deployer who declared no URI genuinely has no socials. A gateway that
+    // timed out tells us nothing — conflating the two rejects real matches.
+    await expect(fetchSocials(undefined)).resolves.toEqual({
+      checked: true,
+      failed: false,
+      count: 0,
+    });
+    expect((await fetchSocials('https://ipfs.io/ipfs/unreachable-in-tests')).failed).toBe(true);
   });
 
 });
@@ -101,12 +116,19 @@ describe('parseSocials', () => {
     expect(parseSocials(JSON.stringify({ twitter: '   ', telegram: 42, website: null })).count).toBe(0);
   });
 
-  it('survives malformed and non-object documents', () => {
+  it('treats malformed and non-object documents as unreadable', () => {
     for (const body of ['not json', '[]', 'null', '"a string"', '']) {
       const s = parseSocials(body);
       expect(s.checked).toBe(true);
+      expect(s.failed).toBe(true);
       expect(s.count).toBe(0);
     }
+  });
+
+  it('reports a valid document with no links as read, not failed', () => {
+    const s = parseSocials(JSON.stringify({ name: 'Coin', symbol: 'C' }));
+    expect(s.failed).toBe(false);
+    expect(s.count).toBe(0);
   });
 
   it('refuses an oversized document rather than parsing it', () => {

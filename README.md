@@ -139,14 +139,31 @@ no I/O — microseconds per trade event. The one thing it cannot answer locally 
 socials, which needs an HTTP fetch, so that check is deliberately **last**: only
 tokens that already cleared every other filter ever cost a request.
 
-**Two filters that aren't in the human version**, both defensive:
+**Two optional tighteners**, both **off** by default, because they are not part
+of the filter and a bot that refuses to buy something that matched is
+indistinguishable from a broken one. Turn them on once the report shows those
+entries losing money:
 
-- `SCREEN_MIN_BUYERS` (default 4) — one wallet can manufacture the volume and
-  market cap the other filters look at. Distinct buyers is what makes those
-  numbers mean something.
-- `SCREEN_MAX_MCAP_USD` (default $25k) — above the ceiling the move being
-  screened for has already happened, and buying there means buying from whoever
-  caught it. Set to 0 to disable.
+- `SCREEN_MIN_BUYERS` — one wallet can manufacture the volume and market cap the
+  other filters look at. Distinct buyers is what makes those numbers mean
+  something.
+- `SCREEN_MAX_MCAP_USD` — above a ceiling the move being screened for has
+  already happened, and buying there means buying from whoever caught it.
+
+**Two things that will make it look broken when it isn't:**
+
+- **It only sees launches from the moment it starts.** The feed carries new
+  tokens; a coin already trading when you started the bot was never on its
+  watchlist and cannot be bought. Give it a few minutes before comparing
+  against a screener you already had open.
+- **A match is not always a buy.** Position cap, hourly spend cap, daily loss
+  limit and the loss-streak breaker all sit downstream of the filter. Every one
+  of those now prints `SKIP <symbol> — matched the filter but <reason>` at
+  warning level, and the dashboard shows the last one, so the gap between
+  *matched* and *bought* is never silent.
+
+The terminal also prints a `SCREEN` summary every minute — how many checks ran,
+which filters are doing the rejecting, how many matched, how many were bought.
 
 **The exit is fee-aware, not a round number.** You name a NET target and the bot
 computes the gross move that delivers it after both program fees, both router
@@ -520,7 +537,7 @@ unknown venue in `SCREEN_ALLOWED_POOLS`, a screener band nothing can pass, or
 ## Development
 
 ```bash
-npm test           # 192 tests
+npm test           # 200 tests
 npm run typecheck
 npm run build
 ```

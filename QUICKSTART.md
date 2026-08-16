@@ -111,6 +111,20 @@ The **Why entries were skipped** panel is the one to watch early on. It shows
 which filter is turning tokens away, so if nothing is trading you can see the
 reason immediately instead of guessing.
 
+Every minute it also prints a one-line `SCREEN` summary in the terminal:
+how many checks it ran, which filter is doing most of the rejecting, and how
+many tokens matched versus were actually bought.
+
+**Two things that look like bugs and are not:**
+
+1. **It only sees coins that launch after you start it.** If a coin was already
+   trading on your screener when you hit `npm run sniper`, the bot never saw it
+   launch and cannot buy it. Give it a few minutes.
+2. **A match is not always a buy.** The position cap, hourly spend cap, daily
+   loss limit and loss-streak breaker all sit after the filter. When one of them
+   stops an entry you will see `SKIP <symbol> — matched the filter but <reason>`
+   in the terminal, and the reason on the dashboard.
+
 To stop the bot: click the terminal and press **Ctrl-C**.
 
 ### What it is actually looking for
