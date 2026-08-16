@@ -1,4 +1,4 @@
-import type { Config } from '../config.js';
+import { walletLabel, type Config } from '../config.js';
 import type { Store } from '../state/store.js';
 import type { Position, TradeJournalEntry } from '../types.js';
 import { recentLogs, type LogEntry } from '../logger.js';
@@ -56,8 +56,13 @@ export interface PositionView {
   marketCapUsd: number | null;
   /** Wallet this was copied from, when the copy bot opened it. */
   copiedFrom: string | null;
+  /** That wallet's name, resolved from config so a rename is retroactive. */
+  copiedFromLabel: string | null;
   notes: string[];
 }
+
+/** A closed trade, with the tracked wallet's name resolved for display. */
+export type JournalRow = TradeJournalEntry & { copiedFromLabel?: string };
 
 export interface PnlSummary {
   netSol: number;
@@ -133,7 +138,8 @@ export interface AiView {
 
 /** What the copy bot is doing, for its tab. */
 export interface CopyView {
-  wallets: Array<{ address: string; holdings: number }>;
+  /** `label` is the user's name for the wallet, or '' when it has none. */
+  wallets: Array<{ address: string; label: string; holdings: number }>;
   /** Wallets whose first balance read has completed — i.e. actually watched. */
   primed: number;
   tracking: number;
@@ -160,7 +166,7 @@ export interface BotView {
   pnl: PnlSummary;
   risk: RiskView;
   positions: PositionView[];
-  journal: TradeJournalEntry[];
+  journal: JournalRow[];
   equity: { t: number; cum: number; pnl: number; symbol: string }[];
   exitReasons: { reason: string; count: number; pnlSol: number }[];
   creatorsTracked: number;
@@ -383,6 +389,7 @@ function view(p: Position, cfg: Config, now: number, solUsd: number): PositionVi
         ? p.entryMarketCapSol * (price / p.entryPrice) * solUsd
         : null,
     copiedFrom: p.copiedFrom ?? null,
+    copiedFromLabel: p.copiedFrom ? walletLabel(cfg, p.copiedFrom) : null,
     notes: p.notes.slice(-6),
   };
 }
@@ -494,7 +501,10 @@ export function buildBotView(input: BotInput, cfg: Config, solUsd: number, now: 
     positions: open
       .map((p) => view(p, cfg, now, solUsd))
       .sort((a, b) => a.ageSeconds - b.ageSeconds),
-    journal: journal.slice(-100).reverse(),
+    journal: journal
+      .slice(-100)
+      .reverse()
+      .map((t) => (t.copiedFrom ? { ...t, copiedFromLabel: walletLabel(cfg, t.copiedFrom) } : t)),
     equity,
     exitReasons: [...reasons]
       .map(([reason, v]) => ({ reason, ...v }))

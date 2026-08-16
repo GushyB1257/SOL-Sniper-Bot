@@ -120,7 +120,7 @@ export class WalletWatcher {
     try {
       this.stats.polls += 1;
       for (const wallet of wallets) {
-        await this.pollWallet(wallet);
+        await this.pollWallet(wallet.address);
       }
     } finally {
       this.polling = false;

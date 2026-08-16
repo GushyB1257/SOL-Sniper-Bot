@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, type Config } from '../config.js';
+import { formatCopyWallets, loadConfig, type Config } from '../config.js';
 import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
 
@@ -122,7 +122,9 @@ export const FIELDS: FieldSpec[] = [
 
   // --- Copy ------------------------------------------------------------
   { key: 'COPY_WALLETS', label: 'Wallets to track', bot: 'copy', group: 'Wallets', kind: 'text',
-    placeholder: 'Paste addresses, comma or space separated' },
+    placeholder: 'Address, or Address=Name',
+    help: 'Comma separated. Add "=Name" after an address to label it — the name ' +
+      'then shows on every position and trade from that wallet, including past ones.' },
   { key: 'COPY_MIN_BUY_SOL', label: 'Ignore buys under', bot: 'copy', group: 'Filter',
     kind: 'number', min: 0, max: 1000, step: 0.05,
     help: 'SOL. Filters the dust buys wallets use to bump volume.' },
@@ -280,7 +282,14 @@ export class RuntimeSettings {
     const out: Record<string, string> = {};
     for (const key of [...FIELDS.map((f) => f.key), ...CONTROL_KEYS]) {
       const raw = (this.live as unknown as Record<string, unknown>)[key];
-      out[key] = Array.isArray(raw) ? raw.join(',') : String(raw ?? '');
+      // Tracked wallets round-trip through their own `Addr=Name` form; the
+      // generic array join would render them as [object Object] and the next
+      // save would then wipe the list.
+      if (key === 'COPY_WALLETS') {
+        out[key] = formatCopyWallets(this.live.COPY_WALLETS);
+      } else {
+        out[key] = Array.isArray(raw) ? raw.join(',') : String(raw ?? '');
+      }
     }
     return out;
   }

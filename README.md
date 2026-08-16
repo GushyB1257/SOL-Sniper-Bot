@@ -79,6 +79,15 @@ before anything is written off, an unreadable price is tolerated for
 up the reason is `unpriceable` rather than `rug_detected` — with the deployer's
 reputation left alone, since our outage says nothing about who launched it.
 
+**Name the wallets.** A wallet is 44 characters of base58 and nothing in it
+tells you who it is. Append `=Name` to any entry in `COPY_WALLETS` —
+`9xQe…4Rt=Insider, 4Kp8…zzQ=Whale` — and that name appears on every open
+position and closed trade copied from it, alongside the tracked-wallets card.
+The journal stores the **address**, not the name, and resolves it when the page
+renders, so renaming a wallet relabels its entire history rather than only the
+trades that follow. Names are editable from the dashboard like every other
+setting.
+
 The mechanical exits are **disabled** for copied positions. A ratchet or a stop
 firing underneath one would exit on your schedule while the wallet you are
 copying is still holding, which is the one thing a copy trader must never do.
@@ -667,7 +676,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 295 tests
+npm test           # 308 tests
 npm run typecheck
 npm run build
 ```

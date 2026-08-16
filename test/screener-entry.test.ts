@@ -104,7 +104,10 @@ function pushVolume(mint = CANDIDATE.mint, buyers = 6, solEach = 3, vSol = 45): 
 const settle = () => new Promise((r) => setTimeout(r, 5));
 
 beforeEach(() => build());
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+});
 
 describe('screener entry path', () => {
   it('fetches socials once, then buys without waiting for another trade', async () => {

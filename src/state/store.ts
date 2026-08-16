@@ -88,6 +88,20 @@ export class Store {
     this.flushTimer.unref?.();
   }
 
+  /**
+   * Final flush. Cancels the pending timer first so nothing writes after the
+   * caller believes the store is done with — a deferred write into a directory
+   * that has since been removed throws from inside a timer, where there is no
+   * one left to catch it.
+   */
+  close(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.flush();
+  }
+
   flush(): void {
     if (!this.dirty) return;
     const tmp = `${this.file}.tmp`;

@@ -360,9 +360,13 @@ export class Dashboard {
     const w = bot.watcher.snapshot;
     const c = bot.copy.snapshotStats();
     return {
-      wallets: this.deps.cfg.COPY_WALLETS.map((address) => ({
-        address,
-        holdings: bot.watcher!.holdingsOf(address).length,
+      // The card shows the address itself, so the label is sent raw rather than
+      // through walletLabel() — its truncated-address fallback would render as
+      // a name and repeat the line below it.
+      wallets: this.deps.cfg.COPY_WALLETS.map((w) => ({
+        address: w.address,
+        label: w.label ?? '',
+        holdings: bot.watcher!.holdingsOf(w.address).length,
       })),
       tracking: w.tracking,
       primed: w.walletsPrimed,

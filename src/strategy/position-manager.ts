@@ -358,6 +358,7 @@ export class PositionManager {
       safetyScore: p.safetyScore,
       holdSeconds,
       entryNote: p.notes.find((n) => n.startsWith('screen:') || n.startsWith('momentum:')),
+      copiedFrom: p.copiedFrom,
     });
 
     this.risk.recordOutcome(pnlSol);

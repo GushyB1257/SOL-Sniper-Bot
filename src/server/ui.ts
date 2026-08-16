@@ -205,6 +205,10 @@ th.r, td.r { text-align: right; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .mint:hover { color: var(--series); }
+/* Timestamps look like mints but must not invite a click. */
+.mint-t { font-size: 11px; color: var(--muted); }
+/* Which tracked wallet a trade came from. */
+.via { font-size: 11px; color: var(--series); font-weight: 550; }
 .empty { color: var(--muted); padding: 28px 10px; text-align: center; font-size: 13px; }
 
 /* ---- Ladder pips ---- */
@@ -321,6 +325,8 @@ button.primary { color: #fff; background: var(--series); border-color: transpare
 button.primary:hover { filter: brightness(1.08); color: #fff; }
 .wallet-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 12.5px; border-bottom: 1px solid var(--grid); }
 .wallet-row:last-child { border-bottom: none; }
+.wallet-id { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.wallet-name { font-size: 12.5px; color: var(--ink); }
 .wallet-addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--ink-2); }
 .hidden { display: none !important; }
 .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
@@ -489,6 +495,23 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     if (!isFinite(p) || p <= 0) return '—';
     return p < 0.0001 ? p.toExponential(2) : p.toFixed(6);
   }
+  /**
+   * A mint address you can click to copy. The journal is where you go to look a
+   * token up after the fact, so the address has to be reachable there and not
+   * only while the position is open.
+   */
+  function mintChip(mint, extraClass) {
+    var n = el('div', 'mint' + (extraClass ? ' ' + extraClass : ''), mint.slice(0, 10) + '\u2026');
+    n.title = 'Click to copy ' + mint;
+    n.addEventListener('click', function () {
+      navigator.clipboard.writeText(mint).then(function () {
+        n.textContent = 'copied';
+        setTimeout(function () { n.textContent = mint.slice(0, 10) + '\u2026'; }, 900);
+      });
+    });
+    return n;
+  }
+
   function usdShort(n) {
     if (n === null || n === undefined || !isFinite(n) || n <= 0) return '\u2014';
     if (n >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
@@ -696,17 +719,9 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       var tdTok = el('td');
       var sym = el('div', 'sym', p.symbol);
       tdTok.appendChild(sym);
-      var mint = el('div', 'mint', p.mint.slice(0, 10) + '…');
-      mint.title = 'Click to copy ' + p.mint;
-      mint.addEventListener('click', function () {
-        navigator.clipboard.writeText(p.mint).then(function () {
-          mint.textContent = 'copied';
-          setTimeout(function () { mint.textContent = p.mint.slice(0, 10) + '\\u2026'; }, 900);
-        });
-      });
-      tdTok.appendChild(mint);
+      tdTok.appendChild(mintChip(p.mint));
       if (p.copiedFrom) {
-        var src = el('div', 'mint', 'copy ' + p.copiedFrom.slice(0, 8) + '\u2026');
+        var src = el('div', 'via', 'via ' + (p.copiedFromLabel || p.copiedFrom.slice(0, 8)));
         src.title = 'Mirroring ' + p.copiedFrom;
         tdTok.appendChild(src);
       }
@@ -815,7 +830,13 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       var row = el('tr');
       var tdTok = el('td');
       tdTok.appendChild(el('div', 'sym', t.symbol || t.mint.slice(0, 6)));
-      tdTok.appendChild(el('div', 'mint', new Date(t.closedAt).toLocaleTimeString()));
+      tdTok.appendChild(mintChip(t.mint));
+      if (t.copiedFrom) {
+        var via = el('div', 'via', 'via ' + (t.copiedFromLabel || t.copiedFrom.slice(0, 8)));
+        via.title = 'Mirrored ' + t.copiedFrom;
+        tdTok.appendChild(via);
+      }
+      tdTok.appendChild(el('div', 'mint-t', new Date(t.closedAt).toLocaleTimeString()));
       row.appendChild(tdTok);
       row.appendChild(el('td', 'r mono', plain(t.costSol, 4)));
       row.appendChild(el('td', 'r mono', plain(t.proceedsSol, 4)));
@@ -1249,9 +1270,13 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     } else {
       c.wallets.forEach(function (w) {
         var r = el('div', 'wallet-row');
-        var a = el('span', 'wallet-addr', w.address.slice(0, 6) + '\u2026' + w.address.slice(-4));
-        a.title = w.address;
-        r.appendChild(a);
+        // The name is what the user reads; the address stays visible underneath
+        // it so a row is still identifiable when two wallets share a nickname.
+        var id = el('div', 'wallet-id');
+        if (w.label) id.appendChild(el('div', 'wallet-name', w.label));
+        id.appendChild(el('div', 'wallet-addr', w.address.slice(0, 6) + '\u2026' + w.address.slice(-4)));
+        id.title = w.address;
+        r.appendChild(id);
         r.appendChild(el('span', 'mono', w.holdings + ' token' + (w.holdings === 1 ? '' : 's')));
         host.appendChild(r);
       });

@@ -267,4 +267,10 @@ export interface TradeJournalEntry {
    * which makes tuning the thresholds guesswork.
    */
   entryNote?: string;
+  /**
+   * The wallet this trade mirrored, when the copy bot opened it. Stored as the
+   * ADDRESS, not the name — names are resolved from config at render time, so
+   * renaming a wallet relabels its whole history instead of only new trades.
+   */
+  copiedFrom?: string;
 }

@@ -88,6 +88,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  store.close();
   rmSync(dir, { recursive: true, force: true });
 });
 

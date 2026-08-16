@@ -99,24 +99,48 @@ const poolListSchema = z.string().transform((raw, ctx) => {
   return parts as unknown as Array<(typeof POOLS)[number]>;
 });
 
-/** Parses a comma-separated list of base58 wallet addresses. */
+/** A wallet the copy trader follows, with an optional human name. */
+export interface CopyWallet {
+  address: string;
+  /** What you call them. Falls back to a truncated address in the UI. */
+  label?: string;
+}
+
+/**
+ * Parses tracked wallets, each optionally named.
+ *
+ *   Addr1, Addr2=Insider, Addr3 = Whale two
+ *
+ * The name lives on the same line as the address rather than in a second
+ * setting, so there is no way to have one without the other and no address
+ * typed twice.
+ */
 const walletListSchema = z.string().transform((raw, ctx) => {
-  const parts = raw
-    .split(/[,\s]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  for (const w of parts) {
+  const out: CopyWallet[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of raw.split(/[,\n]+/)) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+
+    const eq = trimmed.indexOf('=');
+    const address = (eq === -1 ? trimmed : trimmed.slice(0, eq)).trim();
+    const label = eq === -1 ? undefined : trimmed.slice(eq + 1).trim() || undefined;
+
     // Length and alphabet only — a full curve check needs web3.js and this
     // module is imported by everything, including tests with no chain.
-    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(w)) {
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: `"${w}" is not a base58 Solana address`,
+        message: `"${address}" is not a base58 Solana address`,
       });
       return z.NEVER;
     }
+    if (seen.has(address)) continue;
+    seen.add(address);
+    out.push(label ? { address, label } : { address });
   }
-  return [...new Set(parts)];
+  return out;
 });
 
 const schema = z.object({
@@ -172,7 +196,7 @@ const schema = z.object({
   BOT_COPY_ENABLED: bool.default('false'),
 
   // === Copy trading (BOT_COPY_ENABLED) ===
-  /** Wallets to mirror, comma separated. */
+  /** Wallets to mirror. `Address` or `Address=Name`, comma or newline separated. */
   COPY_WALLETS: walletListSchema.default(''),
   /**
    * Ignore buys smaller than this. Wallets routinely make dust buys to bump a
@@ -567,4 +591,21 @@ export function config(): Config {
 /** Test seam. */
 export function __setConfigForTests(cfg: Config | null): void {
   cached = cfg;
+}
+
+/** Serialises tracked wallets back to the `Addr=Name` form the UI edits. */
+export function formatCopyWallets(wallets: readonly CopyWallet[]): string {
+  return wallets.map((w) => (w.label ? `${w.address}=${w.label}` : w.address)).join(', ');
+}
+
+/**
+ * What to call a wallet in the UI and the logs.
+ *
+ * Resolved from config at render time rather than stored on each trade, so
+ * renaming a wallet relabels its whole history instead of only new trades.
+ */
+export function walletLabel(cfg: Config, address: string | undefined | null): string {
+  if (!address) return '';
+  const found = cfg.COPY_WALLETS.find((w) => w.address === address);
+  return found?.label ?? `${address.slice(0, 4)}…${address.slice(-4)}`;
 }

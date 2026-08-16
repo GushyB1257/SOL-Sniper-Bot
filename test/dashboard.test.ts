@@ -112,6 +112,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await dash.stop();
+  store.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -359,9 +360,9 @@ describe('snapshot maths', () => {
 });
 
 /** Builds a snapshot the way the dashboard does, from the bot's own store. */
-function snapshotOf() {
+function snapshotOf(withCfg: Config = cfg) {
   return buildSnapshot({
-    cfg,
+    cfg: withCfg,
     startedAt: Date.now(),
     discovery: 'test',
     killSwitch: false,
@@ -384,6 +385,49 @@ function snapshotOf() {
     ],
   });
 }
+
+describe('wallet names', () => {
+  const WALLET = 'FoLLoW1111111111111111111111111111111111111';
+
+  function closedTrade(): TradeJournalEntry {
+    return {
+      positionId: 'p9',
+      mint: 'Mint9999999999999999999999999999999999999',
+      symbol: 'DONE',
+      creator: 'Dev1',
+      openedAt: Date.now() - 60_000,
+      closedAt: Date.now(),
+      costSol: 0.25,
+      proceedsSol: 0.5,
+      pnlSol: 0.25,
+      pnlPct: 100,
+      closeReason: 'cost_recovery',
+      safetyScore: 0,
+      holdSeconds: 60,
+      copiedFrom: WALLET,
+    };
+  }
+
+  it('relabels a closed trade when the wallet is renamed afterwards', () => {
+    // The journal stores the address, so the name is resolved at render time.
+    // Renaming a wallet has to relabel its whole history, not just new trades.
+    store.appendJournal(closedTrade());
+
+    const named = (label: string) =>
+      snapshotOf(loadConfig(env(dir, { COPY_WALLETS: `${WALLET}=${label}` })));
+
+    expect(named('Insider').bots[0]!.journal[0]!.copiedFromLabel).toBe('Insider');
+    expect(named('Renamed').bots[0]!.journal[0]!.copiedFromLabel).toBe('Renamed');
+  });
+
+  it('falls back to a short address when the wallet has no name', () => {
+    store.appendJournal(closedTrade());
+    const s = snapshotOf(loadConfig(env(dir, { COPY_WALLETS: WALLET })));
+    expect(s.bots[0]!.journal[0]!.copiedFromLabel).toBe(
+      WALLET.slice(0, 4) + '…' + WALLET.slice(-4),
+    );
+  });
+});
 
 describe('position view', () => {
   it('reports the nearest stop and ladder state', () => {
@@ -454,6 +498,30 @@ describe('page render', () => {
       expect(html, id).toContain('id="' + id + '"');
     }
     expect(html).toContain('MCap in');
+  });
+
+  it('makes the mint copyable in the trade journal, not just open positions', () => {
+    // The journal is where you look a token up after the fact, so the address
+    // has to be reachable there — one shared chip, used by both tables.
+    const script = /<script>\n([\s\S]*?)<\/script>/.exec(renderPage('t'))![1]!;
+    expect(script).toContain('function mintChip');
+    expect(script).toContain('mintChip(t.mint)');
+    expect(script).toContain('mintChip(p.mint)');
+    expect((script.match(/navigator\.clipboard\.writeText/g) ?? []).length).toBe(1);
+  });
+
+  it('shows the tracked wallet name on positions and on closed trades', () => {
+    const script = /<script>\n([\s\S]*?)<\/script>/.exec(renderPage('t'))![1]!;
+    expect(script).toContain('p.copiedFromLabel');
+    expect(script).toContain('t.copiedFromLabel');
+  });
+
+  it('names the wallets in the tracked-wallets card', () => {
+    // Naming a wallet is pointless if the one card devoted to wallets still
+    // only shows the address.
+    const script = /<script>\n([\s\S]*?)<\/script>/.exec(renderPage('t'))![1]!;
+    const card = script.slice(script.indexOf('function renderCopy'));
+    expect(card.slice(0, card.indexOf('function srow'))).toContain('w.label');
   });
 
   it('does not rebuild the settings form on every refresh', () => {

@@ -131,6 +131,13 @@ To use the copy trader: click its tab, hit **Start Copy trader**, open
 make tiny buys just to bump a token's volume on screeners, and 0.5 SOL filters
 those out.
 
+Give each wallet a name while you are there: write `<address>=Insider` instead
+of the bare address and every position and trade copied from it is labelled
+*via Insider* instead of a string of base58. Rename one later and its whole
+trade history relabels with it. In the trades and positions tables the token
+address is click-to-copy — click the truncated mint and it goes to the
+clipboard, ready to paste into a chart.
+
 Every minute it also prints a one-line `SCREEN` summary in the terminal:
 how many checks it ran, which filter is doing most of the rejecting, and how
 many tokens matched versus were actually bought.

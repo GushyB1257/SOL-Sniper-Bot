@@ -1,4 +1,4 @@
-import { config, type Config } from './config.js';
+import { config, walletLabel, type Config } from './config.js';
 import { logger, setLogLevel } from './logger.js';
 import { PumpPortalDiscovery } from './discovery/pumpportal.js';
 import { RpcDiscovery } from './discovery/rpc.js';
@@ -241,7 +241,8 @@ class Supervisor {
     }
     if (id === 'sniper') return `  safety ≥${c.MIN_SAFETY_SCORE}/100, buys at creation`;
     return c.COPY_WALLETS.length > 0
-      ? `  ${c.COPY_WALLETS.length} wallet(s), ignore buys under ${c.COPY_MIN_BUY_SOL} SOL`
+      ? `  ${c.COPY_WALLETS.map((w) => walletLabel(c, w.address)).join(', ')} · ` +
+        `ignore buys under ${c.COPY_MIN_BUY_SOL} SOL`
       : '  no wallets configured';
   }
 
@@ -310,7 +311,7 @@ class Supervisor {
         }
       }
       log.info(`${bot.name}: ${bot.positions.summary()}`);
-      bot.store.flush();
+      bot.store.close();
     }
     process.exit(0);
   }

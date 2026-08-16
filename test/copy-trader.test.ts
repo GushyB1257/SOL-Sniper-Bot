@@ -8,7 +8,7 @@ import { PaperExecutor } from '../src/execution/paper.js';
 import { RiskManager } from '../src/risk/risk-manager.js';
 import { Store } from '../src/state/store.js';
 import { decideExit } from '../src/strategy/exit-planner.js';
-import { loadConfig, type Config } from '../src/config.js';
+import { formatCopyWallets, loadConfig, walletLabel, type Config } from '../src/config.js';
 import type { PriceSource } from '../src/execution/pricing.js';
 import type { BondingCurveState } from '../src/execution/bonding-curve.js';
 import type { WalletTrade } from '../src/copy/wallet-watcher.js';
@@ -111,7 +111,10 @@ function theirSell(fraction: number, balanceAfter: number, wallet = WALLET): Wal
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
 beforeEach(() => build());
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+});
 
 describe('mirroring a buy', () => {
   it('follows a real position', async () => {
@@ -313,5 +316,66 @@ describe('config guards', () => {
 
   it('rejects a size window nothing can pass', () => {
     expect(() => build({ COPY_MIN_BUY_SOL: '5', COPY_MAX_BUY_SOL: '1' })).toThrow(/must be below/);
+  });
+});
+
+describe('naming wallets', () => {
+  it('parses a bare address and a named one from the same field', () => {
+    build({ COPY_WALLETS: WALLET + '=Insider, ' + OTHER });
+    expect(cfg.COPY_WALLETS).toEqual([
+      { address: WALLET, label: 'Insider' },
+      { address: OTHER },
+    ]);
+  });
+
+  it('tolerates whitespace, newlines and duplicates', () => {
+    build({ COPY_WALLETS: `  ${WALLET} = Alpha Whale \n, ${OTHER},\n${WALLET}` });
+    expect(cfg.COPY_WALLETS).toHaveLength(2);
+    expect(cfg.COPY_WALLETS[0]).toEqual({ address: WALLET, label: 'Alpha Whale' });
+  });
+
+  it('treats an empty name as no name', () => {
+    build({ COPY_WALLETS: WALLET + '=' });
+    expect(cfg.COPY_WALLETS).toEqual([{ address: WALLET }]);
+  });
+
+  it('still rejects a bad address, name or not', () => {
+    expect(() => build({ COPY_WALLETS: 'nope=Friend' })).toThrow(/base58/);
+  });
+
+  it('falls back to a truncated address when unnamed', () => {
+    build({ COPY_WALLETS: WALLET });
+    expect(walletLabel(cfg, WALLET)).toBe(WALLET.slice(0, 4) + '…' + WALLET.slice(-4));
+  });
+
+  it('uses the name once one is set', () => {
+    build({ COPY_WALLETS: WALLET + '=Insider' });
+    expect(walletLabel(cfg, WALLET)).toBe('Insider');
+  });
+
+  it('round-trips through the form value without losing names', () => {
+    // values() feeds the settings box; a lossy render here would wipe every
+    // name the next time anything was saved.
+    build({ COPY_WALLETS: WALLET + '=Insider, ' + OTHER });
+    const text = formatCopyWallets(cfg.COPY_WALLETS);
+    expect(text).toBe(WALLET + '=Insider, ' + OTHER);
+
+    build({ COPY_WALLETS: text });
+    expect(cfg.COPY_WALLETS).toEqual([{ address: WALLET, label: 'Insider' }, { address: OTHER }]);
+  });
+
+  it('records the wallet on the trade journal so history can be labelled', async () => {
+    build({ COPY_WALLETS: WALLET + '=Insider' });
+    trader.onWalletTrade(theirBuy(32_000_000));
+    await settle();
+    trader.onWalletTrade(theirSell(1, 0));
+    await settle();
+
+    const entry = store.journal()[0]!;
+    expect(entry.copiedFrom).toBe(WALLET);
+    // The ADDRESS is stored, not the name — so renaming relabels history too.
+    expect(walletLabel(cfg, entry.copiedFrom)).toBe('Insider');
+    build({ COPY_WALLETS: WALLET + '=Renamed' });
+    expect(walletLabel(cfg, WALLET)).toBe('Renamed');
   });
 });
