@@ -200,7 +200,15 @@ export interface TunerView {
     bot: string;
     startedAt: number;
     status: string;
-    changes: Array<{ key: string; from: number; to: number; why: string; clamped?: string }>;
+    changes: Array<{
+      key: string;
+      from: number | string | boolean;
+      to: number | string | boolean;
+      why: string;
+      clamped?: string;
+      /** Moves capital at risk rather than what gets traded. */
+      risk?: boolean;
+    }>;
     baselineExpectancy: number;
     resultExpectancy?: number;
     resultTrades?: number;

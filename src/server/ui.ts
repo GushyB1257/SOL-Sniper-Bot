@@ -354,6 +354,10 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
 .tune-track { height: 5px; border-radius: 3px; background: var(--grid); margin: 8px 0 12px; overflow: hidden; }
 .tune-bar { height: 100%; background: var(--series); }
 .tune-bar.measuring { background: var(--warning); }
+.tune-risk {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.04em; padding: 1px 5px;
+  border-radius: 3px; color: #fff; background: var(--serious); flex: none;
+}
 .tune-list { border-top: 1px solid var(--grid); }
 .tune-row {
   display: flex; align-items: center; gap: 10px; padding: 6px 0;
@@ -1066,6 +1070,12 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
         var r = el('div', 'tune-row');
         var st = el('span', 'exp-status ' + e.status, e.status);
         r.appendChild(st);
+        // A change to something that moves capital at risk is never quiet.
+        if (c.risk) {
+          var rk = el('span', 'tune-risk', 'RISK');
+          rk.title = 'This parameter decides how much capital is exposed, not what gets traded.';
+          r.appendChild(rk);
+        }
         r.appendChild(el('span', 'mono tune-key', c.key));
         var mv = el('span', 'tune-move');
         mv.appendChild(el('span', 'tune-from', String(c.from)));
@@ -1130,7 +1140,10 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
 
       e.changes.forEach(function (c) {
         var row = el('div', 'exp-change');
-        row.appendChild(el('span', 'mono', c.key + ': ' + c.from + ' \u2192 ' + c.to));
+        var head = el('div', 'sym-line');
+        if (c.risk) head.appendChild(el('span', 'tune-risk', 'RISK'));
+        head.appendChild(el('span', 'mono', c.key + ': ' + c.from + ' \u2192 ' + c.to));
+        row.appendChild(head);
         row.appendChild(el('div', 'exp-why', c.why));
         if (c.clamped) row.appendChild(el('div', 'exp-clamp', 'limits applied \u2014 ' + c.clamped));
         card.appendChild(row);

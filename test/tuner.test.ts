@@ -2,8 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AutoTuner } from '../src/tuner/auto-tuner.js';
-import { TUNABLES, TUNABLE_BY_KEY, vetProposal } from '../src/tuner/limits.js';
+import {
+  AutoTuner,
+  JSON_SCHEMA as SCHEMA_FOR_TEST,
+  proposalSchema as PROPOSAL_SCHEMA_FOR_TEST,
+} from '../src/tuner/auto-tuner.js';
+import { RISK_KEYS, TUNABLES, TUNABLE_BY_KEY, vetProposal } from '../src/tuner/limits.js';
 import { TuningLedger } from '../src/tuner/ledger.js';
 import { buildEvidence, renderEvidence } from '../src/tuner/evidence.js';
 import { RuntimeSettings } from '../src/settings/runtime.js';
@@ -96,26 +100,34 @@ function cooled(t: AutoTuner): void {
 }
 
 describe('what the tuner may touch', () => {
-  it('refuses anything outside the whitelist', () => {
-    // The whole safety story rests on this list. A model that can widen its own
-    // risk limits is a way to lose everything with the dashboard showing green.
+  it('still refuses the four things that are excluded on purpose', () => {
+    // The list is broad by request, but these four are out for reasons that
+    // are not about taste:
+    //   - the tuner's own settings ARE the enforcement mechanism
+    //   - the fee constants describe the world, not a choice
+    //   - BOT_*_ENABLED are controls and go through another path
+    //   - COPY_WALLETS is the user's input, not a parameter
     for (const key of [
-      'BUY_AMOUNT_SOL',
-      'MAX_CONCURRENT_POSITIONS',
-      'DAILY_LOSS_LIMIT_SOL',
-      'HOURLY_SPEND_CAP_SOL',
-      'MAX_CONSECUTIVE_LOSSES',
-      'MIN_WALLET_RESERVE_SOL',
-      'RATCHET_STOP_LOSS_PCT',
-      'BUY_SLIPPAGE_PCT',
-      'SELL_SLIPPAGE_PCT',
+      'AUTO_TUNE_ENABLED',
+      'TUNER_INTERVAL_MINUTES',
+      'TUNER_MIN_TRADES',
+      'TUNER_MAX_CHANGES_PER_ROUND',
+      'TUNER_MAX_STEP_PCT',
+      'PROGRAM_FEE_PCT',
+      'ROUTER_FEE_PCT',
+      'SOL_USD_FALLBACK',
+      'BOT_SCREENER_ENABLED',
+      'BOT_SNIPER_ENABLED',
+      'BOT_COPY_ENABLED',
+      'COPY_WALLETS',
       'MODE',
       'EXECUTOR',
       'WALLET_PRIVATE_KEY',
-      'AUTO_TUNE_ENABLED',
+      'RPC_HTTP_URL',
+      'DATA_DIR',
     ]) {
       expect(TUNABLE_BY_KEY.has(key), `${key} must not be tunable`).toBe(false);
-      expect(vetProposal(key, 1, 2).ok).toBe(false);
+      expect(vetProposal(key, '1', 2).ok).toBe(false);
     }
   });
 
@@ -124,27 +136,134 @@ describe('what the tuner may touch', () => {
     for (const t of TUNABLES) expect(known.has(t.key), `${t.key} is not a config key`).toBe(true);
   });
 
+  it('keeps every bound inside what the config schema itself allows', () => {
+    // A bound wider than the schema's would produce a proposal that passes the
+    // tuner and is then refused whole by apply() — a wasted round every time.
+    //
+    // Each bound is checked against a FRESH config: applying them cumulatively
+    // would fail on the cross-field rules (a max age pinned to its floor while
+    // a min age is pinned to its ceiling is a genuinely invalid pair, but not
+    // one the tuner would ever produce).
+    for (const t of TUNABLES) {
+      if (t.kind !== 'number') continue;
+      for (const [edge, v] of [['min', t.min], ['max', t.max]] as const) {
+        const fresh = new RuntimeSettings(loadConfig(ENV(dir)), ENV(dir), dir);
+        const res = fresh.apply({ [t.key]: String(v) });
+        expect(res.ok, `${t.key} ${edge} ${v} rejected: ${res.error ?? ''}`).toBe(true);
+      }
+    }
+  });
+
+  it('marks the parameters that move capital at risk', () => {
+    // These are in scope by request, but a change to one should never be quiet.
+    for (const key of [
+      'BUY_AMOUNT_SOL',
+      'MAX_CONCURRENT_POSITIONS',
+      'DAILY_LOSS_LIMIT_SOL',
+      'HOURLY_SPEND_CAP_SOL',
+      'RATCHET_STOP_LOSS_PCT',
+    ]) {
+      expect(RISK_KEYS.has(key), `${key} should be flagged as risk`).toBe(true);
+    }
+    expect(RISK_KEYS.has('SCREEN_MIN_VOLUME_USD')).toBe(false);
+  });
+
   it('clamps to the hard range rather than trusting the model', () => {
     const spec = TUNABLE_BY_KEY.get('MIN_SAFETY_SCORE')!;
-    const huge = vetProposal('MIN_SAFETY_SCORE', 70, 10_000, 100);
-    expect(huge.ok && huge.value).toBe(spec.max);
-    const tiny = vetProposal('MIN_SAFETY_SCORE', 70, -5, 100);
-    expect(tiny.ok && tiny.value).toBe(spec.min);
+    const huge = vetProposal('MIN_SAFETY_SCORE', '70', 10_000, 100);
+    expect(huge.ok && Number(huge.value)).toBe(spec.max);
+    const tiny = vetProposal('MIN_SAFETY_SCORE', '70', -5, 100);
+    expect(tiny.ok && Number(tiny.value)).toBe(spec.min);
   });
 
   it('limits how far one round can move a parameter', () => {
     // This is what stops a series of individually reasonable rounds walking a
     // parameter somewhere no single round would have proposed.
-    const r = vetProposal('SCREEN_MIN_VOLUME_USD', 3000, 30_000, 30);
+    const r = vetProposal('SCREEN_MIN_VOLUME_USD', '3000', 30_000, 30);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value).toBeCloseTo(3900, 6);
+      expect(Number(r.value)).toBeCloseTo(3900, 6);
       expect(r.clamped).toMatch(/step limited/);
     }
   });
 
+  it('caps position size hard, however the evidence reads', () => {
+    // The one number where a runaway is not a bad quarter but a bad afternoon.
+    const r = vetProposal('BUY_AMOUNT_SOL', '0.25', 50, 100);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(Number(r.value)).toBeLessThanOrEqual(0.5); // 25% step off 0.25
+    const spec = TUNABLE_BY_KEY.get('BUY_AMOUNT_SOL')!;
+    expect(spec.max).toBeLessThanOrEqual(2);
+  });
+
+  it('handles booleans, enums and lists as well as numbers', () => {
+    const bool = vetProposal('REQUIRE_SOCIALS', 'true', false);
+    expect(bool.ok && bool.value).toBe('false');
+
+    const enumOk = vetProposal('EXIT_MODE', 'ratchet', 'scalp');
+    expect(enumOk.ok && enumOk.value).toBe('scalp');
+    expect(vetProposal('EXIT_MODE', 'ratchet', 'nonsense').ok).toBe(false);
+
+    const list = vetProposal('SCREEN_ALLOWED_POOLS', 'pump', 'pump,pump-amm');
+    expect(list.ok && list.value).toBe('pump,pump-amm');
+    expect(vetProposal('SCREEN_ALLOWED_POOLS', 'pump', 'pump,not-a-venue').ok).toBe(false);
+
+    const ladder = vetProposal('EXIT_LADDER', '60:40,150:30,400:20', '50:50,200:30');
+    expect(ladder.ok).toBe(true);
+    expect(vetProposal('EXIT_LADDER', '60:40', 'garbage').ok).toBe(false);
+  });
+
+  it('can move a parameter that is currently zero', () => {
+    // A percentage step off zero is zero, so without a special case a disabled
+    // setting could never be switched on again.
+    const r = vetProposal('RATCHET_STOP_LOSS_PCT', '0', 40, 30);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(Number(r.value)).toBeGreaterThan(0);
+  });
+
   it('rejects a proposal that changes nothing', () => {
-    expect(vetProposal('MOONBAG_TRIM_PCT', 25, 25).ok).toBe(false);
+    expect(vetProposal('MOONBAG_TRIM_PCT', '25', 25).ok).toBe(false);
+    expect(vetProposal('EXIT_MODE', 'ratchet', 'ratchet').ok).toBe(false);
+    expect(vetProposal('REQUIRE_SOCIALS', 'true', true).ok).toBe(false);
+  });
+});
+
+describe('the structured-output schema', () => {
+  // A schema the API rejects turns every tuning call into a 400 and the feature
+  // silently never runs — which is exactly what happened. These pin the two
+  // keywords that were not supported.
+  const schema = (AutoTuner as unknown as { prototype: object }) && SCHEMA_FOR_TEST;
+
+  function walk(node: unknown, visit: (o: Record<string, unknown>) => void): void {
+    if (!node || typeof node !== 'object') return;
+    const o = node as Record<string, unknown>;
+    visit(o);
+    for (const v of Object.values(o)) walk(v, visit);
+  }
+
+  it('uses no array keyword the API refuses', () => {
+    walk(schema, (o) => {
+      expect(o.maxItems, 'maxItems is not supported on array types').toBeUndefined();
+      expect(o.minItems, 'minItems is not supported on array types').toBeUndefined();
+    });
+  });
+
+  it('never gives a property a union of types', () => {
+    walk(schema, (o) => {
+      if ('type' in o) expect(Array.isArray(o.type), `type ${JSON.stringify(o.type)}`).toBe(false);
+    });
+  });
+
+  it('asks for values as strings, since a union is not available', () => {
+    const value = (schema as any).properties.changes.items.properties.value;
+    expect(value.type).toBe('string');
+  });
+
+  it('still enforces the change count after parsing', () => {
+    // The cap moved from the schema to our side; it has to actually be there.
+    expect(PROPOSAL_SCHEMA_FOR_TEST.safeParse({
+      changes: Array.from({ length: 20 }, () => ({ key: 'X', value: '1', why: 'y' })),
+    }).success).toBe(false);
   });
 });
 
@@ -175,11 +294,15 @@ describe('acting on evidence', () => {
   it('drops a proposal outside the whitelist and applies nothing', async () => {
     fill(12);
     const t = tunerWith({
-      changes: [{ key: 'BUY_AMOUNT_SOL', value: 5, why: 'bigger positions clear fees' }],
+      changes: [
+        // Its own minimum sample size: the thing that decides whether it is
+        // allowed to act at all.
+        { key: 'TUNER_MIN_TRADES', value: 1, why: 'I could learn faster with less data' },
+      ],
     });
     await t.tick();
 
-    expect(settings.values().BUY_AMOUNT_SOL).toBe('0.25');
+    expect(settings.values().TUNER_MIN_TRADES).toBe('10');
     expect(t.history).toHaveLength(0);
   });
 

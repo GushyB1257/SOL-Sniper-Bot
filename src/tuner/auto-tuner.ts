@@ -8,7 +8,7 @@ import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
 import type { TradeJournalEntry } from '../types.js';
 import { buildEvidence, renderEvidence, type Evidence } from './evidence.js';
-import { TUNABLES, vetProposal } from './limits.js';
+import { TUNABLES, TUNABLE_BY_KEY, vetProposal } from './limits.js';
 import { TuningLedger, type Change, type Experiment } from './ledger.js';
 
 const log = logger('tuner');
@@ -35,12 +35,12 @@ export interface TunerDeps {
   dataDir: string;
 }
 
-const proposalSchema = z.object({
+export const proposalSchema = z.object({
   changes: z
     .array(
       z.object({
         key: z.string(),
-        value: z.number(),
+        value: z.union([z.number(), z.string(), z.boolean()]),
         why: z.string().min(1),
       }),
     )
@@ -50,26 +50,39 @@ const proposalSchema = z.object({
 
 type Proposal = z.infer<typeof proposalSchema>;
 
-const JSON_SCHEMA = {
+/**
+ * Structured-output schema for a proposal.
+ *
+ * Deliberately plain. Two things the API's schema support does NOT accept, both
+ * of which silently turned every tuning call into a 400 until they were found:
+ *
+ *  - `maxItems` on an array. The count limit is enforced after parsing instead,
+ *    by the zod schema and by TUNER_MAX_CHANGES_PER_ROUND, which is where it
+ *    actually matters.
+ *  - A union of types on a property (`type: ['number','string','boolean']`).
+ *    So every value arrives as a STRING and is converted according to what the
+ *    parameter actually is — the tunable list already knows, and a string is
+ *    what gets written into the settings patch either way.
+ */
+export const JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: ['changes'],
   properties: {
     changes: {
       type: 'array',
-      maxItems: 8,
       items: {
         type: 'object',
         additionalProperties: false,
         required: ['key', 'value', 'why'],
         properties: {
           key: { type: 'string' },
-          value: { type: 'number' },
+          value: { type: 'string' },
           why: { type: 'string' },
         },
       },
     },
-    notes: { type: 'array', maxItems: 5, items: { type: 'string' } },
+    notes: { type: 'array', items: { type: 'string' } },
   },
 };
 
@@ -344,12 +357,12 @@ export class AutoTuner {
   }
 
   /** True when this exact value was already tried for this key and reverted. */
-  private wasReverted(bot: string, key: string, value: number): boolean {
+  private wasReverted(bot: string, key: string, value: number | string | boolean): boolean {
     return this.ledger
       .all()
       .filter((e) => e.bot === bot && e.status === 'reverted')
       .slice(-10)
-      .some((e) => e.changes.some((c) => c.key === key && c.to === value));
+      .some((e) => e.changes.some((c) => c.key === key && String(c.to) === String(value)));
   }
 
   /** What has already been tried, so the model is not told to rediscover it. */
@@ -374,11 +387,18 @@ export class AutoTuner {
     const knobs = TUNABLES.filter((t) => t.bot === bot || t.bot === 'shared');
     const current = this.deps.settings.values();
 
+    const bounds = (t: (typeof knobs)[number]): string => {
+      if (t.kind === 'boolean') return '[true or false]';
+      if (t.kind === 'enum') return `[one of: ${t.options?.join(' | ')}]`;
+      if (t.kind === 'text') return '[text, must match the documented format]';
+      return `[allowed ${t.min}..${t.max}, max ${t.maxStepPct}% move this round]`;
+    };
+
     const catalogue = knobs
       .map(
         (t) =>
-          `  ${t.key} = ${current[t.key] ?? '?'}  ` +
-          `[allowed ${t.min}..${t.max}, max ${t.maxStepPct}% move this round]\n    ${t.what}`,
+          `  ${t.key} = ${current[t.key] ?? '?'}  ${bounds(t)}` +
+          `${t.risk ? '  *** RISK ***' : ''}\n    ${t.what}`,
       )
       .join('\n');
 
@@ -390,11 +410,16 @@ export class AutoTuner {
         jsonSchema: JSON_SCHEMA,
         userContent:
           `${renderEvidence(evidence)}\n\n` +
-          `PARAMETERS YOU MAY CHANGE (current value, hard range, step cap):\n${catalogue}\n\n` +
+          `PARAMETERS YOU MAY CHANGE (current value, allowed values):\n${catalogue}\n\n` +
+          'Parameters marked *** RISK *** decide how much capital is exposed rather than ' +
+          'what gets traded. In live mode they move real money. Propose one only when the ' +
+          'evidence is about sizing or exposure specifically — the fee analysis above is the ' +
+          'usual justification — and never merely to see what happens.\n\n' +
           `WHAT HAS ALREADY BEEN TRIED ON THIS BOT:\n${this.historyFor(bot)}\n\n` +
           'A change marked REVERTED was measured and did not beat its baseline. Do not ' +
           'propose it again — it will be refused. Build on what was KEPT.\n\n' +
           `Propose at most ${this.deps.cfg.TUNER_MAX_CHANGES_PER_ROUND} changes, or none. ` +
+          'Give every value as a STRING: "0.35", "true", "scalp", "pump,pump-amm". ' +
           'Anything you want changed that is not in the list above goes in notes.',
       },
       proposalSchema,
@@ -420,14 +445,21 @@ export class AutoTuner {
         log.info(`${bot}: ignoring extra proposals beyond ${cfg.TUNER_MAX_CHANGES_PER_ROUND}`);
         break;
       }
-      const now = Number(current[c.key]);
-      if (!Number.isFinite(now)) {
-        log.warn(`${bot}: proposed ${c.key}, which has no current numeric value — ignored`);
+      const nowRaw = current[c.key];
+      if (nowRaw === undefined) {
+        log.warn(`${bot}: proposed ${c.key}, which is not a live setting — ignored`);
         continue;
       }
-      const vet = vetProposal(c.key, now, c.value, cfg.TUNER_MAX_STEP_PCT);
+      const spec = TUNABLE_BY_KEY.get(c.key);
+      const vet = vetProposal(
+        c.key,
+        nowRaw,
+        c.value,
+        // The step cap only means anything for numbers.
+        spec?.kind === 'number' ? cfg.TUNER_MAX_STEP_PCT : undefined,
+      );
       if (!vet.ok) {
-        log.info(`${bot}: rejected ${c.key}=${c.value} — ${vet.reason}`);
+        log.info(`${bot}: rejected ${c.key}=${String(c.value)} — ${vet.reason}`);
         continue;
       }
       // Belt and braces against the obvious loop: propose, revert, propose the
@@ -437,7 +469,14 @@ export class AutoTuner {
         log.info(`${bot}: rejected ${c.key}=${vet.value} — already tried and reverted`);
         continue;
       }
-      out.push({ key: c.key, from: now, to: vet.value, why: c.why, clamped: vet.clamped });
+      out.push({
+        key: c.key,
+        from: spec?.kind === 'number' ? Number(nowRaw) : nowRaw,
+        to: vet.typed,
+        why: c.why,
+        ...(vet.clamped && { clamped: vet.clamped }),
+        ...(spec?.risk && { risk: true }),
+      });
     }
     return out;
   }
@@ -482,5 +521,8 @@ Rules:
 - Propose NO changes when the evidence does not clearly point somewhere. "No change" is a valid and frequently correct answer, and is much better than moving something to look busy.
 - One coherent idea per round. Changing three unrelated things at once means the measurement cannot attribute the result to any of them.
 - Every change needs a specific reason citing a number you were given. "Might improve performance" is not a reason.
-- You cannot change position size, the number of concurrent positions, the daily loss limit, the hourly spend cap, the loss-streak breaker, the wallet reserve, slippage, or the stop loss. If you believe one of those is the problem, say so in notes — a human will read them.
-- Values outside the stated range, or moves larger than the stated step cap, are clamped or dropped. Propose realistic numbers rather than relying on the clamp.`;
+- Risk parameters are in scope but are not ordinary knobs. Raising position size, concurrent positions, or a loss limit increases what a mistake costs, and in live mode that is real money. Move one only when the evidence is specifically about exposure — most often the fee analysis showing positive gross P&L eaten by fixed costs — and prefer the smallest step that tests the idea. Lowering exposure needs no special justification.
+- The fee constants and the SOL price fallback are not in your list on purpose. They describe what the world charges, not what you have chosen; changing them would not make trading cheaper, only make the breakeven you are given wrong.
+- Values outside the stated range, or moves larger than the stated step cap, are clamped or dropped. Propose realistic values rather than relying on the clamp.
+- Some parameters only take effect in a particular mode — the scalp settings when EXIT_MODE is scalp, the momentum settings when ENTRY_MODE is fast, the ladder settings when EXIT_MODE is ladder. Changing one that is not in force does nothing and wastes a measurement window. Check the current EXIT_MODE and ENTRY_MODE values before proposing.
+- If you believe something you cannot reach is the problem, say so in notes — a human reads them.`;

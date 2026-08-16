@@ -7,8 +7,11 @@ const log = logger('tuner');
 /** One parameter the tuner moved, and what it was before. */
 export interface Change {
   key: string;
-  from: number;
-  to: number;
+  /** Values are typed as written: a number, an enum string, or a boolean. */
+  from: number | string | boolean;
+  to: number | string | boolean;
+  /** True when this parameter moves capital at risk rather than selection. */
+  risk?: boolean;
   /** The model's stated reason, in its own words. */
   why: string;
   /** Set when the proposal had to be trimmed to stay inside the limits. */

@@ -240,6 +240,25 @@ const CONTROL_KEYS = new Set([
   'BOT_COPY_ENABLED',
 ]);
 
+/**
+ * Every key the config schema knows about.
+ *
+ * Built from a default parse rather than written out by hand, so it cannot
+ * drift from the schema. This is the difference between "settable" and
+ * "rendered as a form field": the dashboard shows FIELDS, but the auto-tuner
+ * reaches parameters that have no field, and those still have to be writable.
+ */
+const KNOWN_KEYS = new Set(
+  Object.keys(
+    loadConfig({
+      RPC_HTTP_URL: 'https://placeholder.invalid',
+      RPC_WS_URL: 'wss://placeholder.invalid',
+      MODE: 'paper',
+      ANTHROPIC_API_KEY: '',
+    } as unknown as NodeJS.ProcessEnv),
+  ),
+);
+
 export interface ApplyResult {
   ok: boolean;
   error?: string;
@@ -337,7 +356,12 @@ export class RuntimeSettings {
         return { ok: false, error: `${key} cannot be changed from the dashboard`, changed: [] };
       }
       const spec = FIELD_BY_KEY.get(key);
-      if (!spec && !CONTROL_KEYS.has(key)) {
+      // FIELDS decides what the dashboard RENDERS; it does not decide what is
+      // settable. Anything the config schema knows about and LOCKED does not
+      // forbid can be written here — the auto-tuner reaches parameters that
+      // have no form field, and rejecting those made every such patch fail
+      // with "unknown setting". loadConfig below still has the final say.
+      if (!spec && !CONTROL_KEYS.has(key) && !KNOWN_KEYS.has(key)) {
         return { ok: false, error: `unknown setting "${key}"`, changed: [] };
       }
 
