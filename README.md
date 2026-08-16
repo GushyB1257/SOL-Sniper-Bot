@@ -33,6 +33,10 @@ Two things are deliberately **not** editable from the browser: `MODE`,
 `EXECUTOR`, the wallet key and the RPC URLs. Whether the bot is spending real
 money should require touching the machine.
 
+You cannot stop the last running bot — the attempt is refused with a message
+next to the button. Stopping a bot leaves its open positions managed and
+closable; only new entries stop.
+
 ---
 
 ## The copy trader
@@ -651,7 +655,7 @@ moonbag trim of 100%, or `ENTRY_MODE=screener` paired with `EXIT_MODE=ladder`.
 ## Development
 
 ```bash
-npm test           # 284 tests
+npm test           # 289 tests
 npm run typecheck
 npm run build
 ```

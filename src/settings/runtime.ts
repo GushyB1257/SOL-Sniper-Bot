@@ -192,6 +192,21 @@ export const FIELDS: FieldSpec[] = [
 
 const FIELD_BY_KEY = new Map(FIELDS.map((f) => [f.key, f]));
 
+/**
+ * Settings that are changed by a control rather than a form field.
+ *
+ * These are not in FIELDS because they have their own buttons — rendering a
+ * "bot enabled" dropdown next to a Start button is two ways to say the same
+ * thing. But they still have to be *accepted* here, because this is the only
+ * path that writes config. Leaving them out made every Start and Stop button
+ * fail with "unknown setting".
+ */
+const CONTROL_KEYS = new Set([
+  'BOT_SCREENER_ENABLED',
+  'BOT_SNIPER_ENABLED',
+  'BOT_COPY_ENABLED',
+]);
+
 export interface ApplyResult {
   ok: boolean;
   error?: string;
@@ -237,7 +252,7 @@ export class RuntimeSettings {
       if (typeof parsed !== 'object' || parsed === null) return {};
       const out: Record<string, string> = {};
       for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-        if (typeof v === 'string' && FIELD_BY_KEY.has(k)) out[k] = v;
+        if (typeof v === 'string' && (FIELD_BY_KEY.has(k) || CONTROL_KEYS.has(k))) out[k] = v;
       }
       return out;
     } catch (err) {
@@ -255,9 +270,9 @@ export class RuntimeSettings {
   /** Current effective value of every editable field, as display strings. */
   values(): Record<string, string> {
     const out: Record<string, string> = {};
-    for (const f of FIELDS) {
-      const raw = (this.live as unknown as Record<string, unknown>)[f.key];
-      out[f.key] = Array.isArray(raw) ? raw.join(',') : String(raw ?? '');
+    for (const key of [...FIELDS.map((f) => f.key), ...CONTROL_KEYS]) {
+      const raw = (this.live as unknown as Record<string, unknown>)[key];
+      out[key] = Array.isArray(raw) ? raw.join(',') : String(raw ?? '');
     }
     return out;
   }
@@ -282,10 +297,18 @@ export class RuntimeSettings {
         return { ok: false, error: `${key} cannot be changed from the dashboard`, changed: [] };
       }
       const spec = FIELD_BY_KEY.get(key);
-      if (!spec) return { ok: false, error: `unknown setting "${key}"`, changed: [] };
+      if (!spec && !CONTROL_KEYS.has(key)) {
+        return { ok: false, error: `unknown setting "${key}"`, changed: [] };
+      }
 
       const str =
         typeof value === 'boolean' ? String(value) : value === null ? '' : String(value).trim();
+      if (!spec) {
+        // A control key: boolean, no field spec to validate against. loadConfig
+        // still has the final say below.
+        next[key] = str;
+        continue;
+      }
 
       if (spec.kind === 'number' && str !== '' && !Number.isFinite(Number(str))) {
         return { ok: false, error: `${spec.label} must be a number`, changed: [] };
@@ -310,10 +333,10 @@ export class RuntimeSettings {
     }
 
     const changed: string[] = [];
-    for (const f of FIELDS) {
-      const before = (this.live as unknown as Record<string, unknown>)[f.key];
-      const after = (candidate as unknown as Record<string, unknown>)[f.key];
-      if (JSON.stringify(before) !== JSON.stringify(after)) changed.push(f.key);
+    for (const key of [...FIELDS.map((f) => f.key), ...CONTROL_KEYS]) {
+      const before = (this.live as unknown as Record<string, unknown>)[key];
+      const after = (candidate as unknown as Record<string, unknown>)[key];
+      if (JSON.stringify(before) !== JSON.stringify(after)) changed.push(key);
     }
 
     // Copy onto the shared object rather than swapping the reference, so every

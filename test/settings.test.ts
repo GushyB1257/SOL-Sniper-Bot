@@ -57,6 +57,62 @@ describe('applying a patch', () => {
   });
 });
 
+describe('starting and stopping bots', () => {
+  // These are set by buttons rather than form fields, so they are not in
+  // FIELDS — but they still go through apply(), which is the only path that
+  // writes config. Leaving them out made every Start and Stop button fail.
+  it('accepts every bot enable key', () => {
+    const settings = new RuntimeSettings(cfg, env, dir);
+    for (const key of ['BOT_SNIPER_ENABLED', 'BOT_COPY_ENABLED']) {
+      const r = settings.apply({ [key]: 'true' });
+      expect(r.ok, key + ': ' + (r.error ?? '')).toBe(true);
+      expect(r.changed, key).toContain(key);
+    }
+    expect(cfg.BOT_SNIPER_ENABLED).toBe(true);
+    expect(cfg.BOT_COPY_ENABLED).toBe(true);
+
+    // And the screener's own Stop/Start, which was broken by the same bug.
+    expect(settings.apply({ BOT_SCREENER_ENABLED: 'false' }).ok).toBe(true);
+    expect(cfg.BOT_SCREENER_ENABLED).toBe(false);
+    expect(settings.apply({ BOT_SCREENER_ENABLED: 'true' }).changed).toContain(
+      'BOT_SCREENER_ENABLED',
+    );
+  });
+
+  it('will not let you stop the last one running', () => {
+    const settings = new RuntimeSettings(cfg, env, dir);
+    const r = settings.apply({ BOT_SCREENER_ENABLED: 'false' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/nothing would run/);
+    expect(cfg.BOT_SCREENER_ENABLED).toBe(true);
+  });
+
+  it('starts the copy bot before any wallets are configured', () => {
+    // Start it, then paste the wallets in — refusing here would look like a
+    // broken button rather than a validation rule.
+    const settings = new RuntimeSettings(cfg, env, dir);
+    expect(cfg.COPY_WALLETS).toEqual([]);
+    expect(settings.apply({ BOT_COPY_ENABLED: 'true' }).ok).toBe(true);
+    expect(cfg.BOT_COPY_ENABLED).toBe(true);
+  });
+
+  it('remembers which bots were running across a restart', () => {
+    new RuntimeSettings(cfg, env, dir).apply({ BOT_COPY_ENABLED: 'true' });
+    const fresh = loadConfig(baseEnv());
+    expect(fresh.BOT_COPY_ENABLED).toBe(false);
+    new RuntimeSettings(fresh, baseEnv(), dir);
+    expect(fresh.BOT_COPY_ENABLED).toBe(true);
+  });
+
+  it('stops one bot happily while another is running', () => {
+    const settings = new RuntimeSettings(cfg, env, dir);
+    settings.apply({ BOT_SNIPER_ENABLED: 'true' });
+    expect(settings.apply({ BOT_SCREENER_ENABLED: 'false' }).ok).toBe(true);
+    expect(cfg.BOT_SCREENER_ENABLED).toBe(false);
+    expect(cfg.BOT_SNIPER_ENABLED).toBe(true);
+  });
+});
+
 describe('rejection', () => {
   it('runs the same validation the process boots with', () => {
     const settings = new RuntimeSettings(cfg, env, dir);

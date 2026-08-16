@@ -335,6 +335,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     <button id="botToggle">—</button>
     <button id="botPause">—</button>
     <span class="state" id="botState"></span>
+    <span class="set-msg" id="botMsg"></span>
   </div>
 
   <div id="banners"></div>
@@ -1043,7 +1044,14 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     });
   }
 
+  var lastBotState = '';
   function renderBotControls(b) {
+    var state = b.id + ':' + b.enabled + ':' + b.paused;
+    if (state !== lastBotState) {
+      lastBotState = state;
+      var m = $('botMsg');
+      if (m) { m.textContent = ''; m.className = 'set-msg'; }
+    }
     var toggle = $('botToggle');
     toggle.textContent = b.enabled ? 'Stop ' + b.name : 'Start ' + b.name;
     toggle.className = b.enabled ? '' : 'primary';
@@ -1294,20 +1302,37 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
   }
 
   // ---- controls --------------------------------------------------------
+  // Failures here go next to the button that was pressed. They used to be
+  // written into the Settings tab's message line, which is a different tab —
+  // so a rejected Start looked exactly like a button that did nothing.
+  function botMsg(text, cls) {
+    var m = $('botMsg');
+    m.textContent = text || '';
+    m.className = 'set-msg ' + (cls || '');
+  }
+
+  function botAction(path, body, verb) {
+    botMsg(verb + '\u2026', '');
+    return post(path, body)
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+      .then(function (res) {
+        botMsg(res.ok ? '' : (res.body && res.body.error) || (verb + ' failed'), res.ok ? '' : 'err');
+      })
+      .catch(function () { botMsg(verb + ' failed — no response from the bot', 'err'); });
+  }
+
   $('botToggle').addEventListener('click', function () {
     if (!snap) return;
     var b = currentBot(snap);
     var next = !b.enabled;
     if (!next && !window.confirm('Stop ' + b.name + '? Open positions keep being managed.')) return;
-    post('/api/bots/toggle', { id: b.id, enabled: next })
-      .then(function (r) { return r.json(); })
-      .then(function (j) { if (j && j.error) setMsg(j.error, 'err'); });
+    botAction('/api/bots/toggle', { id: b.id, enabled: next }, next ? 'Starting' : 'Stopping');
   });
 
   $('botPause').addEventListener('click', function () {
     if (!snap) return;
     var b = currentBot(snap);
-    post('/api/bots/pause', { id: b.id, paused: !b.paused });
+    botAction('/api/bots/pause', { id: b.id, paused: !b.paused }, b.paused ? 'Resuming' : 'Pausing');
   });
 
   $('setSave').addEventListener('click', function () {

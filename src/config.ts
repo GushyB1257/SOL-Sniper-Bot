@@ -459,12 +459,10 @@ function crossValidate(cfg: Config): string[] {
     );
   }
 
-  if (cfg.BOT_COPY_ENABLED && cfg.COPY_WALLETS.length === 0) {
-    errors.push(
-      'BOT_COPY_ENABLED=true but COPY_WALLETS is empty — there is nothing to copy. ' +
-        'Add wallets on the Copy tab of the dashboard, or in COPY_WALLETS.',
-    );
-  }
+  // Deliberately NOT an error: the dashboard is the config surface now, so
+  // "start the bot, then paste the wallets in" is the natural order. Enabling
+  // it with no wallets is inert and the UI says so on the tab; refusing to
+  // start would just look like a broken button.
 
   if (cfg.COPY_MAX_BUY_SOL > 0 && cfg.COPY_MIN_BUY_SOL >= cfg.COPY_MAX_BUY_SOL) {
     errors.push(

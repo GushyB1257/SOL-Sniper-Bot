@@ -88,6 +88,14 @@ export class WalletWatcher {
       void this.poll().catch((err) => log.error(`Poll failed: ${errMessage(err)}`));
     }, this.cfg.COPY_POLL_INTERVAL_MS);
     this.timer.unref?.();
+
+    if (this.cfg.COPY_WALLETS.length === 0) {
+      // Running with nothing to track is a valid state — you start the bot and
+      // then paste addresses in — but it is worth saying once, because
+      // otherwise a bot that will never trade looks identical to a broken one.
+      log.warn('Copy trader started with NO wallets. Add them on the Copy tab under Settings.');
+      return;
+    }
     log.info(
       `Tracking ${this.cfg.COPY_WALLETS.length} wallet(s) every ${this.cfg.COPY_POLL_INTERVAL_MS}ms`,
     );

@@ -299,8 +299,12 @@ describe('the exit planner leaves copied positions alone', () => {
 });
 
 describe('config guards', () => {
-  it('refuses to enable the copy bot with no wallets', () => {
-    expect(() => build({ COPY_WALLETS: '' })).toThrow(/nothing to copy/);
+  it('starts with no wallets rather than refusing to run', () => {
+    // The dashboard is the config surface, so "start it, then paste the
+    // wallets in" is the natural order. Refusing to start would look like a
+    // broken button; the bot is simply inert until wallets exist.
+    expect(() => build({ COPY_WALLETS: '' })).not.toThrow();
+    expect(cfg.COPY_WALLETS).toEqual([]);
   });
 
   it('rejects an address that is not base58', () => {
