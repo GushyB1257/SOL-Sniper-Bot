@@ -104,6 +104,15 @@ export interface Position {
   safetyScore: number;
   /** Free-form notes appended over the position's life, for the trade journal. */
   notes: string[];
+
+  /** Analyst's expected upside, when the AI strategy opened this position. */
+  aiTargetGainPct?: number;
+  /**
+   * Drawdown at which the analyst's thesis is disproven. Used as the stop when
+   * it is TIGHTER than the configured one — the mechanical stop is a floor the
+   * model is never allowed to widen.
+   */
+  aiInvalidationPct?: number;
 }
 
 export type ExitReason =
@@ -115,6 +124,8 @@ export type ExitReason =
   | 'max_hold'
   | 'rug_detected'
   | 'manual'
+  | 'ai_exit'
+  | 'ai_trim'
   | 'shutdown';
 
 /** An instruction produced by the strategy for the executor to carry out. */

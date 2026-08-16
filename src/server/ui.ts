@@ -314,6 +314,17 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
     <div class="card"><h2>Seen</h2><div class="tile-val num" id="kSeen">—</div><div class="tile-note" id="kSeenSub">—</div></div>
   </div>
 
+  <div class="grid g-half hidden" id="aiRow">
+    <div class="card">
+      <h2>AI analyst <span class="sub" id="aiModel"></span></h2>
+      <div id="aiStats"></div>
+    </div>
+    <div class="card">
+      <h2>AI spend <span class="sub">estimated, at list prices</span></h2>
+      <div id="aiSpend"></div>
+    </div>
+  </div>
+
   <div class="grid g-half">
     <div class="card">
       <h2>Open positions</h2>
@@ -768,6 +779,53 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
     }
   }
 
+  // ---- AI analyst ------------------------------------------------------
+  function renderAi(ai) {
+    var row = $('aiRow');
+    if (!ai || !ai.enabled) { row.classList.add('hidden'); return; }
+    row.classList.remove('hidden');
+    $('aiModel').textContent = ai.model;
+
+    var stats = $('aiStats');
+    stats.innerHTML = '';
+    function srow(label, text, cls) {
+      var r = el('div', 'hs-row');
+      r.appendChild(el('span', 'hs-lab', label));
+      r.appendChild(el('span', 'hs-val ' + (cls || ''), text));
+      stats.appendChild(r);
+    }
+    srow('Tokens on watchlist', ai.watching);
+    srow('Sent to analyst', ai.evaluated);
+    srow('Bought', ai.bought, ai.bought > 0 ? 'pos' : '');
+    srow('Passed', ai.passed);
+    srow('Position reviews', ai.reviews);
+    if (ai.refusals > 0) srow('Refusals', ai.refusals, 'neg');
+    if (ai.errors > 0) srow('API errors', ai.errors, 'neg');
+    if (ai.budgetBlocked > 0) srow('Blocked by budget', ai.budgetBlocked, 'neg');
+
+    var spend = $('aiSpend');
+    spend.innerHTML = '';
+    var used = ai.estimatedCostUsd;
+    var cap = ai.dailyBudgetUsd;
+    spend.appendChild(meter('Daily AI budget', '$' + used.toFixed(3) + ' / $' + cap.toFixed(2),
+      cap > 0 ? used / cap : 0,
+      used >= cap ? 'Budget reached — analyst paused until tomorrow.' : null));
+
+    var sub = el('div', 'hero-stats');
+    spend.appendChild(sub);
+    function trow(label, text) {
+      var r = el('div', 'hs-row');
+      r.appendChild(el('span', 'hs-lab', label));
+      r.appendChild(el('span', 'hs-val', text));
+      sub.appendChild(r);
+    }
+    trow('API calls', ai.calls);
+    trow('Cost per call', ai.calls > 0 ? '$' + (used / ai.calls).toFixed(4) : '—');
+    trow('Input tokens', ai.inputTokens.toLocaleString());
+    trow('Output tokens', ai.outputTokens.toLocaleString());
+    trow('Served from cache', ai.cacheReadTokens.toLocaleString());
+  }
+
   // ---- main render -----------------------------------------------------
   function render(s) {
     snap = s;
@@ -828,6 +886,7 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
     $('kSeen').textContent = s.stats.seen;
     $('kSeenSub').textContent = s.stats.evaluated + ' screened · ' + s.stats.rejected + ' rejected';
 
+    renderAi(s.ai);
     renderBanners(s);
     drawEquity(s.equity);
     renderMeters(s.risk);

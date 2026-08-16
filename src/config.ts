@@ -113,6 +113,31 @@ const schema = z.object({
   BREAKER_COOLDOWN_SECONDS: num(0, 86400).default(1800),
   HOURLY_SPEND_CAP_SOL: num(0, 1000).default(0.5),
 
+  // === AI analyst ===
+  /** ai: Claude decides entries and exits. rules: the original deterministic sniper. */
+  STRATEGY: z.enum(['ai', 'rules']).default('ai'),
+  ANTHROPIC_API_KEY: z.string().default(''),
+  AI_MODEL: z.string().default('claude-opus-5'),
+  AI_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('high'),
+  AI_TIMEOUT_MS: num(5_000, 300_000).default(60_000),
+  /** Minimum confidence (0-100) the analyst must return before we act. */
+  AI_MIN_CONFIDENCE: num(0, 100).default(65),
+  /** Seconds between re-reviews of each open position. */
+  AI_REVIEW_INTERVAL_SECONDS: num(15, 3600).default(90),
+  /** Hard ceiling on analyst calls per hour, so a bad night can't run up a bill. */
+  AI_MAX_CALLS_PER_HOUR: num(1, 10_000).default(60),
+  /** Stop making calls once estimated spend for the UTC day exceeds this. */
+  AI_DAILY_BUDGET_USD: num(0, 10_000).default(10),
+
+  // === Watchlist / traction gate ===
+  WATCHLIST_MAX_SIZE: num(10, 20_000).default(1500),
+  WATCH_MIN_AGE_SECONDS: num(5, 3600).default(90),
+  WATCH_MAX_AGE_SECONDS: num(30, 86_400).default(1800),
+  MIN_UNIQUE_BUYERS: num(1, 10_000).default(25),
+  MIN_BUY_VOLUME_SOL: num(0, 10_000).default(3),
+  MIN_PRICE_CHANGE_PCT: z.coerce.number().default(-10),
+  MIN_RECENT_BUYERS: num(0, 1000).default(4),
+
   DISCOVERY_SOURCE: z.enum(['pumpportal', 'rpc']).default('pumpportal'),
   PUMPPORTAL_WS_URL: z.string().url().default('wss://pumpportal.fun/api/data'),
   MAX_CANDIDATE_AGE_MS: num(100, 600000).default(5000),
@@ -149,6 +174,20 @@ function crossValidate(cfg: Config): string[] {
           'Set RPC_HTTP_URL/RPC_WS_URL to a paid node.',
       );
     }
+  }
+
+  if (cfg.STRATEGY === 'ai' && !cfg.ANTHROPIC_API_KEY) {
+    errors.push(
+      'STRATEGY=ai requires ANTHROPIC_API_KEY. Get one at console.anthropic.com, ' +
+        'or set STRATEGY=rules to run the deterministic sniper instead.',
+    );
+  }
+
+  if (cfg.WATCH_MIN_AGE_SECONDS >= cfg.WATCH_MAX_AGE_SECONDS) {
+    errors.push(
+      `WATCH_MIN_AGE_SECONDS (${cfg.WATCH_MIN_AGE_SECONDS}) must be below ` +
+        `WATCH_MAX_AGE_SECONDS (${cfg.WATCH_MAX_AGE_SECONDS}); nothing would ever graduate`,
+    );
   }
 
   // A trailing stop looser than the hard stop is dead code: the hard stop always

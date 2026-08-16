@@ -12,6 +12,7 @@ const BASE_ENV = {
   RPC_HTTP_URL: 'https://rpc.example.com',
   RPC_WS_URL: 'wss://rpc.example.com',
   MODE: 'paper',
+  ANTHROPIC_API_KEY: 'sk-ant-test',
 } as unknown as NodeJS.ProcessEnv;
 
 function cfg(overrides: Record<string, string> = {}) {
@@ -218,5 +219,37 @@ describe('positionPnl', () => {
     // 0.06 realised + 0.01 unrealised - 0.05 cost = 0.02
     expect(pnl.sol).toBeCloseTo(0.02);
     expect(pnl.pct).toBeCloseTo(40);
+  });
+});
+
+describe('AI invalidation level vs the mechanical stop', () => {
+  const c = cfg(); // STOP_LOSS_PCT defaults to 35
+
+  it('uses the analyst level when it is tighter', () => {
+    const p = position({ aiInvalidationPct: 15 });
+    const order = decideExit({ position: p, price: p.entryPrice * 0.8, cfg: c, now: Date.now() });
+    expect(order?.reason).toBe('stop_loss');
+    expect(order?.detail).toContain('-15%');
+  });
+
+  it('IGNORES an analyst level that is looser than the configured stop', () => {
+    // The whole point: a model cannot talk the bot into holding past the floor.
+    const p = position({ aiInvalidationPct: 80 });
+    const order = decideExit({ position: p, price: p.entryPrice * 0.6, cfg: c, now: Date.now() });
+    expect(order?.reason).toBe('stop_loss');
+    expect(order?.detail).toContain('-35%');
+  });
+
+  it('falls back to the configured stop when the analyst gave no level', () => {
+    const p = position();
+    const order = decideExit({ position: p, price: p.entryPrice * 0.6, cfg: c, now: Date.now() });
+    expect(order?.reason).toBe('stop_loss');
+    expect(order?.detail).toContain('-35%');
+  });
+
+  it('still holds above the tighter analyst level', () => {
+    const p = position({ aiInvalidationPct: 15 });
+    const order = decideExit({ position: p, price: p.entryPrice * 0.9, cfg: c, now: Date.now() });
+    expect(order).toBeNull();
   });
 });

@@ -67,8 +67,18 @@ export function decideExit(ctx: ExitContext): ExitOrder | null {
 
   // 2. Hard stop loss. Applies whether or not rungs have filled — if price is
   //    this far below entry the thesis is dead.
-  if (gainPct <= -cfg.STOP_LOSS_PCT) {
-    return closeAll('stop_loss', `down ${gainPct.toFixed(1)}% (stop ${-cfg.STOP_LOSS_PCT}%)`);
+  //
+  //    When the analyst supplied its own invalidation level, the TIGHTER of the
+  //    two wins. The model may cut sooner than the configured stop; it may
+  //    never push the stop wider, so no thesis can talk the bot into holding
+  //    past the mechanical floor.
+  const stopPct =
+    p.aiInvalidationPct !== undefined
+      ? Math.min(cfg.STOP_LOSS_PCT, p.aiInvalidationPct)
+      : cfg.STOP_LOSS_PCT;
+
+  if (gainPct <= -stopPct) {
+    return closeAll('stop_loss', `down ${gainPct.toFixed(1)}% (stop ${-stopPct}%)`);
   }
 
   // 3. Trailing stops, measured from the peak since entry.

@@ -85,6 +85,25 @@ export interface ConfigRow {
   value: string;
 }
 
+export interface AiView {
+  enabled: boolean;
+  model: string;
+  watching: number;
+  evaluated: number;
+  bought: number;
+  passed: number;
+  reviews: number;
+  budgetBlocked: number;
+  calls: number;
+  refusals: number;
+  errors: number;
+  estimatedCostUsd: number;
+  dailyBudgetUsd: number;
+  cacheReadTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface Snapshot {
   now: number;
   startedAt: number;
@@ -103,6 +122,7 @@ export interface Snapshot {
   config: ConfigRow[];
   log: LogEntry[];
   creatorsTracked: number;
+  ai: AiView | null;
 }
 
 /** Settings whose values must never reach the browser. */
@@ -291,10 +311,11 @@ export interface SnapshotInput {
   discovery: string;
   killSwitch: boolean;
   walletBalanceSol: number | null;
+  ai: AiView | null;
 }
 
 export function buildSnapshot(input: SnapshotInput): Snapshot {
-  const { cfg, store, stats, startedAt, discovery, killSwitch, walletBalanceSol } = input;
+  const { cfg, store, stats, startedAt, discovery, killSwitch, walletBalanceSol, ai } = input;
   const now = Date.now();
 
   const open = store.openPositions();
@@ -350,5 +371,6 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
     config: configRows(cfg),
     log: [...recentLogs(150)].reverse(),
     creatorsTracked: store.creatorCount(),
+    ai,
   };
 }

@@ -10,6 +10,7 @@ const BASE_ENV = {
   RPC_HTTP_URL: 'https://rpc.example.com',
   RPC_WS_URL: 'wss://rpc.example.com',
   MODE: 'paper',
+  ANTHROPIC_API_KEY: 'sk-ant-test',
   BUY_AMOUNT_SOL: '0.05',
   MAX_CONCURRENT_POSITIONS: '3',
   DAILY_LOSS_LIMIT_SOL: '0.5',

@@ -22,6 +22,19 @@ interface NewTokenMessage {
   symbol?: unknown;
   uri?: unknown;
   pool?: unknown;
+  tokenAmount?: unknown;
+}
+
+/** A buy or sell on a token we asked the feed to stream. */
+export interface TradeEvent {
+  mint: string;
+  trader: string;
+  side: 'buy' | 'sell';
+  solAmount: number;
+  tokenAmount: number;
+  vSolInCurve?: number;
+  marketCapSol?: number;
+  at: number;
 }
 
 const KNOWN_POOLS: readonly Pool[] = [
@@ -59,11 +72,55 @@ export class PumpPortalDiscovery implements Discovery {
   private heartbeat: NodeJS.Timeout | null = null;
   private lastMessageAt = 0;
 
+  /** Mints we are streaming trades for, so they can be re-subscribed on reconnect. */
+  private tracked = new Set<string>();
+  private onTrade: ((t: TradeEvent) => void) | null = null;
+
   constructor(private readonly url: string) {}
 
   async start(onCandidate: (c: TokenCandidate) => void): Promise<void> {
     this.stopped = false;
     void this.connectLoop(onCandidate);
+  }
+
+  /** Registers the handler for trades on tracked tokens. */
+  onTradeEvent(handler: (t: TradeEvent) => void): void {
+    this.onTrade = handler;
+  }
+
+  /**
+   * Streams trades for these mints.
+   *
+   * Batched because the feed is metered per event and a subscribe call per
+   * token would be both chattier and slower. Subscriptions are remembered and
+   * replayed after a reconnect — otherwise a dropped socket silently stops the
+   * traction data for everything already being watched, and the watchlist goes
+   * quietly blind rather than erroring.
+   */
+  trackTrades(mints: string[]): void {
+    const fresh = mints.filter((m) => !this.tracked.has(m));
+    if (fresh.length === 0) return;
+    for (const m of fresh) this.tracked.add(m);
+    this.sendSubscribe(fresh);
+  }
+
+  untrackTrades(mints: string[]): void {
+    const known = mints.filter((m) => this.tracked.has(m));
+    if (known.length === 0) return;
+    for (const m of known) this.tracked.delete(m);
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ method: 'unsubscribeTokenTrade', keys: known }));
+    }
+  }
+
+  private sendSubscribe(mints: string[]): void {
+    if (this.ws?.readyState !== WebSocket.OPEN || mints.length === 0) return;
+    // Chunked: a single enormous keys array risks being rejected outright.
+    for (let i = 0; i < mints.length; i += 100) {
+      this.ws.send(
+        JSON.stringify({ method: 'subscribeTokenTrade', keys: mints.slice(i, i + 100) }),
+      );
+    }
   }
 
   private async connectLoop(onCandidate: (c: TokenCandidate) => void): Promise<void> {
@@ -101,6 +158,11 @@ export class PumpPortalDiscovery implements Discovery {
         this.reconnectAttempt = 0;
         this.lastMessageAt = Date.now();
         ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
+        // Restore trade subscriptions the previous socket was carrying.
+        if (this.tracked.size > 0) {
+          log.info(`Re-subscribing to trades for ${this.tracked.size} tracked token(s)`);
+          this.sendSubscribe([...this.tracked]);
+        }
         this.startHeartbeat(ws);
       });
 
@@ -112,6 +174,20 @@ export class PumpPortalDiscovery implements Discovery {
         } catch {
           return; // subscription acks and keepalives aren't always JSON
         }
+
+        const txType = str(msg.txType);
+        if (txType === 'buy' || txType === 'sell') {
+          const trade = this.toTrade(msg, txType);
+          if (trade && this.onTrade) {
+            try {
+              this.onTrade(trade);
+            } catch (err) {
+              log.error(`Trade handler threw for ${trade.mint}: ${errMessage(err)}`);
+            }
+          }
+          return;
+        }
+
         const candidate = this.toCandidate(msg);
         if (candidate) {
           try {
@@ -150,6 +226,22 @@ export class PumpPortalDiscovery implements Discovery {
       clearInterval(this.heartbeat);
       this.heartbeat = null;
     }
+  }
+
+  private toTrade(msg: NewTokenMessage, side: 'buy' | 'sell'): TradeEvent | null {
+    const mint = str(msg.mint);
+    const trader = str(msg.traderPublicKey);
+    if (!mint || !trader || !this.tracked.has(mint)) return null;
+    return {
+      mint,
+      trader,
+      side,
+      solAmount: numOrUndef(msg.solAmount) ?? 0,
+      tokenAmount: numOrUndef(msg.tokenAmount) ?? 0,
+      vSolInCurve: numOrUndef(msg.vSolInBondingCurve),
+      marketCapSol: numOrUndef(msg.marketCapSol),
+      at: Date.now(),
+    };
   }
 
   private toCandidate(msg: NewTokenMessage): TokenCandidate | null {

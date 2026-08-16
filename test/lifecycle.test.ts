@@ -15,6 +15,7 @@ const BASE_ENV = {
   RPC_HTTP_URL: 'https://rpc.example.com',
   RPC_WS_URL: 'wss://rpc.example.com',
   MODE: 'paper',
+  ANTHROPIC_API_KEY: 'sk-ant-test',
   BUY_AMOUNT_SOL: '0.05',
   EXIT_LADDER: '60:40,150:30,400:20',
 } as unknown as NodeJS.ProcessEnv;

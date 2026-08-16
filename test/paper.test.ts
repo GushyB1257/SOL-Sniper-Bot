@@ -55,6 +55,7 @@ beforeEach(() => {
     RPC_HTTP_URL: 'https://rpc.example.com',
     RPC_WS_URL: 'wss://rpc.example.com',
     MODE: 'paper',
+  ANTHROPIC_API_KEY: 'sk-ant-test',
     DATA_DIR: dir,
   } as unknown as NodeJS.ProcessEnv);
   prices = new StubPrices();

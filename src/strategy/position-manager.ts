@@ -183,6 +183,44 @@ export class PositionManager {
     }
   }
 
+  /**
+   * Exit entry point for callers OUTSIDE the tick loop — the AI reviewer, the
+   * dashboard. Takes the per-position lock, so an externally-driven sell can
+   * never interleave with a stop loss firing on the same position and sell the
+   * same tokens twice.
+   *
+   * `closeOut` deliberately does not lock: its callers already hold it, and the
+   * mutex is not reentrant.
+   *
+   * Pass `qty` to trim; omit it to close the whole position.
+   */
+  async externalExit(
+    p: Position,
+    reason: ExitOrder['reason'],
+    detail: string,
+    qty?: number,
+  ): Promise<void> {
+    await this.locks.run(p.id, async () => {
+      // Re-read under the lock: the position may have closed while we waited.
+      const current = this.store.getPosition(p.id);
+      if (!current || current.status !== 'open') return;
+
+      const closeAll = qty === undefined;
+      const sellQty = closeAll ? current.remainingQty : Math.min(qty, current.remainingQty);
+      if (sellQty <= 0) return;
+
+      await this.executeExit(current, {
+        mint: current.mint,
+        positionId: current.id,
+        qty: sellQty,
+        reason,
+        closeAll,
+        tierIndexes: [],
+        detail,
+      });
+    });
+  }
+
   /** Force-sells everything, e.g. on shutdown or a detected rug. */
   async closeOut(p: Position, reason: ExitOrder['reason'], detail: string): Promise<void> {
     await this.executeExit(p, {

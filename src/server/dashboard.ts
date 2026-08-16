@@ -7,7 +7,7 @@ import type { Store } from '../state/store.js';
 import type { PositionManager } from '../strategy/position-manager.js';
 import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
-import { buildSnapshot, type SessionStats, type Snapshot } from './snapshot.js';
+import { buildSnapshot, type AiView, type SessionStats, type Snapshot } from './snapshot.js';
 import { renderPage } from './ui.js';
 
 const log = logger('dashboard');
@@ -21,6 +21,8 @@ export interface DashboardDeps {
   discoveryName: string;
   startedAt: number;
   killSwitchPath: string;
+  /** Null when the deterministic strategy is running. */
+  ai?: () => AiView | null;
 }
 
 /** Push interval for connected browsers. */
@@ -248,6 +250,7 @@ export class Dashboard {
       discovery: this.deps.discoveryName,
       killSwitch: existsSync(this.deps.killSwitchPath),
       walletBalanceSol: await this.walletBalance(),
+      ai: this.deps.ai?.() ?? null,
     });
   }
 

@@ -1,11 +1,47 @@
-# SOL Sniper Bot
+# SOL Trader Bot
 
-A Solana memecoin sniper: watches for new launches, filters out the obvious
-scams, buys the survivors, and exits on a ladder that banks the stake early
-while leaving a moonbag running.
+An AI-driven Solana memecoin trader. It watches every pump.fun launch, tracks
+which ones develop real buying interest, and has **Claude judge the survivors**
+the way a human trader sifting the board would — then sizes, executes, and
+manages the position with deterministic risk controls underneath.
 
 Runs in **paper mode by default**. It will not touch real money until you
 explicitly change two settings.
+
+Two strategies ship in the box:
+
+| `STRATEGY` | What it does |
+|---|---|
+| `ai` (default) | Watchlist → traction gate → Claude entry decision → laddered exit with Claude re-reviewing the thesis |
+| `rules` | The original deterministic sniper: buys at creation on hard filters |
+
+---
+
+## Why AI, and where it actually helps
+
+Sniping at creation is a **latency race** — won in microseconds by co-located
+infrastructure. An LLM call takes 1–3 seconds, so putting Claude in that path
+makes it strictly worse, not better. Same for MEV and on-chain arbitrage: those
+are won inside a single block by custom Rust bidding in Jito auctions. AI is
+categorically the wrong tool there, and no amount of prompt engineering fixes an
+arithmetic gap of that size.
+
+**What this bot does instead is the game the clock doesn't decide.** The wallets
+that grind memecoins profitably aren't racing block times — they're looking at
+tokens that are already minutes old, with real trades and real holders, judging
+whether interest is organic and building or manufactured and about to be dumped.
+That is a judgment problem playing out over minutes, where a two-second
+inference delay costs nothing.
+
+**The edge is coverage and consistency, not superhuman insight.** A human can
+watch maybe 20–50 tokens a day carefully. This screens thousands, applies the
+same criteria to every one, and never gets tired, tilted, or FOMO'd. That is a
+real edge and it is the realistic one — "the AI knows which coin will moon" is
+not on offer.
+
+**Claude does not learn from your trades.** The model is frozen; there is no
+weight update from API use. The bot accumulates a track record and feeds
+deployer reputation back as context, but that is retrieval, not training.
 
 ---
 
@@ -77,14 +113,67 @@ documented seam: if Axiom ever ships a real API, implement five methods and set
 
 ## How it works
 
+### AI strategy (`STRATEGY=ai`, the default)
+
+A funnel, because analyst calls cost real money and most tokens don't deserve one:
+
 ```
- discovery ──► safety engine ──► risk manager ──► executor ──► position manager
- new launch    11 checks,         limits and       buy/sell      ladder, stops,
- in <1s        parallel, scored   breakers         on-chain      trade journal
-                                       │                              │
-                                       └────────► dashboard ◄─────────┘
-                                          localhost:4321, live P&L
+ every launch ─► watchlist ─► traction gate ─► Claude ─► risk ─► executor
+  ~1000s/day     free, tracks   free, cheap     paid,     sizing   paper or
+                 buy/sell flow  thresholds      ~5-30/day          on-chain
+                                                   │                   │
+                                    Claude re-reviews open positions   │
+                                    against their own thesis ──────────┤
+                                                                       │
+      mechanical stops / ladder / time stop run underneath, always ────┤
+                                                                       │
+                              dashboard ◄────────────────────────────────
+                         localhost:4321, live P&L + AI spend
 ```
+
+**1. Watchlist.** Every launch is tracked, none are bought at creation. The bot
+subscribes to each token's trades and accumulates: unique buyers vs sellers, buy
+vs sell volume, the buyer arrival rate across two 60-second windows, price path,
+curve progress, and whether the deployer has sold.
+
+**2. Traction gate (free).** Only tokens meeting *all* of these reach Claude:
+old enough to have a signal but not so old the move has happened; ≥25 unique
+buyers; ≥3 SOL of buy volume; buyers still arriving in the last 60s; deployer
+hasn't sold; sellers not outnumbering buyers. This is the main cost lever — it
+turns thousands of launches a day into a handful of API calls.
+
+**3. Claude decides.** The analyst gets a plain evidence pack — flow, price
+structure, curve position, deployer history — and returns a structured decision:
+buy or pass, a confidence score that sizes the position, a one-sentence thesis,
+named risks, a target, and the level at which its thesis is disproven. Output is
+constrained by a JSON schema, so a malformed decision can't reach the sizing
+logic at all.
+
+**4. Claude manages.** Every 90s each open position is re-judged *against its own
+thesis*: hold, trim, or exit. Not "is it up" — the ladder handles price levels —
+but "is the reason I bought this still true".
+
+**5. Deterministic floor.** The mechanical stop loss, ladder, trailing stop and
+time stop run underneath the model at all times. The analyst may cut sooner than
+the configured stop; it can **never widen it**. A model that talks itself into
+holding a rug is the exact failure this design has to survive, so that authority
+stays in code — and there's a test asserting it.
+
+### Cost control
+
+Claude Opus 5 is the default. Two hard guards, both enforced before any call:
+
+- `AI_MAX_CALLS_PER_HOUR` (default 60) — rolling hourly cap
+- `AI_DAILY_BUDGET_USD` (default $10) — stops calling once estimated spend passes it
+
+The long system prompt carries a cache breakpoint, so after the first call it
+bills at roughly a tenth of the input price. The dashboard shows live spend,
+cost per call, and cache hit volume.
+
+**Paper mode still calls the API.** No SOL is spent, but tokens are — budget
+accordingly.
+
+### `rules` strategy
 
 ### 1. Discovery (`src/discovery/`)
 
@@ -339,7 +428,7 @@ ladders leaving no moonbag, or a trailing stop tighter than the hard stop.
 ## Development
 
 ```bash
-npm test           # 92 tests
+npm test           # 120 tests
 npm run typecheck
 npm run build
 ```

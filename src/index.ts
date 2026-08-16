@@ -11,6 +11,7 @@ import { OnchainExecutor } from './execution/onchain.js';
 import { ChainPriceSource } from './execution/pricing.js';
 import { AxiomExecutor } from './execution/axiom.js';
 import { Dashboard } from './server/dashboard.js';
+import { AiOrchestrator } from './ai/orchestrator.js';
 import type { Discovery, Executor, TokenCandidate } from './types.js';
 import { connection, lamportsToSol, loadKeypair } from './util/solana.js';
 import { errMessage } from './util/async.js';
@@ -19,6 +20,9 @@ const log = logger('main');
 
 /** How often open positions are re-priced and re-evaluated for exits. */
 const TICK_INTERVAL_MS = 1500;
+
+/** How often the watchlist is swept for graduates and positions re-reviewed. */
+const AI_TICK_INTERVAL_MS = 10_000;
 
 /** Sentinel file that halts new entries. Shared by the CLI and the dashboard. */
 const KILL_SWITCH_PATH = 'STOP';
@@ -31,6 +35,10 @@ class SniperBot {
   private readonly discovery: Discovery;
   private readonly executor: Executor;
   private readonly dashboard: Dashboard | null;
+  private readonly ai: AiOrchestrator | null;
+  /** Set only when the feed supports trade streaming (pumpportal source). */
+  private feed: PumpPortalDiscovery | null = null;
+  private aiTimer: NodeJS.Timeout | null = null;
   private readonly startedAt = Date.now();
 
   private tickTimer: NodeJS.Timeout | null = null;
@@ -47,10 +55,29 @@ class SniperBot {
     this.risk = new RiskManager(cfg, this.store, KILL_SWITCH_PATH);
     this.executor = this.buildExecutor(cfg);
     this.positions = new PositionManager(cfg, this.store, this.executor, this.risk);
-    this.discovery =
-      cfg.DISCOVERY_SOURCE === 'rpc'
-        ? new RpcDiscovery(conn)
-        : new PumpPortalDiscovery(cfg.PUMPPORTAL_WS_URL);
+    if (cfg.DISCOVERY_SOURCE === 'rpc') {
+      this.discovery = new RpcDiscovery(conn);
+    } else {
+      const feed = new PumpPortalDiscovery(cfg.PUMPPORTAL_WS_URL);
+      this.feed = feed;
+      this.discovery = feed;
+    }
+
+    // AI strategy: launches go on a watchlist and are judged after they show
+    // traction, rather than bought at creation.
+    this.ai =
+      cfg.STRATEGY === 'ai'
+        ? new AiOrchestrator({
+            cfg,
+            store: this.store,
+            executor: this.executor,
+            risk: this.risk,
+            positions: this.positions,
+            walletBalance: () => this.walletBalance(),
+            trackTrades: (mints) => this.feed?.trackTrades(mints),
+            untrackTrades: (mints) => this.feed?.untrackTrades(mints),
+          })
+        : null;
 
     this.dashboard = cfg.DASHBOARD_ENABLED
       ? new Dashboard({
@@ -62,6 +89,7 @@ class SniperBot {
           discoveryName: this.discovery.name,
           startedAt: this.startedAt,
           killSwitchPath: KILL_SWITCH_PATH,
+          ai: () => this.aiView(),
         })
       : null;
   }
@@ -107,11 +135,28 @@ class SniperBot {
       }
     }
 
+    if (this.ai && this.feed) {
+      this.feed.onTradeEvent((t) => this.ai!.recordTrade(t));
+    } else if (this.ai) {
+      log.warn(
+        'AI strategy needs the pumpportal trade feed for traction data. ' +
+          'Set DISCOVERY_SOURCE=pumpportal.',
+      );
+    }
+
     await this.discovery.start((c) => this.onCandidate(c));
 
     this.tickTimer = setInterval(() => {
       void this.positions.tick().catch((err) => log.error(`Tick failed: ${errMessage(err)}`));
     }, TICK_INTERVAL_MS);
+
+    if (this.ai) {
+      // Slower cadence than the price tick: analyst calls cost money, and the
+      // decisions they drive play out over minutes, not seconds.
+      this.aiTimer = setInterval(() => {
+        void this.ai!.tick().catch((err) => log.error(`AI tick failed: ${errMessage(err)}`));
+      }, AI_TICK_INTERVAL_MS);
+    }
 
     this.installSignalHandlers();
     log.info(`Watching for launches via ${this.discovery.name}. Ctrl-C to stop.`);
@@ -124,8 +169,15 @@ class SniperBot {
     const moonbag = 100 - c.EXIT_LADDER.reduce((a, t) => a + t.sellPctOfOriginal, 0);
 
     log.info('─'.repeat(72));
-    log.info(`  SOL Sniper — mode=${c.MODE.toUpperCase()} executor=${c.EXECUTOR}`);
-    log.info(`  Size        ${c.BUY_AMOUNT_SOL} SOL/snipe, max ${c.MAX_CONCURRENT_POSITIONS} concurrent`);
+    log.info(
+      `  SOL Trader — mode=${c.MODE.toUpperCase()} strategy=${c.STRATEGY} executor=${c.EXECUTOR}`,
+    );
+    if (c.STRATEGY === 'ai') {
+      log.info(`  Analyst     ${c.AI_MODEL} @ effort=${c.AI_EFFORT}, min confidence ${c.AI_MIN_CONFIDENCE}`);
+      log.info(`  Gate        age ${c.WATCH_MIN_AGE_SECONDS}-${c.WATCH_MAX_AGE_SECONDS}s, ≥${c.MIN_UNIQUE_BUYERS} buyers, ≥${c.MIN_BUY_VOLUME_SOL} SOL volume`);
+      log.info(`  AI budget   ${c.AI_MAX_CALLS_PER_HOUR} calls/h, $${c.AI_DAILY_BUDGET_USD}/day, review every ${c.AI_REVIEW_INTERVAL_SECONDS}s`);
+    }
+    log.info(`  Size        ${c.BUY_AMOUNT_SOL} SOL/position, max ${c.MAX_CONCURRENT_POSITIONS} concurrent`);
     log.info(`  Ladder      ${ladder}, moonbag ${moonbag}%`);
     log.info(`  Stops       hard -${c.STOP_LOSS_PCT}%, trailing -${c.TRAILING_STOP_PCT}%, moonbag -${c.MOONBAG_TRAILING_STOP_PCT}%`);
     log.info(`  Time stop   ${c.TIME_STOP_SECONDS}s below +${c.TIME_STOP_MIN_GAIN_PCT}%`);
@@ -140,6 +192,14 @@ class SniperBot {
 
   private onCandidate(candidate: TokenCandidate): void {
     this.stats.seen += 1;
+
+    // In AI mode nothing is bought at creation — every launch is watched and
+    // judged later, once it has a track record to judge.
+    if (this.ai) {
+      this.ai.observe(candidate);
+      return;
+    }
+
     void this.considerCandidate(candidate).catch((err) =>
       log.error(`Candidate handling failed for ${candidate.mint}: ${errMessage(err)}`),
     );
@@ -220,6 +280,31 @@ class SniperBot {
     }
   }
 
+  /** AI stats for the dashboard, or null when the deterministic strategy runs. */
+  private aiView() {
+    if (!this.ai) return null;
+    const s = this.ai.snapshotStats();
+    const u = this.ai.usage;
+    return {
+      enabled: true,
+      model: this.cfg.AI_MODEL,
+      watching: s.watching,
+      evaluated: s.evaluated,
+      bought: s.bought,
+      passed: s.passed,
+      reviews: s.reviews,
+      budgetBlocked: s.budgetBlocked,
+      calls: u.calls,
+      refusals: u.refusals,
+      errors: u.errors,
+      estimatedCostUsd: u.estimatedCostUsd,
+      dailyBudgetUsd: this.cfg.AI_DAILY_BUDGET_USD,
+      cacheReadTokens: u.cacheReadTokens,
+      inputTokens: u.inputTokens,
+      outputTokens: u.outputTokens,
+    };
+  }
+
   private async walletBalance(): Promise<number> {
     if (this.cfg.MODE === 'paper') {
       return (this.executor as PaperExecutor).simulatedWalletSol;
@@ -263,6 +348,7 @@ class SniperBot {
     log.warn(`${signal} received, shutting down`);
 
     if (this.tickTimer) clearInterval(this.tickTimer);
+    if (this.aiTimer) clearInterval(this.aiTimer);
     await this.discovery.stop();
     await this.dashboard?.stop();
 
