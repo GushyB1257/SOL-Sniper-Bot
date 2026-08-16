@@ -54,7 +54,14 @@ export function allowedHost(hostname: string): boolean {
   return ALLOWED_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
 }
 
-function safeUrl(raw: string): URL | null {
+/**
+ * The URI as something we are willing to fetch, or null if we are not.
+ *
+ * Exported so the sniper's safety check can tell "the deployer pointed us
+ * somewhere we will not go" apart from "the gateway did not answer" — the first
+ * is a fact about the launch and the second is a fact about our afternoon.
+ */
+export function metadataUrl(raw: string): URL | null {
   let url: URL;
   try {
     url = new URL(raw);
@@ -64,6 +71,8 @@ function safeUrl(raw: string): URL | null {
   if (url.protocol !== 'https:') return null;
   return allowedHost(url.hostname) ? url : null;
 }
+
+const safeUrl = metadataUrl;
 
 /** Pulls the social links out of a token metadata document. */
 export function parseSocials(text: string): TokenSocials {

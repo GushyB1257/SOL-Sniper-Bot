@@ -1,66 +1,17 @@
-import type { Check, CheckContext } from '../types.js';
-import { cached } from '../types.js';
-import { withTimeout } from '../../util/async.js';
+import type { Check } from '../types.js';
+import { fetchSocials, metadataUrl } from '../../watchlist/metadata.js';
 
-interface TokenMetadata {
-  name?: string;
-  symbol?: string;
-  description?: string;
-  image?: string;
-  twitter?: string;
-  telegram?: string;
-  website?: string;
-  createdOn?: string;
-}
-
-/** Only these hosts are fetched — the URI is attacker-controlled. */
-const ALLOWED_METADATA_HOSTS = [
-  'ipfs.io',
-  'cf-ipfs.com',
-  'nftstorage.link',
-  'pinata.cloud',
-  'arweave.net',
-  'pump.mypinata.cloud',
-];
-
-function isSafeMetadataUrl(raw: string): URL | null {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return null;
-  }
-  // No plaintext, no file://, no gopher://, and no fetching from an arbitrary
-  // host the deployer picked — that would let any launch point us at an
-  // internal address (SSRF) or a tarpit that stalls the snipe.
-  if (url.protocol !== 'https:') return null;
-  const host = url.hostname.toLowerCase();
-  const allowed = ALLOWED_METADATA_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
-  return allowed ? url : null;
-}
-
-async function fetchMetadata(ctx: CheckContext): Promise<TokenMetadata | null> {
-  return cached(ctx, `meta:${ctx.candidate.mint}`, async () => {
-    const raw = ctx.candidate.uri;
-    if (!raw) return null;
-    const url = isSafeMetadataUrl(raw);
-    if (!url) return null;
-
-    const res = await withTimeout(
-      fetch(url, { redirect: 'error', headers: { accept: 'application/json' } }),
-      2000,
-      'metadata fetch',
-    );
-    if (!res.ok) return null;
-
-    const len = Number(res.headers.get('content-length') ?? '0');
-    if (len > 256_000) return null; // don't swallow a huge body on the hot path
-
-    const text = await withTimeout(res.text(), 1500, 'metadata body');
-    if (text.length > 256_000) return null;
-    return JSON.parse(text) as TokenMetadata;
-  });
-}
+/**
+ * The sniper reuses the screener's metadata fetcher rather than keeping its own.
+ *
+ * There were two implementations of this, and they had drifted: the screener's
+ * followed IPFS redirects with the allowlist re-checked at every hop, retried a
+ * slow gateway, and knew the difference between a document that loaded with no
+ * links and one that never loaded — while the sniper's refused redirects
+ * outright, allowed four fewer gateways, and collapsed every one of those cases
+ * into a single 20-point penalty. Two copies of a security-relevant allowlist is
+ * one too many in any case.
+ */
 
 /** Characters used to impersonate a legitimate ticker (Ｓ vs S, С vs C, ...). */
 // eslint-disable-next-line no-misleading-character-class
@@ -113,20 +64,42 @@ export const socialsCheck: Check = {
     if (!ctx.cfg.REQUIRE_SOCIALS) {
       return { passed: true, detail: 'socials check disabled' };
     }
-    const meta = await fetchMetadata(ctx);
-    if (!meta) {
-      return { passed: false, detail: 'metadata did not resolve from an allowed host' };
+
+    // Say which of these happened. One message covered four different failures,
+    // which is why "metadata did not resolve from an allowed host" turned up on
+    // launches that declared no URI at all and on ones whose gateway was busy.
+    const raw = ctx.candidate.uri;
+    if (!raw) {
+      return { passed: false, detail: 'launch declares no metadata URI' };
     }
-    const socials = [meta.twitter, meta.telegram, meta.website].filter(
-      (s): s is string => typeof s === 'string' && s.trim().length > 0,
-    );
-    if (socials.length === 0) {
+    if (!metadataUrl(raw)) {
+      return {
+        passed: false,
+        detail: `metadata URI is not an allowed https gateway: ${raw.slice(0, 80)}`,
+      };
+    }
+
+    const socials = await fetchSocials(raw);
+
+    // Could not read it. That is a fact about the gateway, not about the token,
+    // and charging the launch 20 points for it makes the filter stricter the
+    // worse our connectivity is — the same inversion as reading a mint before
+    // the node has it. Public IPFS gateways rate-limit constantly, so this is
+    // the common case, not the rare one.
+    //
+    // It does mean a deployer who parks metadata on a gateway that always fails
+    // dodges the requirement. That is worth it: the alternative penalises every
+    // honest launch whenever ipfs.io is having a bad hour.
+    if (socials.failed) {
+      return { passed: true, detail: 'metadata gateway did not answer — not held against the launch' };
+    }
+    if (socials.count === 0) {
       return { passed: false, detail: 'no twitter/telegram/website in metadata' };
     }
-    if (!meta.image) {
+    if (!socials.image) {
       return { passed: false, detail: 'metadata has socials but no image' };
     }
-    return { passed: true, detail: `${socials.length} social link(s) present` };
+    return { passed: true, detail: `${socials.count} social link(s) present` };
   },
 };
 

@@ -600,6 +600,14 @@ Use `rpc` with a paid node if you are serious. Anything older than
 `MAX_CANDIDATE_AGE_MS` (default 5s) is dropped — sniping a 30-second-old token
 is not sniping.
 
+Both sources fill in the launch's **name, symbol and metadata URI**. PumpPortal
+sends them; the `rpc` source decodes them out of the create instruction's Borsh
+arguments, using the transaction it already fetched to find the mint. It used to
+omit all three, which was not a cosmetic gap: `metadata_sanity` failed for having
+no name (−35) and `socials` failed for having no URI (−20), so every launch off
+that feed scored 45 against a threshold of 70 and the sniper could never buy
+anything at all.
+
 ### 2. Safety engine (`src/safety/`)
 
 Eleven checks run **in parallel**, each with its own timeout, so the whole
@@ -652,7 +660,21 @@ when `getAccountInfo` is the busiest call the bot makes.
 
 The metadata fetcher only resolves URIs on an allowlist of IPFS/Arweave hosts —
 the URI comes from the attacker, and an unrestricted fetch is an SSRF hole and a
-free way to stall every snipe.
+free way to stall every snipe. Redirects are followed by hand with the allowlist
+re-checked at every hop, because IPFS gateways routinely 301 to a subdomain form:
+refusing outright loses most tokens' metadata, and letting `fetch` follow them
+hands the deployer the arbitrary-host request the allowlist exists to prevent.
+
+`socials` distinguishes **"there is nothing there"** from **"we could not
+look"**. A launch that declares no URI, or points at a host we will not fetch
+from, has told us something about itself and is penalised. A gateway that
+rate-limits us has told us something about our own afternoon, and is not — that
+would make the filter stricter the worse your connectivity is, the same
+inversion as reading a mint before the node has it. Public IPFS gateways
+rate-limit constantly, so this is the common case rather than the rare one. The
+cost is that a deployer parking metadata on a permanently-failing gateway dodges
+the requirement; the alternative penalises every honest launch whenever ipfs.io
+is having a bad hour.
 
 ### 3. Risk manager (`src/risk/`)
 

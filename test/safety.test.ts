@@ -9,7 +9,7 @@ import type { Check } from '../src/safety/types.js';
 import { freezeAuthorityCheck, mintAuthorityCheck } from '../src/safety/checks/authorities.js';
 import { devBuyCheck } from '../src/safety/checks/supply.js';
 import { deployerHistoryCheck } from '../src/safety/checks/deployer.js';
-import { metadataSanityCheck } from '../src/safety/checks/metadata.js';
+import { metadataSanityCheck, socialsCheck } from '../src/safety/checks/metadata.js';
 import { createThrottledFetch, rpcBackpressureMs } from '../src/util/rpc-throttle.js';
 import { Store } from '../src/state/store.js';
 import { loadConfig, type Config } from '../src/config.js';
@@ -229,6 +229,92 @@ describe('SafetyEngine scoring', () => {
     const v = await engine.evaluate(candidate());
     expect(Date.now() - started).toBeLessThan(1000);
     expect(v.results[0]!.passed).toBe(false);
+  });
+});
+
+describe('socialsCheck', () => {
+  // No network is reachable from these, which is the point: every case below is
+  // decided before a request would be made, or by a request that cannot succeed.
+  const ctxWithUri = (uri?: string) => ({
+    candidate: candidate({ uri }),
+    conn: fakeConn,
+    cfg,
+    store,
+    cache: new Map(),
+  });
+
+  it('says the launch declared nothing, rather than blaming the host', async () => {
+    // This was the reported message. It read as "your allowlist rejected the
+    // host" on launches that had never named one — and on `DISCOVERY_SOURCE=rpc`
+    // that was every single launch, because the feed did not carry the URI.
+    const r = await socialsCheck.run(ctxWithUri(undefined));
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/declares no metadata URI/);
+  });
+
+  it('names the host when the deployer picked one we will not fetch', async () => {
+    const r = await socialsCheck.run(ctxWithUri('https://evil.example.com/meta.json'));
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/not an allowed https gateway/);
+  });
+
+  it('refuses plain http even on an allowlisted gateway', async () => {
+    const r = await socialsCheck.run(ctxWithUri('http://ipfs.io/ipfs/abc'));
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/not an allowed https gateway/);
+  });
+
+  it('rejects a host that merely ends with an allowlisted name', async () => {
+    const r = await socialsCheck.run(ctxWithUri('https://evil-ipfs.io/ipfs/abc'));
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/not an allowed https gateway/);
+  });
+
+  it('does not penalise a launch for a gateway that will not answer', async () => {
+    // The inversion this fixes: charging the token 20 points because a public
+    // IPFS gateway rate-limited us makes the filter stricter the worse our own
+    // connectivity is, which is exactly backwards.
+    const real = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error('ECONNRESET');
+    }) as typeof fetch;
+    try {
+      const r = await socialsCheck.run(ctxWithUri('https://ipfs.io/ipfs/abc'));
+      expect(r.passed).toBe(true);
+      expect(r.detail).toMatch(/not held against the launch/);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  it('penalises a document that loaded and genuinely has no links', async () => {
+    // The other side of the same coin: a gateway that answered is evidence, and
+    // "read it, there is nothing there" must stay a failure.
+    const real = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ description: 'nothing here' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch;
+    try {
+      const r = await socialsCheck.run(ctxWithUri('https://ipfs.io/ipfs/abc'));
+      expect(r.passed).toBe(false);
+      expect(r.detail).toMatch(/no twitter\/telegram\/website/);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  it('stays out of the way entirely when the requirement is off', async () => {
+    const off = loadConfig({ ...BASE_ENV, DATA_DIR: dir, REQUIRE_SOCIALS: 'false' });
+    const r = await socialsCheck.run({
+      candidate: candidate(),
+      conn: fakeConn,
+      cfg: off,
+      store,
+      cache: new Map(),
+    });
+    expect(r.passed).toBe(true);
   });
 });
 

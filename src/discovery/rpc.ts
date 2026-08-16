@@ -16,6 +16,61 @@ const CREATE_ACCOUNT_INDEX = {
   user: 7,
 } as const;
 
+/** Anchor puts an 8-byte instruction discriminator before the arguments. */
+const ANCHOR_DISCRIMINATOR_BYTES = 8;
+
+/**
+ * Longest string worth reading out of instruction data.
+ *
+ * The length prefix is attacker-controlled, so it is a claim rather than a
+ * fact. Anything past this is either corrupt or someone trying to make us
+ * allocate — and a legitimate name, symbol or metadata URI is far shorter.
+ */
+const MAX_BORSH_STRING = 512;
+
+/**
+ * Reads a Borsh string: a u32 little-endian length, then that many UTF-8 bytes.
+ *
+ * Returns null rather than throwing on anything malformed, because this runs on
+ * every launch off the log stream and one odd transaction must not stop the
+ * feed.
+ */
+function readBorshString(data: Uint8Array, offset: number): { value: string; next: number } | null {
+  if (offset + 4 > data.length) return null;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const len = view.getUint32(offset, true);
+  if (len > MAX_BORSH_STRING) return null;
+
+  const start = offset + 4;
+  const end = start + len;
+  if (end > data.length) return null;
+  return {
+    value: new TextDecoder().decode(data.subarray(start, end)),
+    next: end,
+  };
+}
+
+/**
+ * Pulls name, symbol and metadata URI out of the create instruction's arguments.
+ *
+ * These are not derivable from the account list, and without them the safety
+ * battery is judging a launch it cannot see: `metadata_sanity` fails for having
+ * no name (-35) and `socials` fails for having no URI to fetch (-20), so every
+ * launch off this feed scored 45 against a threshold of 70 and the sniper could
+ * never buy anything at all. They are already in the transaction we fetched to
+ * find the mint, so reading them costs nothing.
+ *
+ * Arguments are Borsh-encoded after the discriminator: name, symbol, uri.
+ */
+export function readCreateArgs(data: Uint8Array): { name?: string; symbol?: string; uri?: string } {
+  const name = readBorshString(data, ANCHOR_DISCRIMINATOR_BYTES);
+  if (!name) return {};
+  const symbol = readBorshString(data, name.next);
+  if (!symbol) return { name: name.value };
+  const uri = readBorshString(data, symbol.next);
+  return { name: name.value, symbol: symbol.value, uri: uri?.value };
+}
+
 /**
  * Detects launches straight from your own RPC node's log stream.
  *
@@ -85,9 +140,14 @@ export class RpcDiscovery implements Discovery {
       const user = keys.get(ix.accountKeyIndexes[CREATE_ACCOUNT_INDEX.user]!);
       if (!mint || !user) continue;
 
+      const { name, symbol, uri } = readCreateArgs(ix.data);
+
       return {
         mint: mint.toBase58(),
         creator: user.toBase58(),
+        name,
+        symbol,
+        uri,
         bondingCurveKey: curve?.toBase58(),
         pool: 'pump',
         signature,
