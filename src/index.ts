@@ -7,7 +7,16 @@ import { OnchainExecutor } from './execution/onchain.js';
 import { ChainPriceSource } from './execution/pricing.js';
 import { AxiomExecutor } from './execution/axiom.js';
 import { Dashboard } from './server/dashboard.js';
-import { TradingBot, type BotId } from './bots/bot.js';
+import { TradingBot, type BotId, type DashboardBot } from './bots/bot.js';
+import { ArbBot } from './arb/bot.js';
+
+/** Which config flag turns each bot on. */
+const ENABLE_KEYS: Record<BotId, string> = {
+  screener: 'BOT_SCREENER_ENABLED',
+  sniper: 'BOT_SNIPER_ENABLED',
+  copy: 'BOT_COPY_ENABLED',
+  arb: 'BOT_ARB_ENABLED',
+};
 import { RuntimeSettings } from './settings/runtime.js';
 import { AutoTuner } from './tuner/auto-tuner.js';
 import { SolPrice } from './util/solprice.js';
@@ -34,6 +43,7 @@ const BOT_NAMES: Record<BotId, string> = {
   screener: 'Screener',
   sniper: 'Sniper',
   copy: 'Copy trader',
+  arb: 'Arbitrage',
 };
 
 /**
@@ -50,7 +60,9 @@ class Supervisor {
   private readonly dashboard: Dashboard | null;
   private readonly settings: RuntimeSettings;
   private readonly solPrice: SolPrice;
-  private readonly bots = new Map<BotId, TradingBot>();
+  private readonly bots = new Map<BotId, DashboardBot>();
+  /** The arb strategy, kept typed so its own view can be read. */
+  private readonly arb: ArbBot;
   private feed: PumpPortalDiscovery | null = null;
 
   private tickTimer: NodeJS.Timeout | null = null;
@@ -102,6 +114,15 @@ class Supervisor {
     for (const id of ['screener', 'sniper', 'copy'] as BotId[]) {
       this.bots.set(id, new TradingBot(id, BOT_NAMES[id], deps));
     }
+    // Arbitrage is a fourth strategy rather than a fourth TradingBot: no launch
+    // feed, no position held over time, no exit planner. It shares the Store,
+    // which is what puts it inside the same auto-tuning loop as the others.
+    this.arb = new ArbBot({
+      cfg,
+      dataDir: cfg.DATA_DIR,
+      killSwitchPath: KILL_SWITCH_PATH,
+    });
+    this.bots.set('arb', this.arb);
 
     this.tuner = new AutoTuner({
       cfg,
@@ -140,17 +161,13 @@ class Supervisor {
   private enabled(id: BotId): boolean {
     if (id === 'screener') return this.cfg.BOT_SCREENER_ENABLED;
     if (id === 'sniper') return this.cfg.BOT_SNIPER_ENABLED;
+    if (id === 'arb') return this.cfg.BOT_ARB_ENABLED;
     return this.cfg.BOT_COPY_ENABLED;
   }
 
   /** Start or stop a bot without restarting the process. */
   private setBotEnabled(id: BotId, on: boolean): { ok: boolean; error?: string } {
-    const key =
-      id === 'screener'
-        ? 'BOT_SCREENER_ENABLED'
-        : id === 'sniper'
-          ? 'BOT_SNIPER_ENABLED'
-          : 'BOT_COPY_ENABLED';
+    const key = ENABLE_KEYS[id];
     const result = this.settings.apply({ [key]: String(on) });
     if (!result.ok) return { ok: false, error: result.error };
 
@@ -286,7 +303,9 @@ class Supervisor {
     if (this.shuttingDown) return;
     for (const [id, bot] of this.bots) {
       if (!bot.running || !this.enabled(id)) continue;
-      bot.onCandidate(candidate);
+      // Arbitrage does not consume the launch feed — it drives its own loop off
+      // the aggregator, so there is nothing to hand it here.
+      if (bot instanceof TradingBot) bot.onCandidate(candidate);
     }
   }
 
@@ -370,7 +389,7 @@ class Supervisor {
           log.warn(`  ${p.symbol ?? '?'} ${p.mint} — ${p.remainingQty.toFixed(0)} tokens`);
         }
       }
-      log.info(`${bot.name}: ${bot.positions.summary()}`);
+      if (bot.positions) log.info(`${bot.name}: ${bot.positions.summary()}`);
       bot.store.close();
     }
     process.exit(0);

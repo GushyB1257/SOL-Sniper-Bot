@@ -467,6 +467,22 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     </div>
   </div>
 
+  <div class="grid g-half hidden" id="arbRow">
+    <div class="card">
+      <h2>Edge economics <span class="sub">fees are fixed, the edge is not</span></h2>
+      <div id="arbEcon"></div>
+    </div>
+    <div class="card">
+      <h2>Routes last scan <span class="sub">rejects included — that is the useful part</span></h2>
+      <div class="scroll"><table>
+        <thead><tr>
+          <th>Route</th><th class="r">Net</th><th class="r">Impact</th><th>Verdict</th>
+        </tr></thead>
+        <tbody id="arbRoutes"></tbody>
+      </table></div>
+    </div>
+  </div>
+
   <div class="grid g-half hidden" id="copyRow">
     <div class="card">
       <h2>Tracked wallets</h2>
@@ -1543,6 +1559,77 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     zero_size: 'Sizing produced nothing'
   };
 
+  function renderArb(a) {
+    var row = $('arbRow');
+    if (!a) { row.classList.add('hidden'); return; }
+    row.classList.remove('hidden');
+
+    var econ = $('arbEcon');
+    econ.innerHTML = '';
+    function line(label, value, note) {
+      var r = el('div', 'kv');
+      r.appendChild(el('span', 'k', label));
+      r.appendChild(el('span', 'v', value));
+      econ.appendChild(r);
+      if (note) econ.appendChild(el('div', 'tile-note', note));
+    }
+
+    line('Cost per attempt', plain(a.costPerAttemptSol, 6) + ' SOL',
+      'Two transactions, charged per leg. Halving this is the usual reason a scanner looks profitable and is not.');
+
+    if (a.breakEvenSizeSol === null) {
+      line('Break-even size', 'n/a', 'Set a positive minimum edge to compute it.');
+    } else {
+      var short = a.tradeSizeSol < a.breakEvenSizeSol;
+      var r = el('div', 'kv');
+      r.appendChild(el('span', 'k', 'Break-even size'));
+      r.appendChild(el('span', 'v ' + (short ? 'neg' : 'pos'), plain(a.breakEvenSizeSol, 4) + ' SOL'));
+      econ.appendChild(r);
+      econ.appendChild(el('div', 'tile-note', short
+        ? 'Your size of ' + plain(a.tradeSizeSol, 4) + ' SOL is BELOW this. At that size the strategy loses money on winning trades.'
+        : 'Your size of ' + plain(a.tradeSizeSol, 4) + ' SOL clears it.'));
+    }
+
+    line('Minimum edge', a.minProfitBps.toFixed(0) + ' bps');
+    line('Best edge seen', a.bestBps.toFixed(2) + ' bps',
+      a.bestBps < a.minProfitBps
+        ? 'Nothing has cleared the floor yet. That is the normal result, not a fault.'
+        : '');
+    line('Trades this hour', String(a.tradesLastHour));
+    line('Today', signed(a.dailyPnlSol, 5) + ' SOL');
+    if (a.failureStreak > 0) line('Failure streak', String(a.failureStreak));
+    line('Last scan', a.lastScanAt ? a.lastScanMs + 'ms' : '—');
+    line('Routing through', a.tokens.length ? a.tokens.join(', ') : 'nothing configured');
+    line('Strategies', a.strategies.join(', '));
+    if (a.rateLimited > 0) {
+      line('Jupiter 429s', String(a.rateLimited),
+        'Raise the gap between quotes, or scan fewer tokens. The free tier meters per second.');
+    }
+    if (a.quoteErrors > 0) line('Quote errors', String(a.quoteErrors));
+    if (a.halted) {
+      econ.appendChild(el('div', 'tile-note neg', 'HALTED — ' + (a.haltedBecause || 'unknown')));
+    }
+
+    var body = $('arbRoutes');
+    body.innerHTML = '';
+    if (!a.routes.length) {
+      var tr = el('tr');
+      var td = el('td', null, 'No routes priced yet.');
+      td.colSpan = 4;
+      tr.appendChild(td);
+      body.appendChild(tr);
+      return;
+    }
+    a.routes.forEach(function (r) {
+      var tr = el('tr');
+      tr.appendChild(el('td', null, r.route));
+      tr.appendChild(el('td', 'r ' + signClass(r.bps), r.bps.toFixed(2) + ' bps'));
+      tr.appendChild(el('td', 'r', r.impactPct.toFixed(3) + '%'));
+      tr.appendChild(el('td', r.reason ? 'dim' : 'pos', r.reason || 'cleared the floor'));
+      body.appendChild(tr);
+    });
+  }
+
   function renderCopy(c) {
     var row = $('copyRow');
     if (!c) { row.classList.add('hidden'); return; }
@@ -1630,6 +1717,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     renderBotControls(b);
     renderSettings(s, b.id);
     renderCopy(b.copy);
+    renderArb(b.arb);
 
     var badge = $('modeBadge');
     badge.textContent = s.mode === 'live' ? 'LIVE — REAL FUNDS' : 'PAPER';

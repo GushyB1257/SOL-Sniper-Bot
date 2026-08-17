@@ -183,6 +183,18 @@ describe('what the tuner may touch', () => {
       // terminal. It also cost a change slot and rode in the same experiment as
       // a real change, so a revert would revert both.
       'LOG_LEVEL',
+      // A control, not a parameter — same as the other BOT_*_ENABLED.
+      'BOT_ARB_ENABLED',
+      // The arbitrage simulator's PESSIMISM, not the strategy's behaviour. A
+      // tuner able to lower these improves every measured result without the
+      // strategy getting better at anything, and the whole value of the arb tab
+      // is that its paper numbers can be trusted.
+      'ARB_PAPER_ADVERSE_SLIPPAGE_BPS',
+      'ARB_PAPER_LEG_FAILURE_RATE',
+      'ARB_PAPER_UNWIND_RECOVERY_PCT',
+      // Which assets and venues to look at is the user's input, like COPY_WALLETS.
+      'ARB_TOKENS',
+      'ARB_VENUES',
       // Read once at construction; changing it does nothing until a restart.
       'DISCOVERY_SOURCE',
     ]);

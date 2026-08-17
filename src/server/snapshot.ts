@@ -3,6 +3,7 @@ import type { Store } from '../state/store.js';
 import type { Position, TradeJournalEntry } from '../types.js';
 import { recentLogs, type LogEntry } from '../logger.js';
 import { rpcStats, topMethods } from '../util/rpc-throttle.js';
+import type { ArbView } from '../arb/bot.js';
 import { pctChange } from '../util/solana.js';
 
 export interface SessionStats {
@@ -261,6 +262,7 @@ export interface BotView {
   ai: AiView | null;
   /** Only the copy bot has one. */
   copy: CopyView | null;
+  arb: ArbView | null;
 }
 
 export interface Snapshot {
@@ -634,6 +636,8 @@ export interface BotInput {
   stats: SessionStats;
   ai: AiView | null;
   copy: CopyView | null;
+  /** Set only for the arbitrage tab. */
+  arb: ArbView | null;
 }
 
 export interface SnapshotInput {
@@ -708,6 +712,7 @@ export function buildBotView(input: BotInput, cfg: Config, solUsd: number, now: 
     creatorsTracked: input.store.creatorCount(),
     ai: input.ai,
     copy: input.copy,
+    arb: input.arb,
   };
 }
 

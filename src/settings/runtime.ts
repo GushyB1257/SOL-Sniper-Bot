@@ -55,7 +55,7 @@ export interface FieldSpec {
   key: string;
   label: string;
   /** Which dashboard tab this belongs to. */
-  bot: 'screener' | 'sniper' | 'copy' | 'shared';
+  bot: 'screener' | 'sniper' | 'copy' | 'arb' | 'shared';
   group: string;
   kind: FieldKind;
   help?: string;
@@ -139,6 +139,75 @@ export const FIELDS: FieldSpec[] = [
     help: '% over the window above. 0 = "must not be down".' },
   { key: 'MAX_CANDIDATE_AGE_MS', label: 'Max candidate age', bot: 'sniper', group: 'Safety',
     kind: 'number', min: 100, max: 600_000, step: 100, help: 'ms. Older than this is not a snipe.' },
+
+  // --- Arbitrage -------------------------------------------------------
+  { key: 'ARB_TOKENS', label: 'Route through', bot: 'arb', group: 'Routes', kind: 'text',
+    placeholder: 'USDC,USDT,JUP',
+    help: 'Comma separated. Built-in symbols, or mint:decimals for anything else — ' +
+      'guessing decimals would mis-scale every amount.' },
+  { key: 'ARB_STRATEGIES', label: 'Strategies', bot: 'arb', group: 'Routes', kind: 'text',
+    placeholder: 'cycle',
+    help: 'cycle = aggregated route both ways. cross-dex = best single venue per ' +
+      'leg, which finds dislocations the aggregator hides but costs a quote per venue.' },
+  { key: 'ARB_VENUES', label: 'Cross-dex venues', bot: 'arb', group: 'Routes', kind: 'text',
+    placeholder: 'Orca V2,Raydium', help: 'Only used by the cross-dex strategy.' },
+  { key: 'ARB_TRADE_SIZE_SOL', label: 'Size per attempt', bot: 'arb', group: 'Edge',
+    kind: 'number', min: 0.001, max: 1000, step: 0.05,
+    help: 'SOL. Fees are fixed per attempt, so below the break-even size shown ' +
+      'above the strategy loses money on winning trades.' },
+  { key: 'ARB_MIN_PROFIT_BPS', label: 'Min edge', bot: 'arb', group: 'Edge',
+    kind: 'number', min: 0, max: 10_000, step: 5,
+    help: 'Basis points, net of every modelled cost. The parameter that decides ' +
+      'whether anything trades at all.' },
+  { key: 'ARB_MAX_PRICE_IMPACT_PCT', label: 'Max price impact', bot: 'arb', group: 'Edge',
+    kind: 'number', min: 0.01, max: 100, step: 0.05,
+    help: '% — our own trade moving the pool. On a thin route it moves it past ' +
+      'the edge we came for.' },
+  { key: 'ARB_REQUIRE_WORST_CASE', label: 'Require worst case to profit', bot: 'arb',
+    group: 'Edge', kind: 'boolean',
+    help: 'Off means trading routes whose on-chain minimum output is a loss.' },
+  { key: 'ARB_SLIPPAGE_BPS', label: 'Slippage tolerance', bot: 'arb', group: 'Execution',
+    kind: 'number', min: 1, max: 5000, step: 5, help: 'Basis points, per leg.' },
+  { key: 'ARB_QUOTE_MAX_AGE_MS', label: 'Max quote age', bot: 'arb', group: 'Execution',
+    kind: 'number', min: 200, max: 60_000, step: 250,
+    help: 'ms. Legs are quoted in sequence, so leg one is always the stale one.' },
+  { key: 'ARB_PRIORITY_FEE_MICROLAMPORTS', label: 'Priority fee', bot: 'arb',
+    group: 'Execution', kind: 'number', min: 0, max: 10_000_000, step: 5000,
+    help: 'Micro-lamports per compute unit, per leg. Raises landing odds AND the ' +
+      'break-even size.' },
+  { key: 'ARB_COMPUTE_UNIT_LIMIT', label: 'Compute units', bot: 'arb', group: 'Execution',
+    kind: 'number', min: 10_000, max: 1_400_000, step: 10_000,
+    help: 'Per leg. Multiplies the priority fee.' },
+  { key: 'ARB_ASSUME_ATA_RENT', label: 'Charge token-account rent', bot: 'arb',
+    group: 'Execution', kind: 'boolean', help: 'Conservative when on.' },
+  { key: 'ARB_POLL_INTERVAL_MS', label: 'Scan interval', bot: 'arb', group: 'Data',
+    kind: 'number', min: 500, max: 600_000, step: 500 },
+  { key: 'ARB_QUOTE_INTERVAL_MS', label: 'Gap between quotes', bot: 'arb', group: 'Data',
+    kind: 'number', min: 100, max: 10_000, step: 50,
+    help: 'Jupiter\'s free tier meters per second. Lowering this earns 429s, and a ' +
+      '429 costs more time than the spacing saved.' },
+  { key: 'ARB_MAX_TRADES_PER_HOUR', label: 'Trades per hour', bot: 'arb', group: 'Risk',
+    kind: 'number', min: 1, max: 10_000, step: 1,
+    help: 'Bounds the fast-loop failure mode: the same bad trade, hundreds of times.' },
+  { key: 'ARB_ROUTE_COOLDOWN_MS', label: 'Route cooldown', bot: 'arb', group: 'Risk',
+    kind: 'number', min: 0, max: 3_600_000, step: 5000,
+    help: 'ms. A dislocation that was not real still looks real on the next scan.' },
+  { key: 'ARB_MAX_DAILY_LOSS_SOL', label: 'Daily loss limit', bot: 'arb', group: 'Risk',
+    kind: 'number', min: 0.001, max: 1000, step: 0.05 },
+  { key: 'ARB_MAX_CONSECUTIVE_FAILURES', label: 'Failure streak halt', bot: 'arb',
+    group: 'Risk', kind: 'number', min: 1, max: 100, step: 1 },
+  { key: 'ARB_MIN_RESERVE_SOL', label: 'Reserve', bot: 'arb', group: 'Risk',
+    kind: 'number', min: 0, max: 100, step: 0.01, help: 'SOL never committed.' },
+  { key: 'ARB_PAPER_ADVERSE_SLIPPAGE_BPS', label: 'Paper: adverse slippage', bot: 'arb',
+    group: 'Paper realism', kind: 'number', min: 0, max: 1000, step: 1,
+    help: 'Per leg. The quote is not the fill. Raise to be more pessimistic.' },
+  { key: 'ARB_PAPER_LEG_FAILURE_RATE', label: 'Paper: leg failure rate', bot: 'arb',
+    group: 'Paper realism', kind: 'number', min: 0, max: 1, step: 0.01,
+    help: '0-1. A failed leg still pays its fee.' },
+  { key: 'ARB_PAPER_UNWIND_RECOVERY_PCT', label: 'Paper: unwind recovery', bot: 'arb',
+    group: 'Paper realism', kind: 'number', min: 0, max: 100, step: 1,
+    help: '% recovered when leg TWO fails and you are left holding the middle ' +
+      'token. The outcome that makes a non-atomic cycle dangerous.' },
 
   // --- Copy ------------------------------------------------------------
   { key: 'COPY_WALLETS', label: 'Wallets to track', bot: 'copy', group: 'Wallets', kind: 'text',

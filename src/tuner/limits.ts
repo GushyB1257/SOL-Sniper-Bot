@@ -45,6 +45,16 @@ import type { BotId } from '../bots/bot.js';
  *    in the same experiment as a real change, so a revert reverts both and the
  *    real one is measured against a slot it had to share. The reject breakdown
  *    belongs in the evidence, and now is.
+ *  - **The arbitrage paper frictions** (`ARB_PAPER_ADVERSE_SLIPPAGE_BPS`,
+ *    `ARB_PAPER_LEG_FAILURE_RATE`, `ARB_PAPER_UNWIND_RECOVERY_PCT`). These are
+ *    the simulator's pessimism, not the strategy's behaviour. A tuner able to
+ *    lower them would improve every measured result without the strategy getting
+ *    better at anything — the same "marking its own homework" as raising the
+ *    paper balance, and worse here, because the whole point of the arbitrage tab
+ *    is that its paper numbers can be trusted.
+ *  - **`ARB_TOKENS` and `ARB_VENUES`.** Which assets and venues to look at is
+ *    your input, the same as `COPY_WALLETS`. Nothing should quietly drop a route
+ *    from the list it is being measured on.
  *  - **`DISCOVERY_SOURCE`.** Read once, at construction. Changing it at runtime
  *    does nothing until a restart — which is worse than not offering it, since
  *    the tuner would spend a whole measurement window on a change that had no
@@ -397,6 +407,65 @@ export const TUNABLES: Tunable[] = [
     'How long the breaker stays tripped.', true),
   n('MIN_WALLET_RESERVE_SOL', 'shared', 0, 5, 50,
     'SOL never spent, so fees and exits are always affordable.', true),
+
+  // === Arbitrage ========================================================
+  n('ARB_MIN_PROFIT_BPS', 'arb', 5, 500, 50,
+    'Minimum net edge in basis points after every modelled cost. THE central ' +
+    'parameter: it decides whether anything trades at all. Too low and the bot ' +
+    'trades noise that cannot survive real slippage; too high and it watches. ' +
+    'The rejected-edge distribution in the evidence is what says where it belongs.'),
+  n('ARB_SLIPPAGE_BPS', 'arb', 5, 500, 50,
+    'Slippage tolerance sent to the aggregator, per leg. Wider lands more trades ' +
+    'and lands them worse; the worst-case gate refuses a route whose tolerance is ' +
+    'wider than its own edge.'),
+  n('ARB_MAX_PRICE_IMPACT_PCT', 'arb', 0.05, 5, 50,
+    'Reject a route whose own price impact exceeds this. Our trade moves the pool, ' +
+    'and on a thin route it moves it past the edge we came for.'),
+  n('ARB_QUOTE_MAX_AGE_MS', 'arb', 500, 30_000, 60,
+    'Discard a loop whose oldest leg is older than this. The two legs are quoted ' +
+    'sequentially, so leg one is always the stale one — tighten this and fewer ' +
+    'loops survive, but the ones that do priced against live pools.'),
+  n('ARB_POLL_INTERVAL_MS', 'arb', 1000, 120_000, 50,
+    'Gap between scan cycles. Lower sees more dislocations and spends more quota.'),
+  n('ARB_QUOTE_INTERVAL_MS', 'arb', 250, 5000, 50,
+    'Minimum gap between Jupiter requests. The free tier meters per second, so ' +
+    'lowering this earns 429s — and a 429 costs more time than the spacing saved.'),
+  n('ARB_PRIORITY_FEE_MICROLAMPORTS', 'arb', 0, 2_000_000, 60,
+    'Priority fee per leg. Raises the chance a leg lands AND raises the fixed cost ' +
+    'per attempt, which raises the break-even size. Both directions cost money.'),
+  i('ARB_COMPUTE_UNIT_LIMIT', 'arb', 50_000, 1_000_000, 40,
+    'Compute units requested per leg. Multiplies the priority fee.'),
+  b('ARB_REQUIRE_WORST_CASE', 'arb',
+    'Require the WORST case to clear the floor, not just the expected case. Off ' +
+    'means trading routes whose on-chain minimum is a loss.'),
+  b('ARB_ASSUME_ATA_RENT', 'arb',
+    'Charge one-off token-account rent in the cost model. Conservative when on.'),
+  n('ARB_ROUTE_COOLDOWN_MS', 'arb', 0, 1_800_000, 100,
+    'After trading a route, ignore it for this long. The limit that stops a ' +
+    'dislocation that was not real being traded again on the very next scan.'),
+  {
+    key: 'ARB_STRATEGIES',
+    bot: 'arb',
+    kind: 'text',
+    pattern: /^(cycle|cross-dex)(,(cycle|cross-dex))*$/,
+    what: 'Comma-separated: "cycle" quotes an aggregated route both ways; ' +
+      '"cross-dex" quotes each leg on individual venues and keeps the best, which ' +
+      'finds dislocations the aggregator nets out internally but costs one quote ' +
+      'per venue per leg.',
+  },
+  n('ARB_TRADE_SIZE_SOL', 'arb', 0.05, 20, 40,
+    'SOL committed per attempt. Fees are FIXED per attempt while the edge scales ' +
+    'with size, so below the break-even size the strategy loses money on winning ' +
+    'trades. REAL MONEY in live mode.', true),
+  i('ARB_MAX_TRADES_PER_HOUR', 'arb', 1, 500, 50,
+    'Attempts per hour. Bounds the fast-loop failure mode.', true),
+  n('ARB_MAX_DAILY_LOSS_SOL', 'arb', 0.01, 20, 40,
+    'Realised loss that halts arbitrage for the day.', true),
+  i('ARB_MAX_CONSECUTIVE_FAILURES', 'arb', 2, 50, 50,
+    'Failures in a row before arbitrage halts. A streak usually means a broken ' +
+    'assumption rather than bad luck.', true),
+  n('ARB_MIN_RESERVE_SOL', 'arb', 0, 5, 50,
+    'SOL never committed, so fees stay affordable.', true),
 
   // === Infrastructure ==================================================
   n('RPC_MAX_REQUESTS_PER_SEC', 'shared', 5, 500, 50,

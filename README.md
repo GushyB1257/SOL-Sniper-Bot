@@ -8,9 +8,9 @@ manages the position with deterministic risk controls underneath.
 Runs in **paper mode by default**. It will not touch real money until you
 explicitly change two settings.
 
-## Three bots, three tabs
+## Four bots, four tabs
 
-The dashboard runs three independent strategies side by side. Each has its own
+The dashboard runs four independent strategies side by side. Each has its own
 positions, P&L, journal and risk limits — sharing them would mean one strategy's
 losing streak trips the breaker on the others, and a single blended number that
 cannot answer *which of these actually works*. The wallet and the executor are
@@ -21,6 +21,7 @@ shared, because there is only one wallet.
 | **Screener** | Applies a volume / market-cap / socials filter to every launch and enters the instant one matches |
 | **Sniper** | The original creation-time sniper: full safety battery, buys at launch |
 | **Copy trader** | Mirrors wallets you nominate — buys when they buy, sells the same fraction when they sell |
+| **Arbitrage** | Scans `SOL → TOKEN → SOL` loops on the free Jupiter aggregator and prices them against a real cost model |
 
 Start, stop and pause each one from its tab. **Every setting is editable from
 the page** — filters, sizing, exits, risk limits, tracked wallets — and applies
@@ -33,10 +34,70 @@ Two things are deliberately **not** editable from the browser: `MODE`,
 `EXECUTOR`, the wallet key and the RPC URLs. Whether the bot is spending real
 money should require touching the machine.
 
+All four are covered by the auto-tuner, which measures each strategy against
+its own journal — see [Auto-tuning](#auto-tuning-with-claude).
+
 Each tab shows a **RUNNING / PAUSED / STOPPED** pill; the button next to it says
 only what pressing it will do. You cannot stop the last running bot — the
 attempt is refused with a message next to the button. Stopping a bot leaves its open positions managed and
 closable; only new entries stop.
+
+---
+
+## The arbitrage tab
+
+Scans closed `SOL → TOKEN → SOL` loops on the free Jupiter aggregator, prices
+them against a real cost model, and paper-trades the ones that clear a floor.
+**No API key.** Off by default.
+
+**Read this before turning it on.** The code is real and the measurement is
+honest. It is not an edge, and the honest version is worth stating plainly:
+
+- **A two-leg cycle is not atomic.** Jupiter refuses a quote whose input and
+  output mint match, so the round trip is two separate transactions with real
+  time between them. Leg one can land and leg two can fail, leaving you holding
+  the intermediate token. That is a real outcome, not a theoretical one.
+- **Fees are fixed per leg, and the edge scales with size.** Below the
+  break-even size there is no routing skill that helps: the bot loses money on
+  *winning* trades. The tab prints that size and marks it red when your
+  configured size is under it.
+- **Serious arbitrage is atomic and co-located** — one transaction, a custom
+  on-chain program with a revert-if-unprofitable guard, submitted through Jito.
+  This polls a public aggregator on a laptop. Anything it can see, faster
+  operators already took.
+- **Most visible edges are stale or fake.** Either it is gone, or the pool is
+  thin enough that your own trade destroys it.
+
+The valuable output is the **rejected-edge distribution** on the tab, not the
+trades. Run it in paper for a week and read that table: it tells you what the
+strategy is actually worth before any money is involved.
+
+**Where this differs from the original it was ported from.** Four changes, each
+because the original would have been misleading here:
+
+| Change | Why |
+|---|---|
+| Paper mode can produce a **half-completed round trip** | The original could only simulate "nothing happened" or "both legs filled", so its worst modelled loss was the fees — understating the real risk by the size of the whole position. `ARB_PAPER_UNWIND_RECOVERY_PCT` sets what the middle token is worth when leg two fails. |
+| `ARB_REQUIRE_WORST_CASE`, on by default | On a thin route the on-chain minimum output is below the expected output by more than the entire edge, so the trade is modelled profitable and can only ever land at a loss. |
+| Quote staleness is checked **before** the profit verdict | The original checked it after. On the free tier the two legs are more than a second apart, so an aged leg is the common case rather than the rare one. |
+| Multiple aggregator hosts, tried in order | The original hard-coded one URL. Jupiter has moved that endpoint more than once, and a stale URL is indistinguishable from every pair having no route — a failure that reports "no opportunities" forever. |
+
+Routes are also scanned **sequentially** rather than in parallel. Fanning out is
+right for a paid endpoint and wrong here: the free tier meters per second, so a
+burst earns a wall of 429s and the scan finishes slower than if it had queued.
+
+**The auto-tuner covers it, with two deliberate exclusions.** Every round trip is
+written to the shared trade journal, which is exactly what the tuner reads — so
+this strategy sits inside the same change-measure-keep-or-revert loop as the
+other three, with no special casing. What it may **not** touch:
+
+- **The paper frictions** (`ARB_PAPER_*`). Those are the simulator's pessimism,
+  not the strategy's behaviour. A tuner able to lower them would improve every
+  measured result without the strategy getting better at anything — and the whole
+  value of this tab is that its paper numbers can be trusted.
+- **`ARB_TOKENS` and `ARB_VENUES`.** Which assets and venues to look at is your
+  input, like `COPY_WALLETS`. Nothing should quietly drop a route from the list
+  it is being measured on.
 
 ---
 

@@ -3,7 +3,8 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, writeFileSync, rmSync } from 'node:fs';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Config } from '../config.js';
-import type { TradingBot, BotId } from '../bots/bot.js';
+import type { BotId, DashboardBot } from '../bots/bot.js';
+import { ArbBot } from '../arb/bot.js';
 import type { RuntimeSettings } from '../settings/runtime.js';
 import { FIELDS } from '../settings/runtime.js';
 import type { SolPrice } from '../util/solprice.js';
@@ -25,7 +26,7 @@ const log = logger('dashboard');
 export interface DashboardDeps {
   cfg: Config;
   settings: RuntimeSettings;
-  bots: Map<BotId, TradingBot>;
+  bots: Map<BotId, DashboardBot>;
   walletBalance: () => Promise<number | null>;
   discoveryName: string;
   startedAt: number;
@@ -203,6 +204,8 @@ export class Dashboard {
       // right PositionManager can close it. Searching beats trusting a botId
       // from the request, which would let a typo close nothing silently.
       for (const bot of this.deps.bots.values()) {
+        // A strategy with no position manager has nothing to close by hand.
+        if (!bot.positions) continue;
         const position = bot.store.getPosition(id);
         if (!position || position.status !== 'open') continue;
         log.warn(`Manual close from dashboard: ${bot.name} / ${position.symbol ?? position.mint}`);
@@ -307,6 +310,7 @@ export class Dashboard {
       screener: cfg.BOT_SCREENER_ENABLED,
       sniper: cfg.BOT_SNIPER_ENABLED,
       copy: cfg.BOT_COPY_ENABLED,
+      arb: cfg.BOT_ARB_ENABLED,
     };
 
     return buildSnapshot({
@@ -327,13 +331,14 @@ export class Dashboard {
         paused: bot.paused,
         store: bot.store,
         stats: bot.snapshotStats(),
+        arb: bot instanceof ArbBot ? bot.view() : null,
         ai: this.aiView(bot),
         copy: this.copyView(bot),
       })),
     });
   }
 
-  private aiView(bot: TradingBot): AiView | null {
+  private aiView(bot: DashboardBot): AiView | null {
     if (!bot.ai) return null;
     const s = bot.ai.snapshotStats();
     const u = bot.ai.usage;
@@ -396,7 +401,7 @@ export class Dashboard {
     };
   }
 
-  private copyView(bot: TradingBot): CopyView | null {
+  private copyView(bot: DashboardBot): CopyView | null {
     if (!bot.copy || !bot.watcher) return null;
     const w = bot.watcher.snapshot;
     const c = bot.copy.snapshotStats();

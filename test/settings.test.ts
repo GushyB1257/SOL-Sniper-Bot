@@ -205,7 +205,7 @@ describe('the exposed field list', () => {
     for (const f of FIELDS) {
       expect(f.label, f.key).toBeTruthy();
       expect(f.group, f.key).toBeTruthy();
-      expect(['screener', 'sniper', 'copy', 'shared']).toContain(f.bot);
+      expect(['screener', 'sniper', 'copy', 'arb', 'shared']).toContain(f.bot);
     }
   });
 

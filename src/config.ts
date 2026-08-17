@@ -699,6 +699,94 @@ const schema = z.object({
   /** Largest single-round move for any parameter, as a share of its value. */
   TUNER_MAX_STEP_PCT: num(1, 100).default(30),
 
+  // === Arbitrage bot ====================================================
+  /**
+   * SOL -> TOKEN -> SOL loop scanner, priced against a realistic cost model.
+   *
+   * Read this before turning it on. The strategy is real and the measurement is
+   * honest, but it is not an edge:
+   *
+   *  - **A two-leg cycle is not atomic.** The aggregator refuses a quote whose
+   *    input and output mint match, so the round trip is two transactions with
+   *    real time between them. Leg one can land and leg two can fail, leaving the
+   *    bot holding the intermediate token. Paper mode models that outcome.
+   *  - **Fees are per leg and fixed.** Below the break-even size the bot loses
+   *    money on WINNING trades. The dashboard prints that size — check it.
+   *  - **Serious arbitrage is atomic and co-located**, executed in one
+   *    transaction by an on-chain program with a revert-if-unprofitable guard,
+   *    submitted through Jito. This polls a public aggregator. Anything it can
+   *    see, faster operators saw first.
+   *
+   * Treat it as a measurement tool. Run it in paper for a week and read the
+   * journal before drawing any conclusion.
+   */
+  BOT_ARB_ENABLED: bool.default('false'),
+  /** Tokens to route through. Symbols from the built-in list, or mint:decimals. */
+  ARB_TOKENS: z.string().default('USDC,USDT,JUP,BONK,RAY,JitoSOL'),
+  /** SOL committed per attempt. The break-even size scales with the fee, not this. */
+  ARB_TRADE_SIZE_SOL: num(0.001, 1000).default(0.5),
+  /**
+   * Minimum net edge, in basis points, after every modelled cost.
+   *
+   * The floor that decides whether this trades at all. Below roughly 10bps you
+   * are trading noise; the honest starting value is high enough that almost
+   * nothing clears it, and the rejected-edge distribution tells you where to
+   * put it.
+   */
+  ARB_MIN_PROFIT_BPS: num(0, 10_000).default(30),
+  /** Slippage tolerance sent to the aggregator, per leg. */
+  ARB_SLIPPAGE_BPS: num(1, 5000).default(50),
+  /** Reject a route whose own price impact exceeds this. Our trade moves the pool. */
+  ARB_MAX_PRICE_IMPACT_PCT: num(0.01, 100).default(0.5),
+  /**
+   * Require the WORST case to clear the floor, not just the expected case.
+   *
+   * On a thin route the expected output and the on-chain minimum differ by more
+   * than the entire edge, which means the trade can only ever land at a loss.
+   * On by default: it is the difference between a scanner and a bot.
+   */
+  ARB_REQUIRE_WORST_CASE: bool.default('true'),
+  /** Discard a loop whose oldest leg is older than this. */
+  ARB_QUOTE_MAX_AGE_MS: num(200, 60_000).default(4000),
+  /** Gap between scan cycles. */
+  ARB_POLL_INTERVAL_MS: num(500, 600_000).default(6000),
+  /**
+   * Minimum gap between Jupiter requests.
+   *
+   * The free tier meters per second. Lowering this earns 429s, and a 429 costs
+   * more time than the spacing saved.
+   */
+  ARB_QUOTE_INTERVAL_MS: num(100, 10_000).default(1100),
+  /** Priority fee per leg, in micro-lamports per compute unit. */
+  ARB_PRIORITY_FEE_MICROLAMPORTS: num(0, 10_000_000).default(50_000),
+  ARB_COMPUTE_UNIT_LIMIT: num(10_000, 1_400_000).default(300_000),
+  /** Charge one-off rent for the intermediate token account in the cost model. */
+  ARB_ASSUME_ATA_RENT: bool.default('false'),
+  /** cycle = aggregated route both ways. cross-dex = best single venue per leg. */
+  ARB_STRATEGIES: z.string().default('cycle'),
+  /** Venues quoted individually by the cross-dex strategy. */
+  ARB_VENUES: z.string().default('Orca V2,Raydium,Meteora DLMM'),
+
+  // --- Arbitrage paper-mode frictions ---
+  /** Extra adverse slippage per leg on a simulated fill. The quote is not the fill. */
+  ARB_PAPER_ADVERSE_SLIPPAGE_BPS: num(0, 1000).default(10),
+  /** Chance any one leg does not land. Still pays the fee. */
+  ARB_PAPER_LEG_FAILURE_RATE: num(0, 1).default(0.05),
+  /**
+   * What the intermediate token is worth when leg two fails, as a share of what
+   * leg one paid. Below 100 because the reason leg two failed is usually that the
+   * price moved against us.
+   */
+  ARB_PAPER_UNWIND_RECOVERY_PCT: num(0, 100).default(97),
+
+  // --- Arbitrage risk limits ---
+  ARB_MAX_DAILY_LOSS_SOL: num(0.001, 1000).default(0.5),
+  ARB_MAX_CONSECUTIVE_FAILURES: num(1, 100).default(5),
+  /** After trading a route, ignore it for this long. */
+  ARB_ROUTE_COOLDOWN_MS: num(0, 3_600_000).default(60_000),
+  ARB_MAX_TRADES_PER_HOUR: num(1, 10_000).default(30),
+  ARB_MIN_RESERVE_SOL: num(0, 100).default(0.05),
+
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   DATA_DIR: z.string().default('./data'),
 });

@@ -17,7 +17,35 @@ import { errMessage, sleep } from '../util/async.js';
 
 const log = logger('bot');
 
-export type BotId = 'screener' | 'sniper' | 'copy';
+export type BotId = 'screener' | 'sniper' | 'copy' | 'arb';
+
+/**
+ * What the supervisor and the dashboard need from a bot.
+ *
+ * The arbitrage strategy is not a `TradingBot` — it has no launch feed, no
+ * position held over time and no exit planner — but the dashboard renders every
+ * tab from one template, so it satisfies this instead. Keeping the surface small
+ * is what let a fourth strategy become a fourth tab without a special case in
+ * the snapshot, the settings form or the auto-tuner.
+ */
+export interface DashboardBot {
+  readonly id: BotId;
+  readonly name: string;
+  readonly store: Store;
+  readonly paused: boolean;
+  readonly running: boolean;
+  setPaused(paused: boolean): void;
+  snapshotStats(): BotStats;
+  start(): void;
+  stop(): void;
+  tickPositions(): Promise<void>;
+  tickStrategy(): Promise<void>;
+  readonly ai: AiOrchestrator | null;
+  readonly copy: CopyTrader | null;
+  readonly watcher: WalletWatcher | null;
+  /** Null for strategies with no manually closeable position. */
+  readonly positions: PositionManager | null;
+}
 
 export interface BotStats {
   seen: number;
