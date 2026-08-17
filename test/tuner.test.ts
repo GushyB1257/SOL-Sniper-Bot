@@ -512,10 +512,75 @@ describe('measuring what it changed', () => {
     expect(settings.values().MOONBAG_TRIM_PCT).toBe('25');
   });
 
-  it('settles a verdict without stacking a new change in the same cycle', async () => {
-    const t = await runAndSettle(0.1);
+  it('proposes the next experiment in the same pass that settled the last', async () => {
+    // The trades that just decided one experiment are the freshest evidence
+    // there is for choosing the next. Settling and then going idle spends that
+    // evidence on nothing and waits for it to be replaced by more of the same.
+    fill(12, { pnlSol: -0.05 });
+    let round = 0;
+    const t = tunerWith(() => {
+      round += 1;
+      return round === 1
+        ? { changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'first' }] }
+        : { changes: [{ key: 'CHECKPOINT_SECONDS', value: 45, why: 'second' }] };
+    });
+
+    await t.tick();
     expect(t.history).toHaveLength(1);
+
+    fill(12, { pnlSol: 0.1 }); // enough to judge, and it beat the baseline
+    cooled(t);
+    await t.tick();
+
+    expect(t.history).toHaveLength(2);
     expect(t.history[0]!.status).toBe('kept');
+    expect(t.history[1]!.status).toBe('running');
+    expect(settings.values().CHECKPOINT_SECONDS).toBe('45');
+  });
+
+  it('measures the next change against what is actually running now', async () => {
+    // After a KEEP, the live configuration is the one just measured, so the bar
+    // is what it scored.
+    fill(12, { pnlSol: -0.05 });
+    let round = 0;
+    const t = tunerWith(() => {
+      round += 1;
+      return round === 1
+        ? { changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'first' }] }
+        : { changes: [{ key: 'CHECKPOINT_SECONDS', value: 45, why: 'second' }] };
+    });
+    await t.tick();
+
+    fill(12, { pnlSol: 0.1 });
+    cooled(t);
+    await t.tick();
+
+    expect(t.history[1]!.baselineExpectancy).toBeCloseTo(0.1, 5);
+  });
+
+  it('does not inherit a rejected window as the bar to beat', async () => {
+    // After a REVERT the live configuration is the earlier one, so the bar is
+    // its measurement — not the window just thrown out for being worse. Carry
+    // the rejected number forward and the next change clears it by doing
+    // nothing, and the tuner starts keeping noise on the strength of that.
+    fill(12, { pnlSol: -0.05 }); // baseline -0.05
+    let round = 0;
+    const t = tunerWith(() => {
+      round += 1;
+      return round === 1
+        ? { changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'first' }] }
+        : { changes: [{ key: 'CHECKPOINT_SECONDS', value: 45, why: 'second' }] };
+    });
+    await t.tick();
+
+    fill(12, { pnlSol: -0.2 }); // far worse, so it is reverted
+    cooled(t);
+    await t.tick();
+
+    expect(t.history[0]!.status).toBe('reverted');
+    expect(t.history).toHaveLength(2);
+    // The bar is the -0.05 we went back to, not the -0.2 we rejected.
+    expect(t.history[1]!.baselineExpectancy).toBeCloseTo(-0.05, 5);
   });
 
   it('leaves a change alone while the window is still filling', async () => {
@@ -569,6 +634,30 @@ describe('when it decides to act', () => {
 
     fill(8);
     expect(t.progress().screener).toMatchObject({ phase: 'ready', blockedBy: null });
+  });
+
+  it('counts the measuring window toward the cooldown, not on top of it', async () => {
+    // The measurement window is already a wait, spent gathering the evidence.
+    // Restarting the clock when that evidence finally arrives means waiting
+    // twice for one experiment, and idling at the moment there is most reason
+    // to act — a bot that reaches its trade count in seven minutes then sat
+    // still for twenty with a full progress bar.
+    fill(12);
+    const t = tunerWith({ changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'x' }] });
+    await t.tick();
+
+    const started = t.history[0]!.startedAt;
+    fill(12, { pnlSol: 0.1 });
+    await t.tick(); // still inside the cooldown, so nothing settles yet
+
+    const ledger = (t as unknown as { ledger: TuningLedger }).ledger;
+    // Back-date only the start, leaving any decision time alone: the cooldown
+    // must key off when the change was MADE.
+    for (const e of ledger.all()) {
+      ledger.update(e.id, { startedAt: started - 24 * 60 * 60_000 });
+    }
+    await t.tick();
+    expect(t.history[0]!.status).toBe('kept');
   });
 
   it('does not review a bot again just because the process restarted', async () => {

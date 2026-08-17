@@ -612,11 +612,20 @@ const schema = z.object({
    * The trade count is what decides whether a change is justified — 40 trades
    * is 40 trades whether they took two minutes or two days, so gating on the
    * clock just wastes data when a bot is trading fast. This is a floor, not a
-   * schedule: it bounds API spend, and it stops a burst of quick trades
-   * producing a run of changes before any of them has had a chance to show an
-   * effect. Each bot has its own; a fast bot never waits on a slow one.
+   * schedule: it bounds API spend. Each bot has its own; a fast bot never waits
+   * on a slow one.
+   *
+   * Measured from when the last change was *made*, so the time spent measuring
+   * it counts toward the floor. It has to: the measurement window is already a
+   * wait, and restarting the clock when the evidence arrives means waiting
+   * twice for one experiment — idling at the exact moment there is most reason
+   * to act. A bot reaching 150 trades in seven minutes settles and proposes
+   * again in the same pass.
+   *
+   * Five minutes caps it at twelve Claude calls an hour per bot, which is the
+   * only real cost. Set it to 1 to let the loop run purely at trade speed.
    */
-  TUNER_INTERVAL_MINUTES: num(1, 10_080).default(20),
+  TUNER_INTERVAL_MINUTES: num(1, 10_080).default(5),
   /**
    * Closed trades required before anything moves, and again before a change is
    * judged. Under a few dozen, memecoin P&L is one or two outliers and any

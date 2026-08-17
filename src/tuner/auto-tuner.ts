@@ -13,6 +13,21 @@ import { TuningLedger, type Change, type Experiment } from './ledger.js';
 
 const log = logger('tuner');
 
+/**
+ * The outcome of settling an experiment, and the bar the next one must beat.
+ *
+ * Which measurement that is depends on the verdict, so it travels with it
+ * rather than being recomputed from a window that may no longer describe the
+ * configuration that is actually live.
+ */
+interface Settled {
+  /** Expectancy of the configuration running now that this has been decided. */
+  baseline: number;
+  /** How many trades that number was measured over. */
+  baselineTrades: number;
+  kept: boolean;
+}
+
 /** One bot's position in the tune/measure cycle. */
 export interface TunerProgress {
   /** gathering: waiting for trades. measuring: a change is under test. */
@@ -187,6 +202,17 @@ export class AutoTuner {
   /**
    * When this bot's cooldown expires.
    *
+   * Anchored to when the last change was *made*, not when it was decided. The
+   * measurement window is already a wait — a real one, spent gathering the
+   * evidence — and starting a fresh clock the moment that evidence finally
+   * arrives adds a second wait for the same reason, at exactly the moment the
+   * data is most worth acting on. A bot that reaches 150 trades in seven
+   * minutes has earned its next experiment; it should not then sit idle for
+   * twenty with a full progress bar.
+   *
+   * What survives is a floor on how often a change can be made at all, which is
+   * the part that bounds API spend.
+   *
    * Read from the ledger rather than a field so it survives a restart — a
    * process that restarts every few minutes would otherwise re-review on every
    * boot and change something each time.
@@ -195,8 +221,7 @@ export class AutoTuner {
     const mine = this.ledger.all().filter((e) => e.bot === bot);
     const last = mine[mine.length - 1];
     if (!last) return 0; // never touched: reviewable as soon as trades allow
-    const touched = Math.max(last.startedAt, last.decidedAt ?? 0);
-    return touched + this.deps.cfg.TUNER_INTERVAL_MINUTES * 60_000;
+    return last.startedAt + this.deps.cfg.TUNER_INTERVAL_MINUTES * 60_000;
   }
 
   /** Called on a timer. Never throws into the caller. */
@@ -239,13 +264,23 @@ export class AutoTuner {
 
     // Settle any experiment that has collected enough evidence first, so a new
     // proposal is never made against data that is still half a blend.
+    //
+    // Then keep going in the same pass. The trades that just decided one
+    // experiment are the freshest evidence there is for choosing the next, and
+    // stopping here to re-read them later gains nothing — it only delays. The
+    // loop is meant to be: change, measure, decide, change again.
+    //
+    // This used to return, on the grounds that proposing straight after a
+    // revert re-applies the thing just rejected. That risk is real and is
+    // handled where it belongs: `historyFor` puts every settled verdict in the
+    // prompt, and `wasReverted` refuses the exact value mechanically whatever
+    // the model says. Two guards that both read the ledger, which `settle` has
+    // already written to by this point.
     const open = this.ledger.running(bot);
+    let carried: Settled | null = null;
     if (open) {
-      this.settle(open, journal);
-      // Whatever the verdict, this bot is done for the cycle. Proposing again
-      // straight after settling re-applies the change that was just reverted
-      // when the model has not been told the outcome yet, and the pair loops.
-      return;
+      carried = this.settle(open, journal);
+      if (!carried) return; // still measuring
     }
 
     const since = this.tradesSinceLastChange(bot, journal);
@@ -275,8 +310,11 @@ export class AutoTuner {
       bot,
       startedAt: Date.now(),
       changes,
-      baselineExpectancy: expectancy(since),
-      baselineTrades: since.length,
+      // After a settle, the bar comes from the verdict rather than from this
+      // window — see `settle`. It is the same number when a change was kept,
+      // and the crucial difference when one was reverted.
+      baselineExpectancy: carried ? carried.baseline : expectancy(since),
+      baselineTrades: carried ? carried.baselineTrades : since.length,
       journalAtStart: journal.length,
       status: 'running',
       notes: proposal.notes,
@@ -295,12 +333,22 @@ export class AutoTuner {
   /**
    * Decides a running experiment, or leaves it to collect more trades.
    *
-   * Returns true once a verdict was reached.
+   * Returns the baseline the *next* experiment has to beat, or null while the
+   * verdict is still pending.
+   *
+   * Which number that is depends on the verdict, and getting it wrong quietly
+   * breaks the whole loop. When a change is kept, the configuration now live is
+   * the one just measured, so the bar is what it scored. When a change is
+   * reverted, the configuration now live is the one from *before* it — so the
+   * bar is that earlier measurement, and emphatically not the window we just
+   * threw out for being worse. Carrying the rejected number forward would leave
+   * a bar the next change beats by doing nothing, and the tuner would start
+   * keeping noise on the strength of it.
    */
-  private settle(exp: Experiment, journal: readonly TradeJournalEntry[]): boolean {
+  private settle(exp: Experiment, journal: readonly TradeJournalEntry[]): Settled | null {
     const { cfg } = this.deps;
     const after = journal.slice(exp.journalAtStart);
-    if (after.length < cfg.TUNER_MIN_TRADES) return false;
+    if (after.length < cfg.TUNER_MIN_TRADES) return null;
 
     const result = expectancy(after);
     const improved = result >= exp.baselineExpectancy;
@@ -319,7 +367,8 @@ export class AutoTuner {
         `${exp.bot}: change KEPT — ${result.toFixed(5)} SOL/trade vs baseline ` +
           `${exp.baselineExpectancy.toFixed(5)} over ${after.length} trades`,
       );
-      return true;
+      // Kept: what it scored is the bar to beat next.
+      return { baseline: result, baselineTrades: after.length, kept: true };
     }
 
     // Did not beat the baseline, so put it back. A neutral result reverts too:
@@ -340,7 +389,9 @@ export class AutoTuner {
       `${exp.bot}: change REVERTED — ${result.toFixed(5)} SOL/trade did not beat baseline ` +
         `${exp.baselineExpectancy.toFixed(5)} over ${after.length} trades`,
     );
-    return true;
+    // Reverted: we are back on the earlier configuration, so its measurement is
+    // the bar — not the window we just rejected for being worse than it.
+    return { baseline: exp.baselineExpectancy, baselineTrades: exp.baselineTrades, kept: false };
   }
 
   /** Journal entries recorded since this bot's most recent applied change. */

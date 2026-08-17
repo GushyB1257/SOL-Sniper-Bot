@@ -202,7 +202,7 @@ export const FIELDS: FieldSpec[] = [
     help: 'Let Claude adjust strategy settings from each bot\'s own results. Never touches position size or a risk limit. Every change is measured and reverted if it does not beat its baseline.' },
   { key: 'TUNER_INTERVAL_MINUTES', label: 'Min gap between changes', bot: 'shared', group: 'Auto-tune',
     kind: 'number', min: 1, max: 10_080, step: 5,
-    help: 'A floor, not a schedule — reviews are triggered by trade count. Per bot, so a fast bot never waits on a slow one.' },
+    help: 'A floor on how often a bot can change, not a schedule — reviews are triggered by trade count. Timed from the last change, so measuring it counts toward the gap rather than adding to it.' },
   { key: 'TUNER_MIN_TRADES', label: 'Trades before acting', bot: 'shared', group: 'Auto-tune',
     kind: 'number', min: 10, max: 5000, step: 5,
     help: 'What actually decides when to act. Raise this if your bots trade quickly — 150 trades is a far better read than 40 and costs only time.' },

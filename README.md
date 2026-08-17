@@ -425,13 +425,33 @@ or two days, and gating on time just wastes data when a bot is trading fast. A
 bot is reviewed as soon as it has `TUNER_MIN_TRADES` closed trades since its
 last change, then again once it has that many more to judge the change by.
 
-`TUNER_INTERVAL_MINUTES` (default 20) is a **floor, not a schedule**: the
-minimum gap between changes to the same bot. It bounds API spend and stops a
-burst of quick trades producing a run of changes before any of them has had a
-chance to show an effect. It is per bot, so the sniper closing trades in
-seconds never waits on the copy trader closing one an hour. It is also read
-from the ledger rather than a timer, so restarting the bot does not earn a
-free review.
+**The loop does not pause to breathe.** A pass that settles an experiment goes
+straight on to propose the next one, using the very trades that just decided it
+— those are the freshest evidence there is, and stopping to re-read them later
+gains nothing. So the cycle is: change, measure, decide, change again, with the
+measuring being the only wait. The risk of proposing straight after a revert —
+re-applying the thing just rejected — is handled where it belongs: every settled
+verdict goes into the prompt, and `wasReverted` refuses the exact value
+mechanically whatever the model says.
+
+The bar the next change has to beat comes from the verdict, not from the window
+just measured. Keep a change and the bar is what it scored. **Revert one and the
+bar is the earlier measurement**, because that is the configuration now running
+— carrying the rejected number forward would leave a bar the next change clears
+by doing nothing, and the tuner would start keeping noise on the strength of it.
+
+`TUNER_INTERVAL_MINUTES` (default 5) is a **floor, not a schedule**: the minimum
+gap between changes to the same bot, and the only thing bounding API spend. It
+is per bot, so the sniper closing trades in seconds never waits on the copy
+trader closing one an hour. It is read from the ledger rather than a timer, so
+restarting the bot does not earn a free review.
+
+It is measured from when the last change was **made**, so the time spent
+measuring counts toward it rather than being added to it. That matters: the
+measurement window is already a wait, and restarting the clock when the evidence
+finally arrives means waiting twice for one experiment — idling at the exact
+moment there is most reason to act. Set it to 1 to let the loop run purely at
+trade speed.
 
 If your bots trade fast, **raise `TUNER_MIN_TRADES` rather than lowering the
 gap**. Trades are the currency of statistical confidence and they cost you
