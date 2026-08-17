@@ -75,19 +75,22 @@ describe('no stop loss', () => {
 
     const fresh = position();
     expect(decide(fresh, 0.5, C.RATCHET_FIRST_CHECKPOINT_SECONDS - 1)).toBeNull();
-    expect(decide(fresh, 0.5, C.RATCHET_FIRST_CHECKPOINT_SECONDS + 1)?.reason).toBe('time_stop');
+    // And it is reported as the first-window cut, so the journal attributes it
+    // to RATCHET_FIRST_CHECKPOINT_SECONDS rather than to some other timer.
+    expect(decide(fresh, 0.5, C.RATCHET_FIRST_CHECKPOINT_SECONDS + 1)?.reason).toBe('dead_entry');
 
-    // Second window onwards: the full CHECKPOINT_SECONDS.
+    // Second window onwards: the full CHECKPOINT_SECONDS, and a different label
+    // because it is a different parameter answering a different question.
     const later = position({ checkpointAt: at(40), checkpointPrice: ENTRY });
     expect(decide(later, 0.5, 40 + C.CHECKPOINT_SECONDS - 1)).toBeNull();
-    expect(decide(later, 0.5, 40 + C.CHECKPOINT_SECONDS + 1)?.reason).toBe('time_stop');
+    expect(decide(later, 0.5, 40 + C.CHECKPOINT_SECONDS + 1)?.reason).toBe('checkpoint_cut');
   });
 
   it('can be put back to one window length for both', () => {
     const c = cfg({ RATCHET_FIRST_CHECKPOINT_SECONDS: '60' });
     const p = position();
     expect(decide(p, 0.5, 59, c)).toBeNull();
-    expect(decide(p, 0.5, 61, c)?.reason).toBe('time_stop');
+    expect(decide(p, 0.5, 61, c)?.reason).toBe('dead_entry');
   });
 
   it('holds a position that dumps and recovers within the window', () => {
@@ -109,7 +112,7 @@ describe('no stop loss', () => {
 describe('the 60-second checkpoint', () => {
   it('sells everything when it is not profitable after 60s', () => {
     const order = decide(position(), 1.01, 61);
-    expect(order?.reason).toBe('time_stop');
+    expect(order?.reason).toBe('dead_entry');
     expect(order?.closeAll).toBe(true);
     expect(order?.detail).toMatch(/below the .* needed to cover fees/);
   });
@@ -117,7 +120,7 @@ describe('the 60-second checkpoint', () => {
   it('counts fees, not the chart — barely green is not profitable', () => {
     // +2% looks like a win and is a loss after a 3.7% round trip.
     expect(BREAKEVEN).toBeGreaterThan(2);
-    expect(decide(position(), 1.02, 61)?.reason).toBe('time_stop');
+    expect(decide(position(), 1.02, 61)?.reason).toBe('dead_entry');
     expect(decide(position(), 1 + (BREAKEVEN + 1) / 100, 61)).toBeNull();
   });
 

@@ -466,6 +466,38 @@ describe('acting on evidence', () => {
   });
 });
 
+describe('what the evidence says about exits', () => {
+  it('names the parameter behind each timed exit', () => {
+    // The auto-tuner cannot attribute what it cannot distinguish. Three timers
+    // — RATCHET_FIRST_CHECKPOINT_SECONDS, TIME_STOP_SECONDS and
+    // SCALP_TIME_STOP_SECONDS — all reported themselves as `time_stop`, which
+    // left the model inferring which one had fired from hold times. It said so
+    // itself, in a note it had no way to act on.
+    fill(12);
+    const rendered = renderEvidence(buildEvidence('sniper', store.journal(), cfg));
+    for (const [reason, param] of [
+      ['dead_entry', 'RATCHET_FIRST_CHECKPOINT_SECONDS'],
+      ['checkpoint_cut', 'CHECKPOINT_SECONDS'],
+      ['time_stop', 'TIME_STOP_SECONDS'],
+      ['scalp_time_stop', 'SCALP_TIME_STOP_SECONDS'],
+      ['trailing_stop', 'RATCHET_GIVEBACK_PCT'],
+    ] as const) {
+      expect(rendered, `${reason} must name its parameter`).toContain(reason);
+      expect(rendered).toContain(param);
+    }
+  });
+
+  it('only names parameters the tuner can actually reach', () => {
+    // Pointing the model at a knob it cannot turn is worse than silence.
+    const rendered = renderEvidence(buildEvidence('sniper', store.journal(), cfg));
+    const named = [...rendered.matchAll(/-> ([A-Z_]+)/g)].map((m) => m[1]!);
+    expect(named.length).toBeGreaterThan(4);
+    for (const key of named) {
+      expect(TUNABLE_BY_KEY.has(key), `${key} is named but not tunable`).toBe(true);
+    }
+  });
+});
+
 describe('measuring what it changed', () => {
   /** Runs a change, then supplies `after` trades and re-ticks to settle it. */
   async function runAndSettle(afterPnl: number): Promise<AutoTuner> {

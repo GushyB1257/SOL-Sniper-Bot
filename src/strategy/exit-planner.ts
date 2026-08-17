@@ -269,7 +269,9 @@ export function decideScalpExit(ctx: ExitContext): ExitOrder | null {
   //    not moved is occupying a slot another setup could use.
   if (heldSeconds >= cfg.SCALP_TIME_STOP_SECONDS && gainPct < breakeven) {
     return closeAll(
-      'time_stop',
+      // SCALP_TIME_STOP_SECONDS, not TIME_STOP_SECONDS — a different parameter
+      // with a different default, and worth being able to tell apart.
+      'scalp_time_stop',
       `flat at ${gainPct.toFixed(1)}% after ${Math.round(heldSeconds)}s (below ${breakeven.toFixed(1)}% breakeven)`,
     );
   }
@@ -297,13 +299,24 @@ export function costRecoveryQty(p: Position, price: number, m: CostModel): numbe
   return (outstanding + m.priorityFeeSol) / denom;
 }
 
+/**
+ * Whether the position is still inside its opening window.
+ *
+ * The first window is its own length: a launch that is going nowhere should not
+ * get the same leash as one that has already proved something. Which window a
+ * position is in decides which parameter governs it, so it also decides which
+ * parameter an exit taken here should be attributed to.
+ */
+function inFirstWindow(p: Position): boolean {
+  return (p.checkpointAt ?? p.openedAt) <= p.openedAt;
+}
+
 /** True when the current ratchet window has run its course. */
 export function checkpointElapsed(p: Position, cfg: Config, now: number): boolean {
   const startedAt = p.checkpointAt ?? p.openedAt;
-  // The first window is its own length: a launch that is going nowhere should
-  // not get the same leash as one that has already proved something.
-  const first = startedAt <= p.openedAt;
-  const window = first ? cfg.RATCHET_FIRST_CHECKPOINT_SECONDS : cfg.CHECKPOINT_SECONDS;
+  const window = inFirstWindow(p)
+    ? cfg.RATCHET_FIRST_CHECKPOINT_SECONDS
+    : cfg.CHECKPOINT_SECONDS;
   return (now - startedAt) / 1000 >= window;
 }
 
@@ -430,10 +443,20 @@ export function decideRatchetExit(ctx: ExitContext): ExitOrder | null {
     //    counted. Being green on the chart is not the test — clearing the
     //    round trip is.
     if (gainPct < breakeven) {
+      // Which window this was decides which parameter to blame, and they are
+      // different questions. Cut at the FIRST checkpoint means the entry never
+      // started — that is RATCHET_FIRST_CHECKPOINT_SECONDS, and the cost of
+      // setting it too long is the whole dead-entry bleed. Cut at a LATER one
+      // means it was working and stopped, which is CHECKPOINT_SECONDS. Reporting
+      // both as `time_stop` put them in the same bucket as TIME_STOP_SECONDS, a
+      // third parameter in a different exit mode entirely.
+      const first = inFirstWindow(p);
       return closeAll(
-        'time_stop',
+        first ? 'dead_entry' : 'checkpoint_cut',
         `${gainPct.toFixed(1)}% after ${Math.round(heldSeconds)}s, below the ` +
-          `${breakeven.toFixed(1)}% needed to cover fees`,
+          `${breakeven.toFixed(1)}% needed to cover fees ` +
+          `(${first ? 'first' : 'later'} checkpoint, ` +
+          `${first ? cfg.RATCHET_FIRST_CHECKPOINT_SECONDS : cfg.CHECKPOINT_SECONDS}s window)`,
       );
     }
     // 3. Green, but it stopped going up.

@@ -216,7 +216,7 @@ describe('paper mode tracks a real rug to the floor', () => {
 
     const closed = store.getPosition(p.id)!;
     expect(closed.status).toBe('closed');
-    expect(closed.closeReason).toMatch(/time_stop/);
+    expect(closed.closeReason).toMatch(/dead_entry/);
     expect(store.journal()[0]!.pnlPct).toBeLessThan(-80);
   });
 
@@ -294,7 +294,7 @@ describe('resumed paper position (the restart bug)', () => {
 
     const after = store.getPosition(p.id)!;
     expect(after.status).toBe('closed');
-    expect(after.closeReason).toMatch(/time_stop/);
+    expect(after.closeReason).toMatch(/scalp_time_stop/);
     // It actually sold, rather than being written off.
     expect(after.realizedSol).toBeGreaterThan(0);
   });

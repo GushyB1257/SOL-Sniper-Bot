@@ -254,7 +254,8 @@ describe('scalp exit', () => {
     const now = Date.now();
     const p = position({ openedAt: now - (cfg.SCALP_TIME_STOP_SECONDS + 5) * 1000 });
     const order = decideScalpExit({ position: p, price: p.entryPrice * 1.01, cfg, now });
-    expect(order?.reason).toBe('time_stop');
+    // Its own parameter (SCALP_TIME_STOP_SECONDS), so its own label.
+    expect(order?.reason).toBe('scalp_time_stop');
   });
 
   it('lets the runner trail after the target filled', () => {

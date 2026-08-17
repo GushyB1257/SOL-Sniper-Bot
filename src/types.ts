@@ -179,7 +179,31 @@ export type ExitReason =
   | 'stop_loss'
   | 'trailing_stop'
   | 'moonbag_trailing_stop'
+  /**
+   * Held past `TIME_STOP_SECONDS` without going anywhere. Ladder mode only.
+   *
+   * The three timed exits below used to share this one label, which made the
+   * journal unable to say which parameter had produced an exit — three
+   * different knobs, in three different exit modes, with defaults an order of
+   * magnitude apart, all reported the same way. Any read of "how are the timed
+   * exits doing" was really a read of all of them blended together, and the
+   * auto-tuner cannot attribute what it cannot distinguish.
+   */
   | 'time_stop'
+  /**
+   * Ratchet: below breakeven at the FIRST checkpoint, so the entry never
+   * started. Governed by `RATCHET_FIRST_CHECKPOINT_SECONDS`. This is the
+   * dead-entry cut, and how long it waits is how much a non-starter bleeds.
+   */
+  | 'dead_entry'
+  /**
+   * Ratchet: below breakeven at a LATER checkpoint — it was working and
+   * stopped. Governed by `CHECKPOINT_SECONDS`. A different question from
+   * `dead_entry`, and a different parameter.
+   */
+  | 'checkpoint_cut'
+  /** Scalp: flat past `SCALP_TIME_STOP_SECONDS`. Its own parameter again. */
+  | 'scalp_time_stop'
   | 'max_hold'
   | 'rug_detected'
   | 'manual'

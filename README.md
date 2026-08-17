@@ -329,6 +329,19 @@ Four rules, first match wins:
 | 3 | **Stall** | At a checkpoint, either phase: not higher than last time, the move is over. Sell all. |
 | 4 | **Skim** | At a checkpoint, after recovery and still climbing: trim 25% and let the rest run. |
 
+Rule 2 is recorded as **`dead_entry`** at the first checkpoint and
+**`checkpoint_cut`** at any later one, because those are two different questions
+under two different parameters: the first asks whether the entry ever started
+(`RATCHET_FIRST_CHECKPOINT_SECONDS`), the second whether something that *was*
+working has stopped (`CHECKPOINT_SECONDS`). They used to share the label
+`time_stop` with `TIME_STOP_SECONDS` in ladder mode and `SCALP_TIME_STOP_SECONDS`
+in scalp mode — three parameters, three exit modes, defaults an order of
+magnitude apart, one label. Any read of "how are the timed exits doing" was a
+read of all of them blended, and the auto-tuner cannot attribute what it cannot
+distinguish; it noticed the collision itself, from hold times that made no sense
+against `TIME_STOP_SECONDS`. The evidence it is given now names the parameter
+behind each exit reason.
+
 A token that dumps 70% and recovers inside the window is **held**. A token that
 dumps and stays down is sold at the checkpoint, not at the bottom of the wick.
 

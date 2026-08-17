@@ -167,6 +167,19 @@ export function renderEvidence(e: Evidence): string {
     `Breakeven move at the average size: ${e.breakevenPct.toFixed(2)}% gross\n` +
     `Losses that were wins before fees: ${e.feeKilled}\n` +
     b('Exits by reason', e.exitReasons) +
+    // A reason is only useful if it names the parameter behind it. Without
+    // this the model has to infer which timer produced an exit from hold times,
+    // which is what it was reduced to while three separate timers all reported
+    // themselves as `time_stop`.
+    'Which parameter each timed exit belongs to:\n' +
+    '  dead_entry      -> RATCHET_FIRST_CHECKPOINT_SECONDS (never started)\n' +
+    '  checkpoint_cut  -> CHECKPOINT_SECONDS (was working, stopped)\n' +
+    '  ratchet_stall   -> CHECKPOINT_SECONDS + RATCHET_MIN_PROGRESS_PCT (no new high)\n' +
+    '  time_stop       -> TIME_STOP_SECONDS (ladder mode only)\n' +
+    '  scalp_time_stop -> SCALP_TIME_STOP_SECONDS (scalp mode only)\n' +
+    '  trailing_stop   -> RATCHET_GIVEBACK_PCT (gave back too much of the peak)\n' +
+    '  max_hold        -> MAX_HOLD_SECONDS\n' +
+    'Trades closed before this change may still carry the older shared label.\n' +
     b('Entry market cap', e.byEntryMcap) +
     b('Entry volume', e.byEntryVolume) +
     b('Age at entry', e.byEntryAge) +
