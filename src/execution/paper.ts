@@ -33,15 +33,22 @@ export class PaperExecutor implements Executor {
   readonly name = 'paper';
 
   private balances = new Map<string, number>();
-  private walletSol: number;
+  /**
+   * Net SOL moved by simulated trades, rather than an absolute balance.
+   *
+   * Holding the drift instead of the total is what lets the starting balance be
+   * edited while the bot is running. `RuntimeSettings` writes accepted changes
+   * onto the live config object every component already holds a reference to, so
+   * a new `PAPER_STARTING_BALANCE_SOL` shows up on the next read of
+   * `simulatedWalletSol` and moves the balance by exactly the delta — the run's
+   * own P&L is preserved, because it lives in this number and not in the total.
+   */
+  private driftSol = 0;
 
   constructor(
     private readonly cfg: Config,
     private readonly prices: PriceSource,
-    startingBalanceSol = 10,
-  ) {
-    this.walletSol = startingBalanceSol;
-  }
+  ) {}
 
   async buy(candidate: TokenCandidate, amountSol: number): Promise<BuyResult> {
     try {
@@ -76,7 +83,7 @@ export class PaperExecutor implements Executor {
       const spent = amountSol + fee;
 
       this.balances.set(candidate.mint, (this.balances.get(candidate.mint) ?? 0) + received);
-      this.walletSol -= spent;
+      this.driftSol -= spent;
 
       const price = amountSol / received;
       log.info(
@@ -143,7 +150,7 @@ export class PaperExecutor implements Executor {
       const net = Math.max(0, gross - fee);
 
       this.balances.set(position.mint, held - sellQty);
-      this.walletSol += net;
+      this.driftSol += net;
 
       const price = gross / sellQty;
       log.info(
@@ -184,7 +191,20 @@ export class PaperExecutor implements Executor {
     if (qty > 0) this.balances.set(mint, qty);
   }
 
+  /**
+   * The paper wallet right now: the configured starting balance plus whatever
+   * the simulated trades have done to it.
+   *
+   * In-memory by design. A paper run starts from the configured balance every
+   * time the process boots — the trade journal on disk is the record worth
+   * keeping, not a pretend wallet total.
+   */
   get simulatedWalletSol(): number {
-    return this.walletSol;
+    return this.cfg.PAPER_STARTING_BALANCE_SOL + this.driftSol;
+  }
+
+  /** What the simulated trades have done to the balance, ignoring the setting. */
+  get simulatedPnlSol(): number {
+    return this.driftSol;
   }
 }

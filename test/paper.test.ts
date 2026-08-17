@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { RuntimeSettings } from '../src/settings/runtime.js';
+import { TUNABLE_BY_KEY, vetProposal } from '../src/tuner/limits.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,13 +47,14 @@ const CANDIDATE: TokenCandidate = {
 };
 
 let dir: string;
+let env: NodeJS.ProcessEnv;
 let cfg: Config;
 let prices: StubPrices;
 let exec: PaperExecutor;
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'sniper-paper-'));
-  cfg = loadConfig({
+/** The base env. RuntimeSettings re-parses against it, so it has to be complete. */
+function envFor(d: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
     RPC_HTTP_URL: 'https://rpc.example.com',
     RPC_WS_URL: 'wss://rpc.example.com',
     MODE: 'paper',
@@ -59,8 +62,15 @@ beforeEach(() => {
     // These exercise executor and position-manager mechanics, so they pin the
     // exit policy rather than inheriting whichever one is currently default.
     EXIT_MODE: 'scalp',
-    DATA_DIR: dir,
-  } as unknown as NodeJS.ProcessEnv);
+    DATA_DIR: d,
+    ...extra,
+  } as unknown as NodeJS.ProcessEnv;
+}
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'sniper-paper-'));
+  env = envFor(dir);
+  cfg = loadConfig(env);
   prices = new StubPrices();
   exec = new PaperExecutor(cfg, prices);
 });
@@ -325,5 +335,43 @@ describe('resumed paper position (the restart bug)', () => {
     expect(sells).toBe(1);
     expect(store.getPosition(p.id)!.exitFailures).toBe(1);
     expect(store.getPosition(p.id)!.status).toBe('open');
+  });
+});
+
+describe('the paper wallet balance', () => {
+  it('starts from the configured balance rather than a hardcoded number', () => {
+    expect(cfg.PAPER_STARTING_BALANCE_SOL).toBe(10);
+    expect(exec.simulatedWalletSol).toBe(10);
+
+    const leaner = loadConfig(envFor(dir, { PAPER_STARTING_BALANCE_SOL: '2.5' }));
+    expect(new PaperExecutor(leaner, prices).simulatedWalletSol).toBe(2.5);
+  });
+
+  it('moves the balance by the delta when the setting changes mid-run', async () => {
+    // Paper mode has no wallet to read, so this number is what every risk check
+    // sizes against. Being able to correct it without restarting is the point —
+    // a restart throws away the watchlist and every open position's bookkeeping.
+    const settings = new RuntimeSettings(cfg, env, dir);
+
+    const buy = await exec.buy(CANDIDATE, 1);
+    expect(buy.ok).toBe(true);
+    const afterBuy = exec.simulatedWalletSol;
+    const spent = 10 - afterBuy;
+    expect(spent).toBeGreaterThan(1); // the 1 SOL plus fees
+
+    expect(settings.apply({ PAPER_STARTING_BALANCE_SOL: '50' }).ok).toBe(true);
+
+    // Up by exactly 40, and the run's own P&L is untouched: the executor holds
+    // the drift, not the total, so the setting is a starting point rather than
+    // an override of everything that has happened since.
+    expect(exec.simulatedWalletSol).toBeCloseTo(afterBuy + 40, 9);
+    expect(exec.simulatedPnlSol).toBeCloseTo(-spent, 9);
+  });
+
+  it('is not something the tuner can award itself', async () => {
+    // Sizing and the loss limits derive from the balance, so a tuner able to
+    // raise it could improve its own expectancy without trading any better.
+    expect(TUNABLE_BY_KEY.has('PAPER_STARTING_BALANCE_SOL')).toBe(false);
+    expect(vetProposal('PAPER_STARTING_BALANCE_SOL', '1000', 10).ok).toBe(false);
   });
 });

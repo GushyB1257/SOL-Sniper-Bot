@@ -249,6 +249,10 @@ export const FIELDS: FieldSpec[] = [
   { key: 'PRICE_STALE_SECONDS', label: 'Give up when unpriceable for', bot: 'shared',
     group: 'Exit', kind: 'number', min: 30, max: 86_400, step: 30,
     help: 'Cannot READ a price is not the same as worthless. Be generous here.' },
+  { key: 'PAPER_STARTING_BALANCE_SOL', label: 'Paper wallet balance', bot: 'shared',
+    group: 'Risk', kind: 'number', min: 0.01, max: 100_000, step: 0.5,
+    help: 'Paper mode only, and what every risk check sizes against. Changing it ' +
+      'moves the balance now and keeps the run\'s P&L. Resets to this on restart.' },
   { key: 'DAILY_LOSS_LIMIT_SOL', label: 'Daily loss limit', bot: 'shared', group: 'Risk',
     kind: 'number', min: 0, max: 1000, step: 0.1, help: 'Per bot. Stops new entries for the day.' },
   { key: 'MAX_CONSECUTIVE_LOSSES', label: 'Loss streak breaker', bot: 'shared', group: 'Risk',

@@ -170,6 +170,12 @@ describe('what the tuner may touch', () => {
       'BOT_COPY_ENABLED',
       // The user's input, not a knob.
       'COPY_WALLETS',
+      // The size of the simulated bankroll, which is the denominator every
+      // paper result is measured against. A tuner able to raise it could
+      // improve its own numbers by loosening the risk checks that sizing and
+      // the loss limits derive from, without the strategy getting better at
+      // anything. That is not tuning, it is marking its own homework.
+      'PAPER_STARTING_BALANCE_SOL',
       // Read once at construction; changing it does nothing until a restart.
       'DISCOVERY_SOURCE',
     ]);

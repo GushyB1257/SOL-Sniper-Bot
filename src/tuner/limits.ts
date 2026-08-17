@@ -31,6 +31,12 @@ import type { BotId } from '../bots/bot.js';
  *    are controls, not parameters, and they go through a different code path.
  *  - **`COPY_WALLETS`.** That is your list of people to follow — an input, not
  *    a parameter. Nothing should be able to quietly drop a wallet from it.
+ *  - **`PAPER_STARTING_BALANCE_SOL`.** The size of the simulated bankroll, and
+ *    so the denominator every paper result is measured against. Position sizing,
+ *    `MIN_WALLET_RESERVE_SOL` and the loss limits all derive from the balance, so
+ *    a tuner able to raise it could improve its own expectancy by loosening the
+ *    checks rather than by trading better. That is not tuning, it is marking its
+ *    own homework.
  *  - **`DISCOVERY_SOURCE`.** Read once, at construction. Changing it at runtime
  *    does nothing until a restart — which is worse than not offering it, since
  *    the tuner would spend a whole measurement window on a change that had no

@@ -222,6 +222,16 @@ so the answer it gives is meaningful — but it assumes every buy landed and eve
 sell found a bid, so it is a ceiling. If the profit factor is below 1.0 there,
 live will be worse, and that result is decisive.
 
+Set `PAPER_STARTING_BALANCE_SOL` (default 10) to what you would actually fund
+the bot with. Paper mode has no wallet to read, so that number is what every
+risk check measures against — position sizing, `MIN_WALLET_RESERVE_SOL`, the
+loss limits as a share of the balance. The same strategy on 10 SOL and on 1 SOL
+answers two different questions, and the second is usually the one you are
+really asking. It is editable from the dashboard's **Risk** group while the bot
+is running: the balance moves by the difference and the run's P&L is kept. It
+lives in memory, so a restart begins again from that number — the trade journal
+on disk is the record worth keeping, not a pretend wallet total.
+
 Start with **[QUICKSTART.md](QUICKSTART.md)** if you have not run a Node project
 before.
 

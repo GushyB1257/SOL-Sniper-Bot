@@ -147,6 +147,21 @@ const walletListSchema = z.string().transform((raw, ctx) => {
 
 const schema = z.object({
   MODE: z.enum(['paper', 'live']).default('paper'),
+  /**
+   * SOL the paper wallet starts each run with.
+   *
+   * Paper mode has no wallet to read, so this is the number every risk check
+   * measures against: position sizing, `MIN_WALLET_RESERVE_SOL`, the daily loss
+   * limit as a share of the balance. Set it to what you would actually fund the
+   * bot with — a paper run on 10 SOL that sizes at 0.25 is answering a different
+   * question from the same strategy on 1 SOL, and the second one is the question
+   * most people are really asking.
+   *
+   * Editable while running, and takes effect immediately: the balance moves by
+   * the delta and the run's simulated P&L is preserved. In-memory either way, so
+   * a restart begins again from this number.
+   */
+  PAPER_STARTING_BALANCE_SOL: num(0.01, 100_000).default(10),
 
   RPC_HTTP_URL: z.string().url(),
   RPC_WS_URL: z.string().url(),
