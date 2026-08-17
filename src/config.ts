@@ -694,8 +694,20 @@ const schema = z.object({
    * closing 40 in two minutes it barely slows anything down.
    */
   TUNER_MIN_TRADES: num(10, 5000).default(40),
-  /** Parameters that may move in one round. One coherent idea at a time. */
-  TUNER_MAX_CHANGES_PER_ROUND: num(1, 8).default(2),
+  /**
+   * Parameters that may move in one round.
+   *
+   * Higher searches faster and attributes worse, and the trade is worth stating
+   * plainly. One change per round means a verdict names its cause. Four means
+   * four ideas get tested in the time one used to — but a bundle is kept or
+   * reverted WHOLE, so a losing bundle throws away its good changes along with
+   * its bad one, and a winning bundle cannot say which part won.
+   *
+   * Raised from 2 because a day of measuring one thing at a time had produced
+   * nothing profitable: when most changes are noise, testing them one at a time
+   * spends the entire sample on finding that out.
+   */
+  TUNER_MAX_CHANGES_PER_ROUND: num(1, 8).default(4),
   /** Largest single-round move for any parameter, as a share of its value. */
   TUNER_MAX_STEP_PCT: num(1, 100).default(30),
 

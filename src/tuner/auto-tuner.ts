@@ -716,7 +716,8 @@ How to read the evidence:
 Rules:
 
 - Propose NO changes when the evidence does not clearly point somewhere. "No change" is a valid and frequently correct answer, and is much better than moving something to look busy.
-- One coherent idea per round. Changing three unrelated things at once means the measurement cannot attribute the result to any of them.
+- Use the whole change budget when the evidence supports more than one move. A bundle is kept or reverted WHOLE, so the rule is not "one change" — it is "only changes you would be happy to keep together and happy to lose together". Prefer moves in DIFFERENT subsystems (an entry filter and an exit shape, say), because two changes pulling on the same number confound each other; two changes pulling on unrelated numbers mostly do not.
+- What a bundle costs, so you can weigh it: a winning bundle cannot say which part won, and a losing bundle discards its good changes with its bad one. What it buys is four ideas tested in the time one used to take. When a single change is genuinely the whole story — a shape probe whose window would be ruined by anything else moving — say so and propose one.
 - Every change needs a specific reason citing a number you were given. "Might improve performance" is not a reason.
 - Risk parameters split into two kinds, and they are not the same decision.
 

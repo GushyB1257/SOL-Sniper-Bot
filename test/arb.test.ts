@@ -2,7 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ArbBot, arbNote, lamportsToSol, solToLamports } from '../src/arb/bot.js';
+import {
+  ArbBot,
+  arbNote,
+  categoriseReject,
+  edgeBucket,
+  lamportsToSol,
+  solToLamports,
+} from '../src/arb/bot.js';
 import { JupiterClient, NoRouteError } from '../src/arb/jupiter.js';
 import {
   ATA_RENT_LAMPORTS,
@@ -602,6 +609,77 @@ describe('the arbitrage bot', () => {
     expect(note).toContain('0.310% impact');
     expect(note).toContain('1234ms quote age');
     expect(note).toContain('cross-dex');
+  });
+});
+
+describe('why nothing qualified', () => {
+  it('names the gate that turned each route down', () => {
+    // "Nothing has qualified for a long time" is the expected outcome here, and
+    // without a tally it is also unanswerable: a floor ten times too high and a
+    // pair with no edge at any floor look identical from the outside.
+    expect(categoriseReject(null)).toBe('cleared');
+    expect(categoriseReject('edge 4.21bps below floor 30bps')).toBe('below the min edge');
+    expect(categoriseReject('negative net edge after costs')).toBe('negative after fees');
+    expect(categoriseReject('price impact 0.812% exceeds 0.5%')).toBe('price impact too high');
+    expect(categoriseReject('worst case loses 4000 lamports — the slippage tolerance is wider than the edge'))
+      .toBe('worst case unprofitable');
+    expect(categoriseReject('quote stale by 900ms')).toBe('quotes went stale');
+  });
+
+  it('collapses the specific numbers, which are noise in a tally', () => {
+    // "edge 4.21bps below floor 30" and "edge 4.19bps below floor 30" are the
+    // same finding twice.
+    expect(categoriseReject('edge 4.21bps below floor 30bps')).toBe(
+      categoriseReject('edge 4.19bps below floor 30bps'),
+    );
+  });
+
+  it('bands the edges around the decision they inform', () => {
+    // Bracketing the 30bps default rather than spacing evenly, because the
+    // question is "where does the floor belong".
+    expect(edgeBucket(-3)).toBe('<0');
+    expect(edgeBucket(0)).toBe('0-5');
+    expect(edgeBucket(4.9)).toBe('0-5');
+    expect(edgeBucket(12)).toBe('10-20');
+    expect(edgeBucket(29.99)).toBe('20-30');
+    expect(edgeBucket(30)).toBe('30+');
+  });
+
+  it('accumulates the tally across scans, not just the last one', async () => {
+    const cfg = loadConfig(env({ ARB_MIN_PROFIT_BPS: '500', ARB_TRADE_SIZE_SOL: '1' }));
+    const bot = new ArbBot({
+      cfg,
+      dataDir: dir,
+      killSwitchPath: 'STOP',
+      client: {
+        rateLimited: 0,
+        quote: async (req: { inputMint: string; amount: bigint }) =>
+          quote({
+            inputMint: req.inputMint,
+            outputMint: req.inputMint === WSOL.mint ? USDC.mint : WSOL.mint,
+            inAmount: req.amount,
+            // A small positive edge — the common real case, and far below a
+            // 500bps floor.
+            outAmount: req.inputMint === WSOL.mint ? 200_000_000n : (req.amount * 1_002n) / 200n,
+            otherAmountThreshold:
+              req.inputMint === WSOL.mint ? 199_000_000n : (req.amount * 1_001n) / 200n,
+            fetchedAt: Date.now(),
+          }),
+      } as unknown as JupiterClient,
+    });
+
+    await bot.tick();
+    await bot.tick();
+
+    const view = bot.view();
+    expect(view.routesPriced).toBe(2);
+    // The gate that is actually doing the work is named, with a count.
+    expect(view.rejectCounts['below the min edge']).toBe(2);
+    // And the edges are banded, so the floor can be set from a reading.
+    const filled = view.edgeBuckets.filter((b) => b.count > 0);
+    expect(filled).toHaveLength(1);
+    expect(filled[0]!.key).toBe('10-20');
+    bot.store.close();
   });
 });
 

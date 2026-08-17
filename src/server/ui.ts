@@ -1601,6 +1601,36 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     line('Last scan', a.lastScanAt ? a.lastScanMs + 'ms' : '—');
     line('Routing through', a.tokens.length ? a.tokens.join(', ') : 'nothing configured');
     line('Strategies', a.strategies.join(', '));
+
+    // "Nothing has qualified" is the expected outcome, and without this it is
+    // also an unanswerable one. The tally says which gate is doing the work and
+    // how big the edges actually are, which is what the floor should be set from.
+    if (a.routesPriced > 0) {
+      econ.appendChild(el('div', 'tile-note', a.routesPriced.toLocaleString() +
+        ' routes priced this session. Why they were turned down:'));
+      Object.keys(a.rejectCounts).forEach(function (k) {
+        var n = a.rejectCounts[k];
+        var r = el('div', 'kv');
+        r.appendChild(el('span', 'k', '  ' + k));
+        r.appendChild(el('span', 'v ' + (k === 'cleared' ? 'pos' : ''),
+          n.toLocaleString() + '  (' + ((n / a.routesPriced) * 100).toFixed(1) + '%)'));
+        econ.appendChild(r);
+      });
+
+      var any = a.edgeBuckets.some(function (b) { return b.count > 0; });
+      if (any) {
+        econ.appendChild(el('div', 'tile-note',
+          'Net edge distribution — this is the reading to set the ' +
+          a.minProfitBps.toFixed(0) + 'bps floor from:'));
+        a.edgeBuckets.forEach(function (b) {
+          var r = el('div', 'kv');
+          r.appendChild(el('span', 'k', '  ' + b.key + ' bps'));
+          r.appendChild(el('span', 'v', b.count.toLocaleString() +
+            '  (' + ((b.count / a.routesPriced) * 100).toFixed(1) + '%)'));
+          econ.appendChild(r);
+        });
+      }
+    }
     if (a.rateLimited > 0) {
       line('Jupiter 429s', String(a.rateLimited),
         'Raise the gap between quotes, or scan fewer tokens. The free tier meters per second.');

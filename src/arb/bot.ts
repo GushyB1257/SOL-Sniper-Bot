@@ -69,6 +69,20 @@ export class ArbBot {
   private lastScanAt = 0;
   private lastScanMs = 0;
 
+  /**
+   * Why routes were turned down, and how big their edges were, across the whole
+   * session rather than the last scan.
+   *
+   * "Nothing has qualified for a long time" is the expected outcome here, and
+   * without this it is also an unanswerable one: the tab showed the last twelve
+   * routes and a single best-ever number, which cannot distinguish "the floor is
+   * ten times too high" from "there is no edge on this pair at any floor". These
+   * two counters are what turn the floor from a guess into a reading.
+   */
+  private rejectCounts = new Map<string, number>();
+  private edgeBuckets = new Map<string, number>();
+  private routesPriced = 0;
+
   constructor(private readonly deps: ArbBotDeps) {
     this.cfg = deps.cfg;
     this.now = deps.now ?? Date.now;
@@ -163,6 +177,11 @@ export class ArbBot {
       lastScanMs: this.lastScanMs,
       tokens: this.tokens().map((t) => t.symbol),
       strategies: this.strategies(),
+      routesPriced: this.routesPriced,
+      rejectCounts: Object.fromEntries(
+        [...this.rejectCounts].sort((a, b) => b[1] - a[1]),
+      ),
+      edgeBuckets: EDGE_BUCKETS.map((key) => ({ key, count: this.edgeBuckets.get(key) ?? 0 })),
       routes: this.lastEvaluated.slice(0, 12).map((e) => ({
         route: e.route,
         symbol: e.quoteSymbol,
@@ -234,6 +253,14 @@ export class ArbBot {
     this.lastEvaluated = scan.evaluated;
     this.lastScanAt = this.now();
     this.lastScanMs = scan.durationMs;
+
+    for (const route of scan.evaluated) {
+      this.routesPriced += 1;
+      const reason = categoriseReject(route.rejectReason);
+      this.rejectCounts.set(reason, (this.rejectCounts.get(reason) ?? 0) + 1);
+      const bucket = edgeBucket(route.netProfitBps);
+      this.edgeBuckets.set(bucket, (this.edgeBuckets.get(bucket) ?? 0) + 1);
+    }
 
     const best = scan.evaluated[0];
     if (best && best.netProfitBps > this.stats.bestBps) this.stats.bestBps = best.netProfitBps;
@@ -419,6 +446,12 @@ export interface ArbView {
   lastScanMs: number;
   tokens: string[];
   strategies: string[];
+  /** Routes priced this session, whether they cleared or not. */
+  routesPriced: number;
+  /** Why they were turned down, commonest first. */
+  rejectCounts: Record<string, number>;
+  /** How big the edges actually were — the reading the floor is set from. */
+  edgeBuckets: Array<{ key: string; count: number }>;
   routes: Array<{
     route: string;
     symbol: string;
@@ -445,6 +478,40 @@ export function arbNote(result: ArbTradeResult): string {
     `${Math.round(result.quoteAgeMs)}ms quote age,`,
     `${result.strategy}`,
   ].join(' ');
+}
+
+/**
+ * Edge bands, chosen to straddle the decision.
+ *
+ * The question this exists to answer is "where does the floor belong", so the
+ * bands bracket the default of 30bps rather than being evenly spaced.
+ */
+export const EDGE_BUCKETS = ['<0', '0-5', '5-10', '10-20', '20-30', '30+'] as const;
+
+export function edgeBucket(bps: number): string {
+  if (bps < 0) return '<0';
+  if (bps < 5) return '0-5';
+  if (bps < 10) return '5-10';
+  if (bps < 20) return '10-20';
+  if (bps < 30) return '20-30';
+  return '30+';
+}
+
+/**
+ * Collapses a reject reason to the gate that produced it.
+ *
+ * The raw strings carry the specific numbers, which is right for one row and
+ * useless for a tally — "edge 4.21bps below floor 30bps" and "edge 4.19bps
+ * below floor 30bps" are the same finding twice.
+ */
+export function categoriseReject(reason: string | null): string {
+  if (reason === null) return 'cleared';
+  if (reason.includes('below floor')) return 'below the min edge';
+  if (reason.includes('negative net edge')) return 'negative after fees';
+  if (reason.includes('price impact')) return 'price impact too high';
+  if (reason.includes('worst case')) return 'worst case unprofitable';
+  if (reason.includes('stale')) return 'quotes went stale';
+  return 'other';
 }
 
 function splitList(raw: string): string[] {
