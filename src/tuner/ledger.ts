@@ -48,6 +48,19 @@ export interface Experiment {
   verdict?: string;
   /** Things the model wanted changed but is not allowed to touch. */
   notes?: string[];
+  /**
+   * RPC health across the measurement window.
+   *
+   * An experiment measured while the endpoint was rate limiting is measuring the
+   * throttle, not the change: entries get shed, sells queue behind backoff, and
+   * the expectancy that comes out is a fact about the connection. The model
+   * flagged this itself as a reason a verdict might not be readable, and it was
+   * right — so the window's own conditions are recorded alongside its result,
+   * and a confounded window is told to the next round rather than silently
+   * counted as evidence.
+   */
+  rpcAtStart?: { requests: number; rateLimited: number };
+  rpcAtDecision?: { requests: number; rateLimited: number };
 }
 
 interface LedgerFile {

@@ -10,6 +10,7 @@ import {
 } from '../src/tuner/auto-tuner.js';
 import { RISK_KEYS, TUNABLES, TUNABLE_BY_KEY, vetProposal } from '../src/tuner/limits.js';
 import { TuningLedger } from '../src/tuner/ledger.js';
+import { createThrottledFetch, resetRpcStatsForTests } from '../src/util/rpc-throttle.js';
 import { snipeNote } from '../src/bots/bot.js';
 import { buildEvidence, renderEvidence } from '../src/tuner/evidence.js';
 import { RuntimeSettings } from '../src/settings/runtime.js';
@@ -693,6 +694,145 @@ describe('changes already in flight', () => {
     // becomes a bot that will not start.
     expect(settings.apply({ MIN_HOLDERS: '2.6' }).ok).toBe(true);
     expect(loadConfig({ ...ENV(dir), MIN_HOLDERS: '2.6' }).MIN_HOLDERS).toBe(2.6);
+  });
+});
+
+describe('what the model is told about limits', () => {
+  /**
+   * A real tuner with only the model call stubbed, so `propose` actually builds
+   * the catalogue. `tunerWith` replaces `propose` wholesale, which is right for
+   * testing the vetting and wrong for testing what the prompt says.
+   */
+  async function catalogue(extra: Record<string, string> = {}): Promise<string> {
+    const c = loadConfig(ENV(dir, extra));
+    const t = new AutoTuner({
+      cfg: c,
+      settings: new RuntimeSettings(c, ENV(dir, extra), dir),
+      stores: new Map([['sniper', store]]),
+      dataDir: dir,
+    });
+    let prompt = '';
+    (
+      t as unknown as { claude: { ask: (o: { userContent: string }) => Promise<unknown> } }
+    ).claude = {
+      ask: async (o: { userContent: string }) => {
+        prompt = o.userContent;
+        return { ok: true, value: { changes: [] }, usage: {} };
+      },
+    };
+    fill(12);
+    await t.tick();
+    return prompt;
+  }
+
+  function lineFor(prompt: string, key: string): string | undefined {
+    return prompt.split('\n').find((l) => l.trim().startsWith(key + ' ='));
+  }
+
+  it('states the zero exemption on every parameter that is off, not just two', async () => {
+    // The model reached the wrong conclusion about SNIPE_CONFIRM_MS sitting at 0
+    // — that a percentage step cap would block it mechanically — spent a note
+    // asking to be seeded manually, and declined to propose. It was wrong, but
+    // fairly: the exemption was only mentioned in the prose of two specific
+    // parameters, so there was no way to know it was general. A rule the model
+    // has to infer from examples is a rule it will get wrong.
+    const prompt = await catalogue({ SNIPE_CONFIRM_MS: '0' });
+    const line = lineFor(prompt, 'SNIPE_CONFIRM_MS');
+    expect(line, 'SNIPE_CONFIRM_MS must appear in the catalogue').toBeTruthy();
+    expect(line).toMatch(/currently OFF at 0/);
+    expect(line).toMatch(/step cap does not apply/);
+    expect(line).toMatch(/up to 7500/);
+  });
+
+  it('states the ordinary step cap once the parameter is not zero', async () => {
+    const prompt = await catalogue({ SNIPE_CONFIRM_MS: '2500' });
+    const line = lineFor(prompt, 'SNIPE_CONFIRM_MS');
+    expect(line).toMatch(/% move this round/);
+    expect(line).not.toMatch(/OFF at 0/);
+  });
+
+  it('marks a counted parameter as whole-numbers-only', async () => {
+    const prompt = await catalogue();
+    expect(lineFor(prompt, 'MIN_HOLDERS')).toMatch(/whole numbers only/);
+    expect(lineFor(prompt, 'MIN_SAFETY_SCORE')).not.toMatch(/whole numbers only/);
+  });
+
+  it('never promises a ceiling the vetting would refuse', () => {
+    // The number told to the model and the number enforced are computed in two
+    // places. If they drift the model is being lied to, so every tunable that
+    // could sit at zero is walked against the real vetting.
+    for (const spec of TUNABLES) {
+      if (spec.kind !== 'number' || spec.min === undefined || spec.min > 0) continue;
+      const ceiling = Math.min(spec.max!, Math.max(1, spec.max! * 0.25));
+      const r = vetProposal(spec.key, '0', ceiling, 30);
+      expect(r.ok, `${spec.key}: promised ${ceiling} but vetting refused it`).toBe(true);
+      if (r.ok) expect(Number(r.value), spec.key).toBeCloseTo(ceiling, 6);
+    }
+  });
+});
+
+describe('when the measurement window was not clean', () => {
+  it('flags a verdict reached while the endpoint was rate limiting', async () => {
+    // A window measured through heavy rate limiting is measuring the throttle,
+    // not the change: entries get shed and sells queue behind backoff. The model
+    // raised this itself as a reason a verdict might not be readable.
+    resetRpcStatsForTests();
+    fill(12, { pnlSol: -0.05 });
+    const t = tunerWith({ changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'x' }] });
+    await t.tick();
+    expect(t.history).toHaveLength(1);
+
+    // Simulate a congested window between the change and the verdict.
+    const f = createThrottledFetch(
+      { maxConcurrent: 8, maxPerSecond: 0, maxRetries: 0 },
+      (async () =>
+        ({ status: 429, headers: { get: () => null } }) as unknown as Response) as typeof fetch,
+    );
+    await Promise.all(Array.from({ length: 250 }, () => f('http://rpc.test')));
+
+    fill(12, { pnlSol: 0.1 });
+    cooled(t);
+    await t.tick();
+
+    const verdict = t.history[0]!.verdict ?? '';
+    expect(verdict).toMatch(/WINDOW CONFOUNDED/);
+    expect(verdict).toMatch(/rate limited during this window/);
+    // Still decided, rather than left running forever on an unhealthy endpoint.
+    expect(t.history[0]!.status).toBe('kept');
+  });
+
+  it('says nothing when the window was clean', async () => {
+    resetRpcStatsForTests();
+    fill(12, { pnlSol: -0.05 });
+    const t = tunerWith({ changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'x' }] });
+    await t.tick();
+
+    fill(12, { pnlSol: 0.1 });
+    cooled(t);
+    await t.tick();
+
+    expect(t.history[0]!.verdict ?? '').not.toMatch(/CONFOUNDED/);
+  });
+
+  it('ignores a share computed from too few calls to mean anything', async () => {
+    // 3 of 4 requests rate limited is 75% and says nothing at all.
+    resetRpcStatsForTests();
+    fill(12, { pnlSol: -0.05 });
+    const t = tunerWith({ changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'x' }] });
+    await t.tick();
+
+    const f = createThrottledFetch(
+      { maxConcurrent: 4, maxPerSecond: 0, maxRetries: 0 },
+      (async () =>
+        ({ status: 429, headers: { get: () => null } }) as unknown as Response) as typeof fetch,
+    );
+    await Promise.all(Array.from({ length: 4 }, () => f('http://rpc.test')));
+
+    fill(12, { pnlSol: 0.1 });
+    cooled(t);
+    await t.tick();
+
+    expect(t.history[0]!.verdict ?? '').not.toMatch(/CONFOUNDED/);
   });
 });
 

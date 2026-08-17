@@ -477,6 +477,29 @@ as such, rounded, and always free to move by at least one whole unit; without
 that floor a small count is frozen wherever it happens to sit and every proposal
 for it is rejected as "no change".
 
+**A parameter sitting at 0 says so, and says how far it can go.** A percentage
+step cap cannot move a value off zero, so the vetting has always had an
+exemption — but it was only described in the prose of two specific parameters.
+The model read that as a rule about those two, correctly worried that a proposal
+for a third would be refused mechanically, spent a note asking to be seeded
+manually, and declined to propose at all. It was wrong about the mechanics and
+right about the cause: a rule inferred from examples is a rule that gets
+inferred wrong. The catalogue now states it on every parameter that is off,
+including the reachable ceiling, and a test walks every zero-capable tunable to
+check the number promised is the number the vetting actually allows.
+
+**A window measured through rate limiting says so too.** An experiment settled
+while the endpoint was refusing a fifth of requests is measuring the throttle,
+not the change: entries get shed and sells queue behind backoff, so the
+expectancy that comes out is a fact about the connection. The model flagged this
+itself as a reason a verdict might not be readable. Each experiment now records
+RPC health at its start and at its decision, and a window with meaningful rate
+limiting carries `[WINDOW CONFOUNDED: …]` in its verdict — which `historyFor`
+puts in front of the next round. It is reported rather than acted on
+deliberately: auto-invalidating would leave an experiment that never settles
+while an endpoint is unhealthy, which is worse than a noisy verdict the model
+can discount for itself.
+
 **Risk parameters are left where a human put them.** The bounds in `limits.ts`
 describe what the tuner may *authorise*, not what a sane value is. A value parked
 outside them — `HOURLY_SPEND_CAP_SOL` at a hand-set 100 against a tuner ceiling

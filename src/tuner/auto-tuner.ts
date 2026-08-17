@@ -10,6 +10,7 @@ import type { TradeJournalEntry } from '../types.js';
 import { buildEvidence, renderEvidence, type Evidence } from './evidence.js';
 import { TUNABLES, TUNABLE_BY_KEY, vetProposal } from './limits.js';
 import { TuningLedger, type Change, type Experiment } from './ledger.js';
+import { rpcStats } from '../util/rpc-throttle.js';
 
 const log = logger('tuner');
 
@@ -318,6 +319,7 @@ export class AutoTuner {
       journalAtStart: journal.length,
       status: 'running',
       notes: proposal.notes,
+      rpcAtStart: rpcHealth(),
     };
     this.ledger.add(experiment);
 
@@ -353,15 +355,22 @@ export class AutoTuner {
     const result = expectancy(after);
     const improved = result >= exp.baselineExpectancy;
 
+    // How congested the window was. A verdict reached while a fifth of requests
+    // were being refused is not a verdict about the change.
+    const rpcAtDecision = rpcHealth();
+    const confounded = confoundedBy(exp.rpcAtStart, rpcAtDecision);
+    const caveat = confounded ? ` [WINDOW CONFOUNDED: ${confounded}]` : '';
+
     if (improved) {
       this.ledger.update(exp.id, {
         status: 'kept',
         resultExpectancy: result,
         resultTrades: after.length,
         decidedAt: Date.now(),
+        rpcAtDecision,
         verdict:
           `${result.toFixed(5)} SOL/trade over ${after.length} trades, against a baseline of ` +
-          `${exp.baselineExpectancy.toFixed(5)} — kept`,
+          `${exp.baselineExpectancy.toFixed(5)} — kept${caveat}`,
       });
       log.info(
         `${exp.bot}: change KEPT — ${result.toFixed(5)} SOL/trade vs baseline ` +
@@ -381,9 +390,10 @@ export class AutoTuner {
       resultExpectancy: result,
       resultTrades: after.length,
       decidedAt: Date.now(),
+      rpcAtDecision,
       verdict:
         `${result.toFixed(5)} SOL/trade over ${after.length} trades, against a baseline of ` +
-        `${exp.baselineExpectancy.toFixed(5)} — ${ok ? 'reverted' : 'REVERT FAILED, left in place'}`,
+        `${exp.baselineExpectancy.toFixed(5)} — ${ok ? 'reverted' : 'REVERT FAILED, left in place'}${caveat}`,
     });
     log.warn(
       `${exp.bot}: change REVERTED — ${result.toFixed(5)} SOL/trade did not beat baseline ` +
@@ -438,11 +448,28 @@ export class AutoTuner {
     const knobs = TUNABLES.filter((t) => t.bot === bot || t.bot === 'shared');
     const current = this.deps.settings.values();
 
+    // The step cap is stated per parameter, and so are the two exemptions to
+    // it. The model reached the wrong conclusion about a parameter sitting at 0
+    // — that a percentage cap would block it mechanically — spent a note asking
+    // to be seeded manually, and declined to propose. It was wrong, but for a
+    // fair reason: the zero exemption was only mentioned in the prose of two
+    // specific parameters, so there was no way to know it was general. A rule
+    // the model has to infer from examples is a rule it will get wrong.
     const bounds = (t: (typeof knobs)[number]): string => {
       if (t.kind === 'boolean') return '[true or false]';
       if (t.kind === 'enum') return `[one of: ${t.options?.join(' | ')}]`;
       if (t.kind === 'text') return '[text, must match the documented format]';
-      return `[allowed ${t.min}..${t.max}, max ${t.maxStepPct}% move this round]`;
+
+      const step =
+        Number(current[t.key]) === 0
+          ? // Off is a special case in the vetting: a percentage of zero is zero,
+            // so a disabled parameter could never be switched on. State the
+            // actual reachable ceiling rather than a step that does not apply.
+            `currently OFF at 0 — the step cap does not apply, propose anything ` +
+            `up to ${zeroCeiling(t)} in one round`
+          : `max ${t.maxStepPct}% move this round`;
+      const cap = t.integer ? ', whole numbers only' : '';
+      return `[allowed ${t.min}..${t.max}, ${step}${cap}]`;
     };
 
     // Marked rather than hidden. A parameter that does nothing in the current
@@ -578,6 +605,49 @@ export class AutoTuner {
     }
     return true;
   }
+}
+
+/**
+ * The ceiling a parameter sitting at 0 can reach in one round.
+ *
+ * Mirrors the `current === 0` branch of `vetProposal`. Duplicated deliberately
+ * rather than exported from there: this is the number told to the MODEL, and if
+ * the two ever drift apart the tuner test that walks every tunable from 0 will
+ * fail on the mismatch rather than the model quietly being lied to.
+ */
+/** RPC counters right now, for stamping on an experiment. */
+function rpcHealth(): { requests: number; rateLimited: number } {
+  const s = rpcStats();
+  return { requests: s.requests, rateLimited: s.rateLimited };
+}
+
+/**
+ * Whether rate limiting was heavy enough over a window to make its result
+ * unreadable, and if so, what to say about it.
+ *
+ * Deliberately reported rather than acted on. Auto-invalidating a window would
+ * mean an experiment that never settles while an endpoint is unhealthy, which is
+ * a worse failure than a noisy verdict — so the verdict still lands, carries the
+ * caveat, and the next round decides what the evidence is worth. `historyFor`
+ * puts the verdict string in the prompt, so the model sees this.
+ */
+function confoundedBy(
+  start: { requests: number; rateLimited: number } | undefined,
+  end: { requests: number; rateLimited: number },
+): string | null {
+  if (!start) return null;
+  const requests = end.requests - start.requests;
+  const limited = end.rateLimited - start.rateLimited;
+  if (requests < 200) return null; // too few calls for the share to mean anything
+
+  const share = (limited / requests) * 100;
+  if (share < 5) return null;
+  return `${share.toFixed(1)}% of ${requests} RPC calls were rate limited during this window`;
+}
+
+function zeroCeiling(t: { max?: number }): number {
+  const max = t.max ?? 1;
+  return Math.min(max, Math.max(1, max * 0.25));
 }
 
 function expectancy(journal: readonly TradeJournalEntry[]): number {
