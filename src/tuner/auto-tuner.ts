@@ -136,6 +136,7 @@ export class AutoTuner {
   private running = false;
   private lastRunAt = 0;
   private lastError?: string;
+  private lastErrorAt = 0;
 
   constructor(private readonly deps: TunerDeps) {
     this.ledger = new TuningLedger(deps.dataDir);
@@ -146,8 +147,31 @@ export class AutoTuner {
     return this.ledger.all();
   }
 
-  get status(): { lastRunAt: number; lastError?: string; usage: AiUsageTotals } {
-    return { lastRunAt: this.lastRunAt, lastError: this.lastError, usage: this.claude.usage };
+  get status(): {
+    lastRunAt: number;
+    lastError?: string;
+    lastErrorAt?: number;
+    usage: AiUsageTotals;
+  } {
+    return {
+      lastRunAt: this.lastRunAt,
+      lastError: this.lastError,
+      ...(this.lastError && { lastErrorAt: this.lastErrorAt }),
+      usage: this.claude.usage,
+    };
+  }
+
+  /**
+   * Records a failure with the time it happened.
+   *
+   * Without the timestamp the card shows the last error that ever occurred,
+   * with nothing to say when. A single failure hours ago and a failure every
+   * round look identical, which is exactly the difference you need to know:
+   * one is a blip already recovered from, the other is a broken tuner.
+   */
+  private fail(msg: string): void {
+    this.lastError = msg;
+    this.lastErrorAt = Date.now();
   }
 
   /**
@@ -253,7 +277,7 @@ export class AutoTuner {
         try {
           await this.tuneBot(bot, store);
         } catch (err) {
-          this.lastError = errMessage(err);
+          this.fail(errMessage(err));
           log.error(`${bot}: tuning failed — ${this.lastError}`);
         }
       }
@@ -561,6 +585,11 @@ export class AutoTuner {
         // whole round returns empty. The tuner runs a few times an hour at
         // most, so the ceiling costs nothing when it is not used.
         maxTokens: 16_000,
+        // And a deadline to match that budget. The client-wide one is set for
+        // trade decisions, where late is the same as wrong; here nothing is
+        // waiting, so the only thing a short deadline can do is throw away a
+        // round the model was part-way through.
+        timeoutMs: this.deps.cfg.AI_TUNER_TIMEOUT_MS,
         jsonSchema: JSON_SCHEMA,
         userContent:
           `${renderEvidence(evidence)}\n\n` +
@@ -580,7 +609,7 @@ export class AutoTuner {
     );
 
     if (!result.ok || !result.value) {
-      this.lastError = result.error;
+      this.fail(result.error ?? 'tuner call failed');
       log.warn(`${bot}: tuner call failed — ${result.error}`);
       return null;
     }
@@ -646,7 +675,7 @@ export class AutoTuner {
 
     const res = this.deps.settings.apply(patch);
     if (!res.ok) {
-      this.lastError = res.error;
+      this.fail(res.error ?? 'patch refused');
       log.error(`Tuner patch refused: ${res.error}`);
       return false;
     }

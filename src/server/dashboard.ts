@@ -384,6 +384,7 @@ export class Dashboard {
       nextRunAt: t.nextRunAt,
       byBot: t.progress(),
       lastError: s.lastError,
+      lastErrorAt: s.lastErrorAt,
       costUsd: s.usage.estimatedCostUsd,
       // Newest first, and capped: this is an audit trail, not a data source.
       experiments: [...t.history].slice(-40).reverse().map((e) => ({

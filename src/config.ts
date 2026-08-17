@@ -580,7 +580,20 @@ const schema = z.object({
   ANTHROPIC_API_KEY: z.string().default(''),
   AI_MODEL: z.string().default('claude-opus-5'),
   AI_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('high'),
+  /** Deadline for a trade-decision call. Short on purpose: a late verdict is a
+   * missed trade, so failing fast and skipping the token beats waiting. */
   AI_TIMEOUT_MS: num(5_000, 300_000).default(60_000),
+  /**
+   * Deadline for a tuning call, which is a different kind of call entirely.
+   *
+   * The tuner sends the largest prompt in the system, asks for 16k of output
+   * budget with adaptive thinking at high effort, and runs at most a few times
+   * an hour with nothing downstream waiting on it. Under the trade-decision
+   * timeout it tripped whenever the model reasoned longer than usual — the
+   * "sometimes" in "sometimes the auto-tune fails". Nothing is lost by letting
+   * it think: a tuning round that takes three minutes is still a tuning round.
+   */
+  AI_TUNER_TIMEOUT_MS: num(30_000, 900_000).default(300_000),
   /** Minimum confidence (0-100) the analyst must return before we act. */
   AI_MIN_CONFIDENCE: num(0, 100).default(65),
   /** Seconds between re-reviews of each open position. */

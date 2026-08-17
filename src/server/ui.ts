@@ -1024,6 +1024,13 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     return 'in ' + Math.floor(d / 60) + 'h ' + (d % 60) + 'm';
   }
 
+  function tuneAgo(ms) {
+    var d = Math.round((Date.now() - ms) / 60000);
+    if (d < 1) return 'just now';
+    if (d < 60) return d + ' min ago';
+    return Math.floor(d / 60) + 'h ' + (d % 60) + 'm ago';
+  }
+
   // The compact tracker that lives on each bot's own page. The full trail is a
   // tab away; this answers "is it doing anything" without going to look.
   function renderTuneCard(t, botId) {
@@ -1129,7 +1136,11 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     host.appendChild(head);
 
     if (t.lastError) {
-      host.appendChild(el('div', 'tuner-err', 'Last error: ' + t.lastError));
+      // The timestamp is the whole point. One failed round hours ago that the
+      // tuner already recovered from looks exactly like a tuner failing every
+      // round unless the card says when it happened.
+      var when = t.lastErrorAt ? ' (' + tuneAgo(t.lastErrorAt) + ')' : '';
+      host.appendChild(el('div', 'tuner-err', 'Last error' + when + ': ' + t.lastError));
     }
 
     if (!t.experiments.length) {

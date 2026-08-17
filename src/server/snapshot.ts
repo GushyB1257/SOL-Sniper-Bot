@@ -195,6 +195,8 @@ export interface TunerView {
   /** Where each bot sits in the gather -> change -> measure cycle. */
   byBot: Record<string, { phase: string; trades: number; needed: number; since?: number }>;
   lastError?: string;
+  /** When it happened — a stale error and a recurring one read the same without it. */
+  lastErrorAt?: number;
   costUsd: number;
   experiments: Array<{
     id: string;

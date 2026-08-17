@@ -13,6 +13,19 @@ export interface AskOptions {
   maxTokens?: number;
   /** Label used in logs and cost accounting. */
   label: string;
+  /**
+   * Overrides the client-wide timeout for this one call.
+   *
+   * The default exists for the trade-decision calls, which are short prompts
+   * with a 1-2k output budget and are worthless if they arrive late — a snipe
+   * verdict that takes three minutes has already missed the trade. The tuner is
+   * the opposite: one call an hour, 16k of output budget, adaptive thinking at
+   * high effort, and nothing downstream is waiting on the clock. Sharing one
+   * timeout between the two meant the tuner inherited a deadline set for a
+   * different kind of call and tripped it whenever the model reasoned longer
+   * than usual.
+   */
+  timeoutMs?: number;
 }
 
 export interface AskResult<T> {
@@ -79,33 +92,37 @@ export class ClaudeAnalyst {
   async ask<T>(opts: AskOptions, validator: z.ZodType<T>): Promise<AskResult<T>> {
     const started = Date.now();
     const empty = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    const timeoutMs = opts.timeoutMs ?? this.cfg.AI_TIMEOUT_MS;
 
     try {
-      const response = await this.client.beta.messages.create({
-        model: this.cfg.AI_MODEL,
-        max_tokens: opts.maxTokens ?? 2048,
-        // Thinking is on by default on Opus 5; naming it keeps the intent
-        // explicit and survives a model swap to one where it is not.
-        thinking: { type: 'adaptive' },
-        output_config: {
-          effort: this.cfg.AI_EFFORT,
-          format: { type: 'json_schema', schema: opts.jsonSchema },
-        },
-        // Safety classifiers can decline; this re-runs the call on a fallback
-        // model server-side rather than losing the decision.
-        betas: ['server-side-fallback-2026-07-01'],
-        fallbacks: 'default',
-        system: [
-          {
-            type: 'text',
-            text: opts.system,
-            // The system prompt is long, identical every call, and sits at the
-            // front of the prefix — the highest-value place for a breakpoint.
-            cache_control: { type: 'ephemeral' },
+      const response = await this.client.beta.messages.create(
+        {
+          model: this.cfg.AI_MODEL,
+          max_tokens: opts.maxTokens ?? 2048,
+          // Thinking is on by default on Opus 5; naming it keeps the intent
+          // explicit and survives a model swap to one where it is not.
+          thinking: { type: 'adaptive' },
+          output_config: {
+            effort: this.cfg.AI_EFFORT,
+            format: { type: 'json_schema', schema: opts.jsonSchema },
           },
-        ],
-        messages: [{ role: 'user', content: opts.userContent }],
-      });
+          // Safety classifiers can decline; this re-runs the call on a fallback
+          // model server-side rather than losing the decision.
+          betas: ['server-side-fallback-2026-07-01'],
+          fallbacks: 'default',
+          system: [
+            {
+              type: 'text',
+              text: opts.system,
+              // The system prompt is long, identical every call, and sits at
+              // the front of the prefix — the best place for a breakpoint.
+              cache_control: { type: 'ephemeral' },
+            },
+          ],
+          messages: [{ role: 'user', content: opts.userContent }],
+        },
+        { timeout: timeoutMs },
+      );
 
       const usage = {
         input: response.usage.input_tokens ?? 0,
@@ -174,7 +191,7 @@ export class ClaudeAnalyst {
       this.totals.errors += 1;
       return {
         ok: false,
-        error: this.describe(err),
+        error: this.describe(err, timeoutMs),
         usage: empty,
         latencyMs: Date.now() - started,
       };
@@ -182,12 +199,20 @@ export class ClaudeAnalyst {
   }
 
   /** Typed error handling, so callers can distinguish transient from fatal. */
-  private describe(err: unknown): string {
+  private describe(err: unknown, timeoutMs: number): string {
     if (err instanceof Anthropic.AuthenticationError) {
       return 'authentication failed — check ANTHROPIC_API_KEY';
     }
     if (err instanceof Anthropic.RateLimitError) return 'rate limited';
     if (err instanceof Anthropic.NotFoundError) return 'model not found — check AI_MODEL';
+    // MUST be tested before APIConnectionError, which it extends. Ordered the
+    // other way round, a client-side deadline — our own number, nothing to do
+    // with the network — was reported as "connection failed", which sent every
+    // reader looking at their internet connection for a problem that was a
+    // config value. The two have opposite fixes: wait longer, or check the wire.
+    if (err instanceof Anthropic.APIConnectionTimeoutError) {
+      return `timed out after ${Math.round(timeoutMs / 1000)}s — the model was still working; raise the timeout`;
+    }
     if (err instanceof Anthropic.APIConnectionError) return 'connection failed';
     if (err instanceof Anthropic.APIError) return `api error ${err.status}: ${err.message}`;
     return errMessage(err);

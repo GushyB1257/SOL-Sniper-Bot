@@ -483,6 +483,7 @@ export const TUNABLES: Tunable[] = [
   n('AI_MAX_CALLS_PER_HOUR', 'shared', 1, 500, 50, 'Hard cap on analyst calls per hour.'),
   n('AI_DAILY_BUDGET_USD', 'shared', 0, 200, 50, 'Daily spend cap for the analyst.'),
   n('AI_TIMEOUT_MS', 'shared', 5000, 300_000, 50, 'How long an analyst call may take.'),
+  n('AI_TUNER_TIMEOUT_MS', 'shared', 30_000, 900_000, 50, 'How long a tuning call may take.'),
   b('AI_MANAGE_EXITS', 'shared', 'Whether the analyst may also decide exits.'),
   e('AI_EFFORT', 'shared', ['low', 'medium', 'high'], 'Reasoning effort for analyst calls.'),
   e('STRATEGY', 'shared', ['ai', 'rules'],
