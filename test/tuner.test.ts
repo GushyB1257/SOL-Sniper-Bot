@@ -641,6 +641,29 @@ describe('what the sniper entry looked like', () => {
   });
 });
 
+describe('changes already in flight', () => {
+  it('can still revert a key that has since stopped being tunable', async () => {
+    // Removing LOG_LEVEL from the tunable list must not strand the experiment
+    // that was measuring it. Reverting goes through settings.apply directly, not
+    // through vetProposal, so a key can always be put back where it was even
+    // when nothing may propose it again.
+    expect(TUNABLE_BY_KEY.has('LOG_LEVEL')).toBe(false);
+    expect(settings.apply({ LOG_LEVEL: 'debug' }).ok).toBe(true);
+    expect(settings.values().LOG_LEVEL).toBe('debug');
+    expect(settings.apply({ LOG_LEVEL: 'info' }).ok).toBe(true);
+    expect(settings.values().LOG_LEVEL).toBe('info');
+  });
+
+  it('keeps a fractional value the tuner already set, rather than refusing to boot', () => {
+    // MIN_HOLDERS=2.6 is live on at least one running bot. Marking the parameter
+    // as counted governs what may be PROPOSED next; it must not invalidate a
+    // value already sitting in settings.json, or the fix for a cosmetic problem
+    // becomes a bot that will not start.
+    expect(settings.apply({ MIN_HOLDERS: '2.6' }).ok).toBe(true);
+    expect(loadConfig({ ...ENV(dir), MIN_HOLDERS: '2.6' }).MIN_HOLDERS).toBe(2.6);
+  });
+});
+
 describe('measuring what it changed', () => {
   /** Runs a change, then supplies `after` trades and re-ticks to settle it. */
   async function runAndSettle(afterPnl: number): Promise<AutoTuner> {
