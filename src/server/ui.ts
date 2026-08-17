@@ -1623,9 +1623,14 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     a.routes.forEach(function (r) {
       var tr = el('tr');
       tr.appendChild(el('td', null, r.route));
-      tr.appendChild(el('td', 'r ' + signClass(r.bps), r.bps.toFixed(2) + ' bps'));
+      // Green means TRADEABLE, not merely positive. Colouring any bps above zero
+      // green invites exactly the wrong read: at the default 30bps floor a route
+      // showing +5 is green and is never traded, and the number the eye lands on
+      // disagrees with the verdict two columns over.
+      var cls = r.reason ? (r.bps < 0 ? 'neg' : '') : 'pos';
+      tr.appendChild(el('td', 'r ' + cls, r.bps.toFixed(2) + ' bps'));
       tr.appendChild(el('td', 'r', r.impactPct.toFixed(3) + '%'));
-      tr.appendChild(el('td', r.reason ? 'dim' : 'pos', r.reason || 'cleared the floor'));
+      tr.appendChild(el('td', r.reason ? 'dim' : 'pos', r.reason || 'cleared every gate'));
       body.appendChild(tr);
     });
   }
