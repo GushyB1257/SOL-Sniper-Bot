@@ -263,7 +263,7 @@ class Supervisor {
 
     log.info('─'.repeat(72));
     log.info(`  SOL Trader — mode=${c.MODE.toUpperCase()} executor=${c.EXECUTOR}`);
-    for (const id of ['screener', 'sniper', 'copy'] as BotId[]) {
+    for (const id of ['screener', 'sniper', 'copy', 'arb'] as BotId[]) {
       const on = this.enabled(id);
       log.info(`  ${BOT_NAMES[id].padEnd(11)} ${on ? 'ON ' : 'off'}${this.botSummary(id)}`);
     }
@@ -357,6 +357,14 @@ class Supervisor {
     };
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));
+    // Closing a terminal window is not Ctrl-C. On Windows that arrives as
+    // SIGHUP or SIGBREAK, and without these the graceful path never ran — which
+    // is how shutting down an editor left state unflushed. Guarded because
+    // SIGBREAK does not exist on POSIX and listening for it throws there.
+    process.on('SIGHUP', () => shutdown('SIGHUP'));
+    if (process.platform === 'win32') {
+      process.on('SIGBREAK', () => shutdown('SIGBREAK'));
+    }
 
     process.on('unhandledRejection', (reason) => {
       log.error(`Unhandled rejection: ${errMessage(reason)}`);

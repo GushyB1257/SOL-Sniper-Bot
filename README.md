@@ -477,6 +477,44 @@ as such, rounded, and always free to move by at least one whole unit; without
 that floor a small count is frozen wherever it happens to sit and every proposal
 for it is rejected as "no change".
 
+**Closing your editor does not cost you your positions.** State writes were
+atomic but not **durable**: `writeFileSync` returns once the bytes are in the OS
+page cache, so a rename could publish a directory entry pointing at content that
+was never written to disk. A hard kill — which is what closing VS Code does to
+the terminal's process tree — then left a zero-length `state-sniper.json` and a
+refusal to start that had to be repaired by hand every time.
+
+Three changes:
+
+- **The temp file is `fsync`ed before the rename.** That is the difference
+  between atomic and durable, and it is the actual fix.
+- **The previous good file is kept as `.bak`**, by rename rather than copy so it
+  costs directory metadata rather than I/O. A read that finds the live file
+  missing, empty or unparseable recovers from it and says loudly what was lost.
+  Refusing to start was the right instinct — never silently abandon open
+  positions — but it made every unclean shutdown a manual repair when the last
+  known good state was sitting right there. It still refuses when *both* are
+  unreadable, which is the case it was actually written for.
+- **`SIGHUP` and `SIGBREAK` are handled**, plus a synchronous `exit` hook that
+  flushes every open store. Closing a terminal window is not Ctrl-C; on Windows
+  it arrives as one of those two, and without them the graceful path never ran.
+
+A hard kill can still lose up to 250ms of writes — the flush is debounced and
+deliberately does not hold the process open. Losing a quarter second is fine;
+losing the file is not.
+
+**A rolled-back journal does not strand the tuner.** The knock-on from that
+corruption was a dashboard reading `Measuring the last change — -933 of 150
+trades needed to judge it`. That is a subtraction, not a count: the journal is
+append-only, so an index past its end means the state file was recovered or reset
+underneath a running experiment and the trades it was being measured over are
+gone. Left alone it waits forever, because slicing past the end yields nothing
+and the count never climbs. The experiment is now abandoned with that stated in
+its verdict, and the change is **put back** — an unmeasurable change has not
+earned its place, the same rule as a neutral result. It may be proposed again
+later, though: abandoned means never judged, and retiring a parameter on the
+strength of a corrupt file would be the wrong lesson to learn.
+
 **A parameter sitting at 0 says so, and says how far it can go.** A percentage
 step cap cannot move a value off zero, so the vetting has always had an
 exemption — but it was only described in the prose of two specific parameters.

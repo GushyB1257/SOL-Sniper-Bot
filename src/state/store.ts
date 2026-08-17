@@ -1,4 +1,15 @@
-import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { CreatorRecord, Position, TradeJournalEntry } from '../types.js';
 import { logger } from '../logger.js';
@@ -34,10 +45,46 @@ export function utcDay(ts = Date.now()): string {
 }
 
 /**
+ * Every store currently open, so an abrupt exit can still flush them.
+ *
+ * The debounce timer is `unref`'d — it must not hold the process open — which
+ * means a mutation followed quickly by an exit had its write silently dropped.
+ * An `exit` handler runs synchronously and `writeFileSync` works inside one, so
+ * this is the last chance to get those bytes down.
+ */
+const OPEN_STORES = new Set<Store>();
+let exitHookInstalled = false;
+
+function installExitHook(): void {
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  process.on('exit', () => {
+    for (const store of OPEN_STORES) {
+      try {
+        store.flush();
+      } catch {
+        // Nothing useful left to do from inside an exit handler.
+      }
+    }
+  });
+}
+
+/**
  * Flat-file JSON store. A sniper's state is small (tens of open positions,
- * thousands of journal rows), so a database would be ceremony. Writes are
- * atomic via write-to-temp-then-rename so a crash mid-write cannot leave a
- * truncated file that loses open positions.
+ * thousands of journal rows), so a database would be ceremony.
+ *
+ * **Durability.** Writes go to a temp file that is **fsynced** before being
+ * renamed into place. Rename alone is not enough: `writeFileSync` returns once
+ * the bytes are in the OS page cache, not on disk, so a hard kill can publish a
+ * directory entry pointing at content that was never written — which is exactly
+ * how closing an editor produced a zero-length `state.json` and a refusal to
+ * start. The fsync is the difference between atomic and durable.
+ *
+ * The previous good file is kept as `.bak` (a rename, so it costs no I/O), and a
+ * read that cannot parse the live file recovers from it rather than giving up.
+ * Refusing to start was the right instinct — never silently abandon open
+ * positions — but it made every unclean shutdown a manual repair job, when the
+ * last known good state was sitting right there.
  */
 export class Store {
   private data: Snapshot;
@@ -58,22 +105,81 @@ export class Store {
     this.file = join(dataDir, name);
     mkdirSync(dirname(this.file), { recursive: true });
     this.data = this.read();
+
+    OPEN_STORES.add(this);
+    installExitHook();
   }
 
+  private get backupFile(): string {
+    return `${this.file}.bak`;
+  }
+
+  /**
+   * Loads the live file, falling back to the last good copy.
+   *
+   * Three states are treated as "nothing usable here" rather than as corruption:
+   * absent, empty, and unparseable. An EMPTY file is the signature of exactly
+   * the truncation this is guarding against, so it is not an error to explain —
+   * it is a reason to reach for the backup.
+   */
   private read(): Snapshot {
-    if (!existsSync(this.file)) return structuredClone(EMPTY);
-    try {
-      const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as Partial<Snapshot>;
-      return { ...structuredClone(EMPTY), ...parsed, version: 1 };
-    } catch (err) {
-      // Never start with a blank slate on a parse error — that would silently
-      // abandon open positions holding real tokens.
-      const backup = `${this.file}.corrupt-${Date.now()}`;
-      renameSync(this.file, backup);
-      log.error(`State file unreadable, moved to ${backup}. Refusing to start.`, err);
-      throw new Error(
-        `Corrupt state file. Inspect ${backup} for open positions before restarting.`,
+    // A leftover temp file means a previous write was interrupted. It is not the
+    // live state and it is not a backup, so it is only noise on the next read.
+    const tmp = `${this.file}.tmp`;
+    if (existsSync(tmp)) {
+      try {
+        rmSync(tmp);
+      } catch {
+        // Harmless if it cannot be removed; it is never read.
+      }
+    }
+
+    const live = this.tryRead(this.file);
+    if (live) return live;
+
+    const backup = this.tryRead(this.backupFile);
+    if (backup) {
+      log.warn(
+        `${this.file} was missing or unreadable; recovered the previous good copy ` +
+          `from ${this.backupFile}. Anything written since that copy is lost — ` +
+          'check open positions against the chain.',
       );
+      return backup;
+    }
+
+    // Nothing readable anywhere. If a live file exists it is genuinely damaged
+    // and there is no known-good state to fall back on, so keep it for
+    // inspection and refuse: starting blank would abandon open positions
+    // holding real tokens.
+    if (existsSync(this.file) && this.sizeOf(this.file) > 0) {
+      const kept = `${this.file}.corrupt-${Date.now()}`;
+      renameSync(this.file, kept);
+      log.error(`State file unreadable and no usable backup. Moved to ${kept}.`);
+      throw new Error(
+        `Corrupt state file with no recoverable backup. Inspect ${kept} for open ` +
+          'positions before restarting.',
+      );
+    }
+
+    return structuredClone(EMPTY);
+  }
+
+  private tryRead(path: string): Snapshot | null {
+    if (!existsSync(path) || this.sizeOf(path) === 0) return null;
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<Snapshot>;
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+      return { ...structuredClone(EMPTY), ...parsed, version: 1 };
+    } catch {
+      return null;
+    }
+  }
+
+  private sizeOf(path: string): number {
+    try {
+      return statSync(path).size;
+    } catch {
+      return 0;
     }
   }
 
@@ -100,12 +206,37 @@ export class Store {
       this.flushTimer = null;
     }
     this.flush();
+    OPEN_STORES.delete(this);
   }
 
   flush(): void {
     if (!this.dirty) return;
     const tmp = `${this.file}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf8');
+
+    // fsync before the rename, not after. Without it the rename can publish a
+    // directory entry for content still sitting in the page cache, and a hard
+    // kill then leaves a zero-length file where the state used to be.
+    const fd = openSync(tmp, 'w');
+    try {
+      writeFileSync(fd, JSON.stringify(this.data, null, 2), 'utf8');
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+
+    // Demote the current file to the backup before promoting the new one. Two
+    // renames, so this costs directory metadata rather than a file copy — which
+    // matters because this runs every 250ms while trading.
+    //
+    // There is a brief window here with no live file. `read()` covers it: a
+    // missing live file falls back to the backup rather than starting blank.
+    if (existsSync(this.file)) {
+      try {
+        renameSync(this.file, this.backupFile);
+      } catch {
+        // Losing the backup is survivable; failing to write is not.
+      }
+    }
     renameSync(tmp, this.file);
     this.dirty = false;
   }

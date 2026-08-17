@@ -41,6 +41,12 @@ export interface TunerProgress {
   nextAt?: number;
   /** What is holding a change up right now, when something is. */
   blockedBy?: 'trades' | 'cooldown' | null;
+  /**
+   * The journal shrank beneath this experiment's start index, so the trades it
+   * was being measured over are gone. It cannot be judged and will be abandoned
+   * on the next tick.
+   */
+  lostWindow?: boolean;
 }
 
 export interface TunerDeps {
@@ -163,13 +169,19 @@ export class AutoTuner {
       const nextAt = this.cooldownEndsAt(bot);
 
       if (open) {
-        const after = journal.length - open.journalAtStart;
+        // The journal is append-only, so `journalAtStart` should never sit past
+        // its end. When it does, the journal was rolled back underneath us — a
+        // recovered state file, or one that was reset — and the measurement
+        // window's trades no longer exist. Reporting the raw difference showed
+        // "-933 of 150 trades needed", which is a subtraction, not a count.
+        const after = Math.max(0, journal.length - open.journalAtStart);
         out[bot] = {
           phase: 'measuring',
           trades: after,
           needed: cfg.TUNER_MIN_TRADES,
           since: open.startedAt,
           nextAt,
+          lostWindow: journal.length < open.journalAtStart,
         };
         continue;
       }
@@ -349,6 +361,35 @@ export class AutoTuner {
    */
   private settle(exp: Experiment, journal: readonly TradeJournalEntry[]): Settled | null {
     const { cfg } = this.deps;
+
+    // The journal is append-only, so an index past its end means it was rolled
+    // back — a state file recovered from backup, or reset. The trades this
+    // change was being measured over are gone, so there is no verdict to reach.
+    //
+    // Left running it would wait forever: `slice` past the end yields nothing,
+    // so the trade count never climbs and the bot is stuck measuring a window
+    // that no longer exists. Abandon it and put the change BACK, because the
+    // default is the known state and an unmeasurable change has not earned its
+    // place — the same rule as a neutral result.
+    if (journal.length < exp.journalAtStart) {
+      const inverse = exp.changes.map((c) => ({ ...c, from: c.to, to: c.from }));
+      const ok = this.apply(inverse);
+      this.ledger.update(exp.id, {
+        status: 'abandoned',
+        decidedAt: Date.now(),
+        verdict:
+          `journal was rolled back to ${journal.length} rows, below the ${exp.journalAtStart} ` +
+          `this window started at — the trades it was measured over are gone. ` +
+          `${ok ? 'Change reverted' : 'REVERT FAILED, left in place'}.`,
+      });
+      log.warn(
+        `${exp.bot}: measurement window LOST — the journal shrank from ` +
+          `${exp.journalAtStart} to ${journal.length} rows, so the change could not be ` +
+          `judged and was ${ok ? 'reverted' : 'left in place (revert failed)'}.`,
+      );
+      return { baseline: exp.baselineExpectancy, baselineTrades: exp.baselineTrades, kept: false };
+    }
+
     const after = journal.slice(exp.journalAtStart);
     if (after.length < cfg.TUNER_MIN_TRADES) return null;
 
@@ -411,7 +452,13 @@ export class AutoTuner {
   ): TradeJournalEntry[] {
     const past = this.ledger.all().filter((e) => e.bot === bot && e.status !== 'running');
     const last = past[past.length - 1];
-    const from = last ? last.journalAtStart : 0;
+    // A recorded index past the end of the journal is not a boundary, it is a
+    // stale number from before a rollback. Clamping it to the length would slice
+    // to nothing and stall the bot at zero trades forever, so it falls back to
+    // the whole (capped) window instead — every trade we still have is evidence
+    // about the configuration running now.
+    const recorded = last ? last.journalAtStart : 0;
+    const from = recorded > journal.length ? 0 : recorded;
     // Cap the window: a filter changed a week ago should not be judged against
     // a market regime that no longer exists.
     return journal.slice(Math.max(from, journal.length - 400));

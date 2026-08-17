@@ -836,6 +836,94 @@ describe('when the measurement window was not clean', () => {
   });
 });
 
+describe('when the journal is rolled back underneath an experiment', () => {
+  it('never reports a negative trade count', async () => {
+    // The dashboard showed "-933 of 150 trades needed to judge it". That is a
+    // subtraction, not a count: the journal is append-only, so an index past its
+    // end means the state file was recovered or reset and the window's trades are
+    // gone.
+    fill(12);
+    const t = tunerWith({ changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'x' }] });
+    await t.tick();
+
+    const ledger = (t as unknown as { ledger: TuningLedger }).ledger;
+    ledger.update(t.history[0]!.id, { journalAtStart: 945 });
+
+    const p = t.progress().screener!;
+    expect(p.trades).toBe(0);
+    expect(p.lostWindow).toBe(true);
+  });
+
+  it('abandons the experiment and puts the change back', async () => {
+    // Left running it would wait forever — slice past the end yields nothing, so
+    // the count never climbs. And an unmeasurable change has not earned its
+    // place, so the default is the known state, same as a neutral result.
+    fill(12);
+    let round = 0;
+    const t = tunerWith(() => {
+      round += 1;
+      return round === 1
+        ? { changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'first' }] }
+        : { changes: [] };
+    });
+    await t.tick();
+    expect(settings.values().MOONBAG_TRIM_PCT).toBe('30');
+
+    const ledger = (t as unknown as { ledger: TuningLedger }).ledger;
+    ledger.update(t.history[0]!.id, { journalAtStart: 945 });
+
+    cooled(t);
+    await t.tick();
+
+    expect(t.history[0]!.status).toBe('abandoned');
+    expect(t.history[0]!.verdict).toMatch(/rolled back/);
+    expect(t.history[0]!.verdict).toMatch(/reverted/);
+    expect(settings.values().MOONBAG_TRIM_PCT).toBe('25');
+  });
+
+  it('lets an abandoned change be tried again, unlike a reverted one', async () => {
+    // Abandoned means never judged, so it has not lost — it never ran. Blocking
+    // it the way `wasReverted` blocks a measured loser would retire a parameter
+    // on the strength of a corrupt state file.
+    fill(12);
+    const t = tunerWith({ changes: [{ key: 'MOONBAG_TRIM_PCT', value: 30, why: 'x' }] });
+    await t.tick();
+
+    const ledger = (t as unknown as { ledger: TuningLedger }).ledger;
+    ledger.update(t.history[0]!.id, { journalAtStart: 945 });
+
+    cooled(t);
+    await t.tick();
+
+    expect(t.history[0]!.status).toBe('abandoned');
+    // Reverted, then proposed again in the same pass and given a fresh trial.
+    expect(t.history).toHaveLength(2);
+    expect(t.history[1]!.status).toBe('running');
+    expect(settings.values().MOONBAG_TRIM_PCT).toBe('30');
+  });
+
+  it('does not stall the next round at zero trades', async () => {
+    // The same clamp on the other side: a stale index in a SETTLED experiment
+    // would slice the gathering window to nothing and freeze the bot.
+    fill(20);
+    const t = tunerWith({ changes: [] });
+    const ledger = (t as unknown as { ledger: TuningLedger }).ledger;
+    ledger.add({
+      id: 'stale',
+      bot: 'screener',
+      startedAt: Date.now() - 86_400_000,
+      changes: [],
+      baselineExpectancy: 0,
+      baselineTrades: 0,
+      journalAtStart: 9_999,
+      status: 'kept',
+      decidedAt: Date.now() - 86_400_000,
+    });
+
+    expect(t.progress().screener!.trades).toBe(20);
+  });
+});
+
 describe('measuring what it changed', () => {
   /** Runs a change, then supplies `after` trades and re-ticks to settle it. */
   async function runAndSettle(afterPnl: number): Promise<AutoTuner> {
