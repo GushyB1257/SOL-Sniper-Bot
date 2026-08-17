@@ -220,6 +220,21 @@ const schema = z.object({
   MAX_DEV_BUY_PCT: num(0, 100).default(8),
   MAX_TOP10_HOLDER_PCT: num(0, 100).default(65),
   MIN_DEPLOYER_BALANCE_SOL: num(0, 1000).default(0.15),
+  /**
+   * Reject a deployer holding MORE than this. 0 disables.
+   *
+   * The counterintuitive half of the pair, and the sniper's own numbers are what
+   * asked for it: deployers holding 0.1-0.5 SOL were the profitable cohort (39
+   * trades, 26% win, +1.92 SOL) while 0.5-2 SOL (41 trades, 5% win, -2.44) and
+   * 2 SOL+ (65 trades, 14% win, -2.24) both lost. A floor alone cannot express
+   * that — it can only cut the bottom band, which was the one making money.
+   *
+   * A plausible mechanism is that a well-funded deployer is a professional
+   * operation with the capital to bundle the launch and the patience to dump
+   * into it, while a nearly-empty wallet is someone doing this once. That is a
+   * story, not a finding. The pair of bounds is what lets it be tested.
+   */
+  MAX_DEPLOYER_BALANCE_SOL: num(0, 100_000).default(0),
   MAX_DEPLOYER_RUG_RATE: num(0, 1).default(0.34),
   MIN_SAFETY_SCORE: num(0, 100).default(70),
   REQUIRE_SOCIALS: bool.default('true'),
@@ -599,6 +614,33 @@ const schema = z.object({
   DISCOVERY_SOURCE: z.enum(['pumpportal', 'rpc']).default('pumpportal'),
   PUMPPORTAL_WS_URL: z.string().url().default('wss://pumpportal.fun/api/data'),
   MAX_CANDIDATE_AGE_MS: num(100, 600000).default(5000),
+  /**
+   * Wait this long after the safety battery passes, re-read the price, and only
+   * buy if it has held or risen. 0 disables the gate.
+   *
+   * The sniper's problem is not exit timing. 87 of 156 trades exited as
+   * `dead_entry` for -2.74 SOL, and BOTH directions of
+   * `RATCHET_FIRST_CHECKPOINT_SECONDS` — 21s and 39s — were measured and
+   * reverted, so the loss is not in how long a non-starter is held. It is that
+   * the launch never started at all, and the battery cannot see that: every
+   * check it runs asks whether the token is *structurally* sound, and none asks
+   * whether anyone else is buying it.
+   *
+   * This is the cheapest possible version of that question — did the price tick
+   * up at all — and it is a real trade, not a free win. The cost is being this
+   * many milliseconds later into every launch we do take, which on the ones that
+   * work is upside given away. Whether that is worth it is exactly the kind of
+   * thing the measure-and-revert loop can settle, which is why it is a
+   * parameter and not a decision.
+   */
+  SNIPE_CONFIRM_MS: num(0, 60_000).default(0),
+  /**
+   * How much the price must have risen over `SNIPE_CONFIRM_MS` to buy.
+   *
+   * 0 means "must not be down", which is the weakest useful form of the gate.
+   * Negative tolerates a small dip. Only read when `SNIPE_CONFIRM_MS` > 0.
+   */
+  SNIPE_CONFIRM_MIN_GAIN_PCT: num(-50, 500).default(0),
 
   EXECUTOR: z.enum(['paper', 'onchain', 'axiom']).default('paper'),
   PUMPPORTAL_TRADE_URL: z.string().url().default('https://pumpportal.fun/api/trade-local'),
@@ -687,6 +729,20 @@ function crossValidate(cfg: Config): string[] {
       'This config uses Claude (ENTRY_MODE=ai or AI_MANAGE_EXITS=true) but ' +
         'ANTHROPIC_API_KEY is empty. Get one at console.anthropic.com, or set ' +
         'AI_MANAGE_EXITS=false and ENTRY_MODE=fast to run fully deterministically.',
+    );
+  }
+
+  // A band that excludes everything is the one way this pair can be set wrong,
+  // and it fails silently: every launch is rejected and the bot simply stops
+  // trading, which looks identical to a quiet market.
+  if (
+    cfg.MAX_DEPLOYER_BALANCE_SOL > 0 &&
+    cfg.MAX_DEPLOYER_BALANCE_SOL <= cfg.MIN_DEPLOYER_BALANCE_SOL
+  ) {
+    errors.push(
+      `MAX_DEPLOYER_BALANCE_SOL (${cfg.MAX_DEPLOYER_BALANCE_SOL}) must be above ` +
+        `MIN_DEPLOYER_BALANCE_SOL (${cfg.MIN_DEPLOYER_BALANCE_SOL}); no deployer ` +
+        'balance could satisfy both and every launch would be rejected',
     );
   }
 

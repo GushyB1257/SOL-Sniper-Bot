@@ -9,10 +9,11 @@ import { WalletWatcher } from '../copy/wallet-watcher.js';
 import { withRpcPriority } from '../util/rpc-throttle.js';
 import { CopyTrader } from '../copy/copy-trader.js';
 import { marketCapFromState } from '../watchlist/curve-poller.js';
+import { pctChange } from '../util/solana.js';
 import type { PriceSource } from '../execution/pricing.js';
 import { poolAllowed, type Executor, type SafetyVerdict, type TokenCandidate } from '../types.js';
 import { logger } from '../logger.js';
-import { errMessage } from '../util/async.js';
+import { errMessage, sleep } from '../util/async.js';
 
 const log = logger('bot');
 
@@ -248,6 +249,16 @@ export class TradingBot {
       return;
     }
 
+    // Did anyone else actually buy it? The battery asks whether the token is
+    // structurally sound; nothing in it asks whether the launch is going
+    // anywhere, which is what the dead-entry mass is made of.
+    const confirm = await this.confirmMove(candidate, label);
+    if (!confirm.ok) {
+      this.stats.rejected += 1;
+      log.info(`REJECT ${label} — ${confirm.detail}`);
+      return;
+    }
+
     log.info(`PASS ${label} — ${formatVerdict(verdict)} (${verdict.elapsedMs}ms), buying`);
     this.entryInFlight = true;
     try {
@@ -277,11 +288,64 @@ export class TradingBot {
       // carries the safety score and nothing else, so "116 of 150 died" cannot
       // be turned into "which characteristic did they share" and every entry
       // filter is a guess between equally plausible knobs.
-      position.notes.push(snipeNote(verdict));
+      position.notes.push(snipeNote(verdict, confirm.movedPct));
       await this.stampMarketCap(position.mint, position, this.deps.solPrice.usd);
       this.store.savePosition(position);
     } finally {
       this.entryInFlight = false;
+    }
+  }
+
+  /**
+   * Samples the price twice and reports whether it moved up in between.
+   *
+   * Two curve reads and a wait, so it only runs on candidates that have already
+   * passed the battery — a small fraction of what comes off the feed. An
+   * unreadable curve fails OPEN: a price we cannot fetch says nothing about the
+   * launch, and letting our own outage quietly switch the gate into a blanket
+   * veto is the same mistake as charging a token for a slow IPFS gateway.
+   */
+  private async confirmMove(
+    candidate: TokenCandidate,
+    label: string,
+  ): Promise<{ ok: boolean; detail: string; movedPct?: number }> {
+    const { cfg } = this.deps;
+    if (cfg.SNIPE_CONFIRM_MS <= 0) return { ok: true, detail: 'confirmation disabled' };
+
+    const before = await this.priceNow(candidate.mint);
+    if (before === null) {
+      log.debug(`${this.name}: ${label} — no price to confirm against, buying anyway`);
+      return { ok: true, detail: 'price unreadable, gate skipped' };
+    }
+
+    await sleep(cfg.SNIPE_CONFIRM_MS);
+
+    const after = await this.priceNow(candidate.mint);
+    if (after === null) {
+      log.debug(`${this.name}: ${label} — price became unreadable, buying anyway`);
+      return { ok: true, detail: 'price unreadable, gate skipped' };
+    }
+
+    const movedPct = pctChange(before, after);
+    const need = cfg.SNIPE_CONFIRM_MIN_GAIN_PCT;
+    if (movedPct < need) {
+      return {
+        ok: false,
+        detail:
+          `no move after creation: ${movedPct.toFixed(1)}% over ` +
+          `${cfg.SNIPE_CONFIRM_MS}ms (need ${need}%)`,
+        movedPct,
+      };
+    }
+    return { ok: true, detail: `${movedPct.toFixed(1)}% over ${cfg.SNIPE_CONFIRM_MS}ms`, movedPct };
+  }
+
+  /** Curve price for a mint, or null when it cannot be read. */
+  private async priceNow(mint: string): Promise<number | null> {
+    try {
+      return await this.deps.prices.price(mint);
+    } catch {
+      return null;
     }
   }
 
@@ -313,9 +377,15 @@ export class TradingBot {
  * off or that never ran contributes nothing rather than a zero, which would be
  * indistinguishable from a real measurement of zero.
  */
-export function snipeNote(verdict: SafetyVerdict): string {
+export function snipeNote(verdict: SafetyVerdict, movedPct?: number): string {
   const m = verdict.metrics;
   const parts: string[] = [`score ${verdict.score}`];
+  // What the confirmation gate saw, when it ran. This is the one entry-side
+  // number that is about demand rather than structure, so it is the one most
+  // likely to separate the dead entries from the rest.
+  if (typeof movedPct === 'number' && Number.isFinite(movedPct)) {
+    parts.push(`${movedPct.toFixed(1)}% confirm move`);
+  }
   const add = (key: string, fmt: (v: number) => string): void => {
     const v = m[key];
     if (typeof v === 'number' && Number.isFinite(v)) parts.push(fmt(v));

@@ -231,6 +231,17 @@ export const TUNABLES: Tunable[] = [
   // === Sniper: the safety battery ======================================
   n('MIN_SAFETY_SCORE', 'sniper', 40, 95, 20,
     'Safety score a launch must clear. Higher = fewer, structurally cleaner launches.'),
+  n('SNIPE_CONFIRM_MS', 'sniper', 0, 30_000, 100,
+    'Wait this long after the battery passes, re-read the price, and only buy if ' +
+    'it held or rose. 0 SWITCHES THE GATE OFF. This is the only entry check that ' +
+    'asks whether anyone else is buying rather than whether the token is ' +
+    'structurally sound, which is what the dead_entry mass is made of. Not free: ' +
+    'the cost is being this much later into every launch that does work, so it ' +
+    'trades upside for fewer non-starters. Costs 2 RPC reads per passing candidate.'),
+  n('SNIPE_CONFIRM_MIN_GAIN_PCT', 'sniper', -20, 100, 100,
+    'How far the price must have risen over SNIPE_CONFIRM_MS to buy. 0 means ' +
+    '"must not be down", the weakest useful form. Negative tolerates a dip. ' +
+    'Inert while SNIPE_CONFIRM_MS is 0.'),
   n('MAX_CANDIDATE_AGE_MS', 'sniper', 1000, 60_000, 50,
     'How stale a launch can be before the sniper ignores it.'),
   n('MAX_DEV_BUY_PCT', 'sniper', 1, 50, 40,
@@ -238,6 +249,14 @@ export const TUNABLES: Tunable[] = [
   n('MAX_TOP10_HOLDER_PCT', 'sniper', 20, 95, 30, 'Concentration limit across the top ten holders.'),
   n('MIN_DEPLOYER_BALANCE_SOL', 'sniper', 0, 10, 100,
     'Below this the deployer looks like a throwaway wallet.'),
+  n('MAX_DEPLOYER_BALANCE_SOL', 'sniper', 0, 200, 100,
+    'Reject a deployer holding MORE than this; 0 SWITCHES THE CHECK OFF. The ' +
+    'counterintuitive half of the pair — a well-funded deployer has the capital ' +
+    'to bundle a launch and the patience to dump into it, so the profitable ' +
+    'cohort can be the nearly-empty wallets. Use with MIN_DEPLOYER_BALANCE_SOL ' +
+    'to express a band; the two are cross-validated so a band that excludes ' +
+    'everything is refused rather than silently stopping all trading. Free — ' +
+    'reuses the balance read MIN_DEPLOYER_BALANCE_SOL already makes.'),
   n('MAX_DEPLOYER_RUG_RATE', 'sniper', 0.05, 1, 50,
     'Share of a deployer past launches that rugged before we refuse them.'),
   n('DUPLICATE_NAME_WINDOW_MINUTES', 'sniper', 0, 720, 60,
@@ -488,6 +507,23 @@ export function vetProposal(
     (spec.min !== undefined && current < spec.min) ||
     (spec.max !== undefined && current > spec.max);
   if (wasOutside) {
+    // ...unless it is a RISK parameter. Those bounds describe what the tuner may
+    // authorise, not what a sane value is, so a value parked outside them is a
+    // deliberate human decision the tuner has no evidence about. Dragging
+    // HOURLY_SPEND_CAP_SOL from a hand-set 100 down to the tuner's ceiling of 50
+    // is a change to capital exposure nobody asked for, made as a side effect of
+    // a proposal about something else — and one-way, since the same rule then
+    // stops it going back. Decline and say so; the human can move it or the
+    // ceiling can be widened deliberately.
+    if (spec.risk) {
+      return {
+        ok: false,
+        reason:
+          `${key} is ${current}, outside the ${spec.min}..${spec.max} the tuner may set. ` +
+          'It is a risk parameter, so it is left where it was put rather than pulled ' +
+          'to the nearest bound.',
+      };
+    }
     return {
       ok: true,
       value: String(round(value)),

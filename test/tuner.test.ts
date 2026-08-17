@@ -341,16 +341,36 @@ describe('what the tuner may touch', () => {
     // far outside it, it becomes a trap: from 100 against a ceiling of 20, a
     // 30% step reaches 70, then 49, then 34 — five rounds walking back to a
     // bound nobody disputed, each one burning a measurement window.
-    const r = vetProposal('DAILY_LOSS_LIMIT_SOL', '100', 5, 30);
+    const spec = TUNABLE_BY_KEY.get('SCREEN_MAX_MCAP_USD')!;
+    expect(spec.risk).toBeFalsy();
+
+    const r = vetProposal('SCREEN_MAX_MCAP_USD', '900000', 40_000, 30);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(Number(r.value)).toBe(5);
+      expect(Number(r.value)).toBe(40_000);
       expect(r.clamped).toMatch(/outside the allowed/);
     }
 
     // Still bounded: it lands inside the range, not wherever it was asked to.
-    const far = vetProposal('MAX_CONCURRENT_POSITIONS', '50', 999, 30);
-    expect(far.ok && Number(far.value)).toBe(20);
+    const far = vetProposal('SCREEN_MAX_MCAP_USD', '900000', 9_999_999, 30);
+    expect(far.ok && Number(far.value)).toBe(spec.max);
+  });
+
+  it('leaves a RISK parameter where a human parked it, outside range or not', () => {
+    // These bounds describe what the tuner may authorise, not what a sane value
+    // is. HOURLY_SPEND_CAP_SOL sitting at a hand-set 100 against a tuner ceiling
+    // of 50 is a deliberate decision the tuner has no evidence about — dragging
+    // it down as a side effect of a proposal about something else is a change to
+    // capital exposure nobody asked for, and one-way, since the same rule then
+    // stops it coming back.
+    expect(TUNABLE_BY_KEY.get('HOURLY_SPEND_CAP_SOL')!.risk).toBe(true);
+
+    const r = vetProposal('HOURLY_SPEND_CAP_SOL', '100', 20, 30);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/risk parameter/);
+
+    // Inside the range it behaves normally — this is about parked values only.
+    expect(vetProposal('HOURLY_SPEND_CAP_SOL', '20', 24, 30).ok).toBe(true);
   });
 
   it('can move a parameter that is currently zero', () => {

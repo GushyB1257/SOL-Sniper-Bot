@@ -8,7 +8,7 @@ import { SafetyEngine } from '../src/safety/engine.js';
 import type { Check } from '../src/safety/types.js';
 import { freezeAuthorityCheck, mintAuthorityCheck } from '../src/safety/checks/authorities.js';
 import { devBuyCheck } from '../src/safety/checks/supply.js';
-import { deployerHistoryCheck } from '../src/safety/checks/deployer.js';
+import { deployerBalanceCheck, deployerHistoryCheck } from '../src/safety/checks/deployer.js';
 import { metadataSanityCheck, socialsCheck } from '../src/safety/checks/metadata.js';
 import { createThrottledFetch, rpcBackpressureMs } from '../src/util/rpc-throttle.js';
 import { Store } from '../src/state/store.js';
@@ -430,6 +430,69 @@ describe('authority checks', () => {
     const ctx = ctxWith(conn);
     await Promise.all([freezeAuthorityCheck.run(ctx), mintAuthorityCheck.run(ctx)]);
     expect(reads()).toBe(1);
+  });
+});
+
+describe('deployerBalanceCheck band', () => {
+  // A real base58 key: this check turns the creator into a PublicKey, unlike the
+  // ones that read the candidate's fields directly.
+  const DEV = '5bW3ahx1MyYSsaji7G1DVxPVKvjngffRVeFSHEouFk3H';
+  const ctxFor = (bal: number, over: Record<string, string> = {}) => ({
+    candidate: candidate({ creator: DEV }),
+    conn: {
+      getBalance: async () => Math.round(bal * 1e9),
+    } as unknown as Connection,
+    cfg: loadConfig({ ...BASE_ENV, DATA_DIR: dir, ...over }),
+    store,
+    cache: new Map(),
+  });
+
+  it('still rejects a dust wallet', async () => {
+    const r = await deployerBalanceCheck.run(ctxFor(0.01));
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/throwaway/);
+  });
+
+  it('rejects a well-funded deployer once a ceiling is set', async () => {
+    // The counterintuitive half. The sniper's own history had 0.1-0.5 SOL as the
+    // only profitable cohort, with 0.5-2 and 2+ both losing — a shape a floor
+    // cannot express, because a floor only ever cuts the bottom band.
+    const r = await deployerBalanceCheck.run(ctxFor(9, { MAX_DEPLOYER_BALANCE_SOL: '2' }));
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/max 2/);
+  });
+
+  it('passes a deployer inside the band', async () => {
+    const r = await deployerBalanceCheck.run(
+      ctxFor(0.3, { MIN_DEPLOYER_BALANCE_SOL: '0.1', MAX_DEPLOYER_BALANCE_SOL: '0.5' }),
+    );
+    expect(r.passed).toBe(true);
+  });
+
+  it('ignores the ceiling when it is zero', async () => {
+    // 0 has to mean off, not "reject everything above nothing".
+    const r = await deployerBalanceCheck.run(ctxFor(500, { MAX_DEPLOYER_BALANCE_SOL: '0' }));
+    expect(r.passed).toBe(true);
+  });
+
+  it('records the balance either way, so the band can be measured', async () => {
+    const pass = await deployerBalanceCheck.run(ctxFor(0.3));
+    const fail = await deployerBalanceCheck.run(ctxFor(9, { MAX_DEPLOYER_BALANCE_SOL: '2' }));
+    expect(pass.metrics?.deployerSol).toBeCloseTo(0.3, 6);
+    expect(fail.metrics?.deployerSol).toBeCloseTo(9, 6);
+  });
+
+  it('refuses a band that nothing could satisfy', () => {
+    // Set upside down, every launch is rejected and the bot simply stops
+    // trading — which looks exactly like a quiet market.
+    expect(() =>
+      loadConfig({
+        ...BASE_ENV,
+        DATA_DIR: dir,
+        MIN_DEPLOYER_BALANCE_SOL: '5',
+        MAX_DEPLOYER_BALANCE_SOL: '1',
+      }),
+    ).toThrow(/MAX_DEPLOYER_BALANCE_SOL/);
   });
 });
 

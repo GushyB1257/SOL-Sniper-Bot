@@ -54,6 +54,7 @@ export interface Evidence {
   byBundle: Bucket[];
   byDeployerBalance: Bucket[];
   byCreatorAge: Bucket[];
+  byConfirmMove: Bucket[];
 }
 
 function numberFrom(note: string | undefined, re: RegExp): number | null {
@@ -164,6 +165,10 @@ export function buildEvidence(
       const v = numberFrom(t.entryNote, /([\d.]+) SOL dev balance/);
       return v === null ? null : band(v, [0.1, 0.5, 2], ' SOL');
     }),
+    byConfirmMove: bucketise(journal, (t) => {
+      const v = numberFrom(t.entryNote, /(-?[\d.]+)% confirm move/);
+      return v === null ? null : band(v, [0, 2, 8], '%');
+    }),
     byCreatorAge: bucketise(journal, (t) => {
       const v = numberFrom(t.entryNote, /(\d+)m creator age/);
       return v === null ? null : band(v, [30, 180, 1440], 'm');
@@ -224,6 +229,7 @@ export function renderEvidence(e: Evidence): string {
     b('Holders at entry (MIN_HOLDERS)', e.byHolders) +
     b('Creation-slot transactions (MAX_LAUNCH_BUNDLE_TXS)', e.byBundle) +
     b('Deployer balance (MIN_DEPLOYER_BALANCE_SOL)', e.byDeployerBalance) +
-    b('Creator wallet age (MIN_CREATOR_AGE_MINUTES)', e.byCreatorAge)
+    b('Creator wallet age (MIN_CREATOR_AGE_MINUTES)', e.byCreatorAge) +
+    b('Move during confirmation (SNIPE_CONFIRM_MIN_GAIN_PCT)', e.byConfirmMove)
   );
 }

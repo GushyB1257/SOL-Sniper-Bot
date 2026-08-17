@@ -121,11 +121,22 @@ export const FIELDS: FieldSpec[] = [
     kind: 'number', min: 0, max: 100, step: 1 },
   { key: 'MIN_DEPLOYER_BALANCE_SOL', label: 'Min deployer balance', bot: 'sniper', group: 'Safety',
     kind: 'number', min: 0, max: 1000, step: 0.05 },
+  { key: 'MAX_DEPLOYER_BALANCE_SOL', label: 'Max deployer balance', bot: 'sniper', group: 'Safety',
+    kind: 'number', min: 0, max: 100_000, step: 0.1,
+    help: 'SOL. 0 = off. Rejects WELL-FUNDED deployers — the opposite of the ' +
+      'floor above, and together they make a band.' },
   { key: 'MAX_DEPLOYER_RUG_RATE', label: 'Max deployer rug rate', bot: 'sniper', group: 'Safety',
     kind: 'number', min: 0, max: 1, step: 0.01 },
   { key: 'REQUIRE_SOCIALS', label: 'Require socials', bot: 'sniper', group: 'Safety', kind: 'boolean' },
   { key: 'DUPLICATE_NAME_WINDOW_MINUTES', label: 'Copycat window', bot: 'sniper', group: 'Safety',
     kind: 'number', min: 0, max: 1440, step: 5 },
+  { key: 'SNIPE_CONFIRM_MS', label: 'Confirm move for', bot: 'sniper', group: 'Safety',
+    kind: 'number', min: 0, max: 60_000, step: 250,
+    help: 'ms. 0 = off. Waits, re-reads the price, and only buys if it held or ' +
+      'rose — the one check that asks whether anyone else is buying.' },
+  { key: 'SNIPE_CONFIRM_MIN_GAIN_PCT', label: 'Confirm min move', bot: 'sniper', group: 'Safety',
+    kind: 'number', min: -20, max: 100, step: 1,
+    help: '% over the window above. 0 = "must not be down".' },
   { key: 'MAX_CANDIDATE_AGE_MS', label: 'Max candidate age', bot: 'sniper', group: 'Safety',
     kind: 'number', min: 100, max: 600_000, step: 100, help: 'ms. Older than this is not a snipe.' },
 

@@ -29,15 +29,30 @@ export const deployerBalanceCheck: Check = {
   async run(ctx) {
     const bal = await deployerBalanceSol(ctx);
     const min = ctx.cfg.MIN_DEPLOYER_BALANCE_SOL;
+    const max = ctx.cfg.MAX_DEPLOYER_BALANCE_SOL;
     const metrics = { deployerSol: bal };
-    if (bal >= min) {
-      return { passed: true, detail: `deployer holds ${bal.toFixed(3)} SOL`, metrics };
+
+    if (bal < min) {
+      return {
+        passed: false,
+        detail: `deployer holds only ${bal.toFixed(4)} SOL (min ${min}) — likely a throwaway wallet`,
+        metrics,
+      };
     }
-    return {
-      passed: false,
-      detail: `deployer holds only ${bal.toFixed(4)} SOL (min ${min}) — likely a throwaway wallet`,
-      metrics,
-    };
+    // The ceiling is off by default and is the counterintuitive half of the
+    // pair: the sniper's own history had the 0.1-0.5 SOL band as the only
+    // profitable cohort, with both 0.5-2 and 2+ losing. A floor alone can only
+    // cut the bottom, which was the part making money.
+    if (max > 0 && bal > max) {
+      return {
+        passed: false,
+        detail:
+          `deployer holds ${bal.toFixed(3)} SOL (max ${max}) — funded enough to ` +
+          'bundle the launch and dump into it',
+        metrics,
+      };
+    }
+    return { passed: true, detail: `deployer holds ${bal.toFixed(3)} SOL`, metrics };
   },
 };
 

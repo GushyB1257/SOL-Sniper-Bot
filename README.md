@@ -352,6 +352,42 @@ distinguish; it noticed the collision itself, from hold times that made no sense
 against `TIME_STOP_SECONDS`. The evidence it is given now names the parameter
 behind each exit reason.
 
+**A floor is not always the filter you need.** `MIN_DEPLOYER_BALANCE_SOL` cuts
+dust wallets, which is the obvious read: a deployer with nothing in it is
+spamming launches. Then the entry-side evidence arrived and said the opposite was
+also true. On a 150-trade sniper run the **0.1–0.5 SOL band was the only
+profitable cohort** (39 trades, 26% win, +1.92 SOL) while 0.5–2 SOL (41 trades,
+5% win, −2.44) and 2 SOL+ (65 trades, 14% win, −2.24) both lost money. A floor
+cannot express that shape at all — the only thing it can cut is the bottom band,
+which was the part that worked.
+
+So there is now a `MAX_DEPLOYER_BALANCE_SOL` too (0 = off), and the two together
+make a band. A plausible mechanism is that a well-funded deployer is a
+professional operation with the capital to bundle a launch and the patience to
+dump into it, while a nearly-empty wallet is someone doing this once — but that
+is a story, and the pair of bounds is what lets it be tested rather than
+believed. An upside-down band is refused at boot, because set that way it rejects
+every launch and the bot just stops trading, which looks identical to a quiet
+market.
+
+**Entry confirmation: did anyone else actually buy it?** Every check above asks
+whether the token is *structurally* sound. None asks whether the launch is going
+anywhere, and that gap is what the dead-entry mass is made of — 87 of 156 trades
+exiting as `dead_entry` for −2.74 SOL, with **both** directions of
+`RATCHET_FIRST_CHECKPOINT_SECONDS` measured and reverted. When shortening and
+lengthening the window both fail, the problem is not the window.
+
+`SNIPE_CONFIRM_MS` (0 = off) waits after the battery passes, re-reads the price,
+and only buys if it has risen by `SNIPE_CONFIRM_MIN_GAIN_PCT`. Stated plainly,
+this is **not a free win**: the cost is being that much later into every launch
+that does work, which is upside given away, plus two RPC reads per candidate that
+got this far. It is a parameter rather than a decision because whether the trade
+is worth it is exactly what the measure-and-revert loop can settle. An unreadable
+price fails **open** — our own outage says nothing about the launch, and letting
+it become a blanket veto is the same mistake as charging a token for a slow IPFS
+gateway. What the gate saw is written into the entry note, so the tuner can bucket
+by it.
+
 **Entry-side evidence.** The sniper's trade journal used to carry the safety
 *score* and nothing else, so a run with 116 dead entries out of 150 could not
 answer "and what did they have in common" — every entry-filter proposal was a
@@ -364,8 +400,9 @@ the position at entry, and the evidence buckets trades by them:
 | Deployer buy % at entry | `MAX_DEV_BUY_PCT` |
 | Holders at entry | `MIN_HOLDERS` |
 | Creation-slot transactions | `MAX_LAUNCH_BUNDLE_TXS` |
-| Deployer balance | `MIN_DEPLOYER_BALANCE_SOL` |
+| Deployer balance | `MIN_DEPLOYER_BALANCE_SOL` / `MAX_DEPLOYER_BALANCE_SOL` |
 | Creator wallet age | `MIN_CREATOR_AGE_MINUTES` |
+| Move during confirmation | `SNIPE_CONFIRM_MIN_GAIN_PCT` |
 
 A check that is switched off contributes nothing rather than a zero, because a
 zero from a check that never ran is indistinguishable from a real measurement of
@@ -378,6 +415,16 @@ the model proposed, and silently means 3. Parameters that count things are marke
 as such, rounded, and always free to move by at least one whole unit; without
 that floor a small count is frozen wherever it happens to sit and every proposal
 for it is rejected as "no change".
+
+**Risk parameters are left where a human put them.** The bounds in `limits.ts`
+describe what the tuner may *authorise*, not what a sane value is. A value parked
+outside them — `HOURLY_SPEND_CAP_SOL` at a hand-set 100 against a tuner ceiling
+of 50 — is a deliberate decision the tuner has no evidence about, so it is now
+declined rather than dragged to the nearest bound. Dragging it would be a change
+to capital exposure nobody asked for, made as a side effect of a proposal about
+something else, and one-way: the same rule then stops it going back. Non-risk
+parameters still snap back into range in one step, which is what that rule was
+for.
 
 `TUNER_MAX_STEP_PCT` and the per-parameter caps in `limits.ts` now combine as the
 **tighter of the two**. The global used to win outright, which made every
@@ -721,7 +768,7 @@ deduct from a 100-point score that must clear `MIN_SAFETY_SCORE`.
 | `mint_authority` | fatal | Deployer can print supply and dilute you to zero. |
 | `dev_buy_share` | fatal | Deployer sniped >8% of supply in the create tx. Everyone after them is exit liquidity by construction. |
 | `deployer_history` | fatal | This wallet's previous launches rugged. Learned locally as the bot runs. |
-| `deployer_balance` | major | Minting from a dust wallet — the signature of high-volume spam. |
+| `deployer_balance` | major | Deployer balance outside `MIN_DEPLOYER_BALANCE_SOL`..`MAX_DEPLOYER_BALANCE_SOL`. A **band**, not just a floor — see below. |
 | `deployer_spam` | major | Same wallet minted 5+ tokens in 24h. |
 | `metadata_sanity` | major | Cyrillic/full-width homoglyphs or zero-width padding in the ticker — impersonation. |
 | `socials` | major | No resolvable metadata, or no Twitter/Telegram/site. |
