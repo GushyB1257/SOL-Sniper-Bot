@@ -154,6 +154,15 @@ export const TUNABLES: Tunable[] = [
     pattern: /^(pump|pump-amm|raydium|raydium-cpmm|launchlab|bonk)(,(pump|pump-amm|raydium|raydium-cpmm|launchlab|bonk))*$/,
     what: 'Comma-separated venues to trade, e.g. "pump" or "pump,pump-amm".',
   },
+  {
+    key: 'SNIPE_ALLOWED_POOLS',
+    bot: 'sniper',
+    kind: 'text',
+    pattern: /^(pump|pump-amm|raydium|raydium-cpmm|launchlab|bonk)(,(pump|pump-amm|raydium|raydium-cpmm|launchlab|bonk))*$/,
+    what: 'Comma-separated venues the sniper will buy on. "pump" alone is ' +
+      'pump.fun standard launches; every other value is a different launchpad, ' +
+      'whose launches the rest of the sniper is not modelled for.',
+  },
 
   // === Momentum entry (ENTRY_MODE=fast) ================================
   n('MOMENTUM_WINDOW_SECONDS', 'screener', 5, 300, 60, 'Window the momentum trigger measures over.'),

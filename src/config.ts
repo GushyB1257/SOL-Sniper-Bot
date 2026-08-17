@@ -84,7 +84,9 @@ const poolListSchema = z.string().transform((raw, ctx) => {
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   if (parts.length === 0) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'SCREEN_ALLOWED_POOLS is empty' });
+    // Three settings share this schema, so name whichever one is being parsed
+    // rather than the one it was first written for.
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${ctx.path.join('.')} is empty` });
     return z.NEVER;
   }
   for (const p of parts) {
@@ -342,6 +344,14 @@ const schema = z.object({
   // === Screener entry (ENTRY_MODE=screener) ===
   /** Venues to accept. "pump" alone means pump.fun standard coins only. */
   SCREEN_ALLOWED_POOLS: poolListSchema.default('pump'),
+  /**
+   * Venues the sniper will buy on. Defaults to pump.fun bonding curves only.
+   *
+   * The screener and copy trader have always had this; the sniper did not, and
+   * took whatever the feed handed it. That was invisible while the feed only
+   * carried pump.fun.
+   */
+  SNIPE_ALLOWED_POOLS: poolListSchema.default('pump'),
   /** Total traded volume, both sides, including the deployer's creation buy. */
   SCREEN_MIN_VOLUME_USD: num(0, 100_000_000).default(3000),
   SCREEN_MIN_MCAP_USD: num(0, 100_000_000).default(6000),

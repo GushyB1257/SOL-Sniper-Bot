@@ -1,6 +1,13 @@
 /** Shared domain types. */
 
-/** Venue a token trades on. Mirrors PumpPortal's `pool` parameter. */
+/**
+ * Venue a token trades on. Mirrors PumpPortal's `pool` parameter.
+ *
+ * `unknown` is not a venue — it means the feed named one we do not recognise.
+ * It exists so that an unrecognised launchpad can be *said*, because the
+ * alternative was calling it `pump` and letting it through every gate meant to
+ * keep it out.
+ */
 export type Pool =
   | 'pump'
   | 'pump-amm'
@@ -8,7 +15,20 @@ export type Pool =
   | 'raydium-cpmm'
   | 'launchlab'
   | 'bonk'
-  | 'auto';
+  | 'auto'
+  | 'unknown';
+
+/**
+ * Whether a venue is on an allow-list.
+ *
+ * `unknown` is deliberately not a configurable value, so it can never appear in
+ * one of these lists and this always answers false for it. That is the whole
+ * point of having it: a venue we could not identify is not one we trade, and
+ * there is no setting that makes it one.
+ */
+export function poolAllowed(allowed: readonly string[], pool: Pool): boolean {
+  return allowed.includes(pool);
+}
 
 /** A freshly-detected launch, before any safety work has been done. */
 export interface TokenCandidate {

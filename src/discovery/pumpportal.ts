@@ -47,6 +47,43 @@ const KNOWN_POOLS: readonly Pool[] = [
   'auto',
 ];
 
+/** Unrecognised venues already reported, so the warning fires once each. */
+const reportedPools = new Set<string>();
+
+/**
+ * The venue the feed named, or `unknown` if it named one we do not have.
+ *
+ * The old version fell back to `pump` for anything it did not recognise, which
+ * was safe while PumpPortal only carried pump.fun and became a real problem when
+ * it started carrying every other launchpad on Solana. A launch off Mayhem or
+ * Bags arrived stamped `pump` and then sailed through every gate meant to stop
+ * it: the screener's `SCREEN_ALLOWED_POOLS` matched, `holder_concentration`
+ * waived itself on the grounds that bonding-curve concentration means nothing,
+ * `dev_buy_share` measured the stake against pump.fun's fixed 1B supply, and the
+ * executor asked PumpPortal to build a pump.fun swap for a token that is not on
+ * pump.fun. Guessing `pump` was not a neutral default; it was the answer that
+ * disabled the checks.
+ *
+ * An *absent* field still means pump, because that is what the feed's own
+ * history says it means and reading it any other way would stop the bot dead.
+ * A field that is present and unrecognised is the case that gets named.
+ */
+export function poolOf(raw: string | undefined): Pool {
+  if (raw === undefined) return 'pump';
+  const normalised = raw.trim().toLowerCase();
+  if (KNOWN_POOLS.includes(normalised as Pool)) return normalised as Pool;
+
+  if (!reportedPools.has(normalised)) {
+    reportedPools.add(normalised);
+    log.warn(
+      `Feed is sending launches from "${normalised}", which is not pump.fun. ` +
+        'They are marked unknown and will not be sniped. Add it to ' +
+        'SNIPE_ALLOWED_POOLS/SCREEN_ALLOWED_POOLS only if you want that venue.',
+    );
+  }
+  return 'unknown';
+}
+
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
@@ -251,8 +288,7 @@ export class PumpPortalDiscovery implements Discovery {
     const creator = str(msg.traderPublicKey);
     if (!mint || !creator || !isValidMint(mint)) return null;
 
-    const rawPool = str(msg.pool);
-    const pool: Pool = KNOWN_POOLS.includes(rawPool as Pool) ? (rawPool as Pool) : 'pump';
+    const pool = poolOf(str(msg.pool));
 
     return {
       mint,

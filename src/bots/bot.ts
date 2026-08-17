@@ -10,7 +10,7 @@ import { withRpcPriority } from '../util/rpc-throttle.js';
 import { CopyTrader } from '../copy/copy-trader.js';
 import { marketCapFromState } from '../watchlist/curve-poller.js';
 import type { PriceSource } from '../execution/pricing.js';
-import type { Executor, TokenCandidate } from '../types.js';
+import { poolAllowed, type Executor, type TokenCandidate } from '../types.js';
 import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
 
@@ -184,6 +184,18 @@ export class TradingBot {
     const { cfg } = this.deps;
     const label = candidate.symbol ?? candidate.mint.slice(0, 8);
 
+    // Venue first, before anything is spent on it. The screener and copy trader
+    // have always had this gate; the sniper took whatever the feed handed it,
+    // which was fine while the feed only carried pump.fun and stopped being fine
+    // when it started carrying every launchpad on Solana.
+    if (!poolAllowed(cfg.SNIPE_ALLOWED_POOLS, candidate.pool)) {
+      this.stats.skipped += 1;
+      log.debug(
+        `${this.name}: skip ${label} — venue ${candidate.pool} not in ` +
+          cfg.SNIPE_ALLOWED_POOLS.join('/'),
+      );
+      return;
+    }
     if (this.store.hasTraded(candidate.mint) || this.entryInFlight) {
       this.stats.skipped += 1;
       return;

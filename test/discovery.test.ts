@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readCreateArgs } from '../src/discovery/rpc.js';
+import { poolOf } from '../src/discovery/pumpportal.js';
+import { poolAllowed } from '../src/types.js';
 
 /**
  * The pump.fun create instruction carries the launch's name, symbol and
@@ -101,5 +103,45 @@ describe('pump.fun create instruction arguments', () => {
       symbol: 'OFF',
       uri: 'https://ipfs.io/ipfs/z',
     });
+  });
+});
+
+describe('venue labelling', () => {
+  it('keeps a pump.fun launch on pump', () => {
+    expect(poolOf('pump')).toBe('pump');
+    expect(poolOf('pump-amm')).toBe('pump-amm');
+  });
+
+  it('does not call an unrecognised launchpad pump', () => {
+    // The bug this fixes. PumpPortal used to carry only pump.fun, so anything
+    // unrecognised was safely assumed to be pump. It now carries every
+    // launchpad on Solana, and the assumption became a lie that let a Mayhem or
+    // Bags launch through every gate meant to stop it — the screener's venue
+    // filter matched, holder_concentration waived itself as a bonding curve,
+    // dev_buy_share measured against pump.fun's fixed 1B supply, and the
+    // executor asked for a pump.fun swap on a token that is not on pump.fun.
+    expect(poolOf('mayhem')).toBe('unknown');
+    expect(poolOf('bags')).toBe('unknown');
+    expect(poolOf('moonshot')).toBe('unknown');
+  });
+
+  it('still reads a missing field as pump', () => {
+    // Absent is not the same as unrecognised. The feed's own history says a
+    // launch with no venue named is a pump.fun launch, and reading it any other
+    // way would stop the bot dead on a feed that simply omits the field.
+    expect(poolOf(undefined)).toBe('pump');
+  });
+
+  it('is not fooled by case or padding', () => {
+    expect(poolOf('  PUMP  ')).toBe('pump');
+    expect(poolOf('Mayhem')).toBe('unknown');
+  });
+
+  it('never allows an unknown venue, whatever the allow-list says', () => {
+    // There is deliberately no setting that turns this on: a venue we could not
+    // identify is not one we trade.
+    expect(poolAllowed(['pump'], 'unknown')).toBe(false);
+    expect(poolAllowed(['pump', 'pump-amm', 'raydium', 'bonk', 'auto'], 'unknown')).toBe(false);
+    expect(poolAllowed(['pump'], 'pump')).toBe(true);
   });
 });

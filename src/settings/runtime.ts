@@ -82,6 +82,9 @@ export const FIELDS: FieldSpec[] = [
     help: 'screener applies the filter below; fast uses the momentum trigger.' },
   { key: 'SCREEN_ALLOWED_POOLS', label: 'Venues', bot: 'screener', group: 'Filter', kind: 'text',
     placeholder: 'pump', help: 'Comma separated. "pump" alone is pump.fun standard coins.' },
+  { key: 'SNIPE_ALLOWED_POOLS', label: 'Venues', bot: 'sniper', group: 'Filter', kind: 'text',
+    placeholder: 'pump', help: 'Comma separated. "pump" alone is pump.fun standard coins — ' +
+      'anything else is a different launchpad.' },
   { key: 'SCREEN_MIN_MCAP_USD', label: 'Min market cap', bot: 'screener', group: 'Filter',
     kind: 'number', min: 0, max: 100_000_000, step: 500, help: 'USD. Launches start near $5-6k.' },
   { key: 'SCREEN_MAX_MCAP_USD', label: 'Max market cap', bot: 'screener', group: 'Filter',

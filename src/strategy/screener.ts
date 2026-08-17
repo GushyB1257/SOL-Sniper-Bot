@@ -1,5 +1,5 @@
 import type { Config } from '../config.js';
-import type { Pool } from '../types.js';
+import { poolAllowed, type Pool } from '../types.js';
 import { volumeOf, type TrackedToken } from '../watchlist/watchlist.js';
 
 /**
@@ -156,7 +156,7 @@ export function screenerSignal(
     snapshot: s,
   });
 
-  if (!cfg.SCREEN_ALLOWED_POOLS.includes(s.pool)) {
+  if (!poolAllowed(cfg.SCREEN_ALLOWED_POOLS, s.pool)) {
     return reject(`pool ${s.pool} not in ${cfg.SCREEN_ALLOWED_POOLS.join('/')}`);
   }
 

@@ -4,7 +4,7 @@ import {
   PublicKey,
   VersionedTransaction,
 } from '@solana/web3.js';
-import type { BuyResult, Executor, Position, SellResult, TokenCandidate } from '../types.js';
+import type { BuyResult, Executor, Pool, Position, SellResult, TokenCandidate } from '../types.js';
 import type { Config } from '../config.js';
 import { logger } from '../logger.js';
 import { errMessage, retry, withTimeout } from '../util/async.js';
@@ -12,6 +12,20 @@ import { lamportsToSol } from '../util/solana.js';
 import type { PriceSource } from './pricing.js';
 
 const log = logger('exec:onchain');
+
+/**
+ * The venue to ask PumpPortal to route through.
+ *
+ * `unknown` means the feed named a launchpad we do not model, so the honest
+ * instruction is `auto` — let the router find the venue rather than assert a
+ * wrong one and have it build a pump.fun swap for a token that is not on
+ * pump.fun. The venue gates should stop an unknown reaching here at all; this
+ * is the belt to their braces, and it matters most on the *sell* side, where
+ * refusing to name a venue we are unsure of is how a position stays exitable.
+ */
+function tradePool(pool: Pool): string {
+  return pool === 'unknown' ? 'auto' : pool;
+}
 
 /**
  * How long a cached blockhash is reused. Solana accepts one for roughly 150
@@ -61,7 +75,7 @@ export class OnchainExecutor implements Executor {
         amount: amountSol,
         denominatedInSol: 'true',
         slippage: this.cfg.BUY_SLIPPAGE_PCT,
-        pool: candidate.pool === 'auto' ? 'auto' : candidate.pool,
+        pool: tradePool(candidate.pool),
       });
 
       // Settle against reality rather than trusting the quote: the fill is
@@ -118,7 +132,7 @@ export class OnchainExecutor implements Executor {
         amount: closeAll && soleHolder ? '100%' : sellQty,
         denominatedInSol: 'false',
         slippage: this.cfg.SELL_SLIPPAGE_PCT,
-        pool: position.pool === 'auto' ? 'auto' : position.pool,
+        pool: tradePool(position.pool),
       });
 
       const [heldAfter, solAfter] = await Promise.all([

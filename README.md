@@ -608,6 +608,30 @@ no name (−35) and `socials` failed for having no URI (−20), so every launch 
 that feed scored 45 against a threshold of 70 and the sniper could never buy
 anything at all.
 
+#### Venues
+
+PumpPortal no longer carries only pump.fun. Its feed now includes Mayhem, Bags,
+Bonk, Moonshot and the rest, each identified by a `pool` field — and anything
+unrecognised used to be relabelled `pump`, because that was a safe assumption
+back when pump.fun was the only thing on the wire. It stopped being safe, and it
+was not a neutral default: `pump` is the value that *disables* checks. A Mayhem
+launch wearing it matched the screener's venue filter, had
+`holder_concentration` waive itself on the grounds that bonding-curve
+concentration means nothing, had `dev_buy_share` measure the deployer's stake
+against pump.fun's fixed 1B supply, and had the executor ask PumpPortal to build
+a pump.fun swap for a token that is not on pump.fun.
+
+An unrecognised venue is now called `unknown`, logged once by name so you can see
+which launchpads your feed is carrying, and refused. There is deliberately no
+setting that admits `unknown` — a venue we could not identify is not one we
+trade. A launch with **no** `pool` field at all still reads as `pump`, since
+that is what the feed's own history says it means.
+
+Each bot has its own allow-list, all defaulting to pump.fun only
+(`SNIPE_ALLOWED_POOLS`, `SCREEN_ALLOWED_POOLS`, `COPY_ALLOWED_POOLS`). The
+sniper's is new — it previously had no venue gate at all and took whatever the
+feed handed it.
+
 ### 2. Safety engine (`src/safety/`)
 
 Eleven checks run **in parallel**, each with its own timeout, so the whole
@@ -885,6 +909,7 @@ Screener entries:
 | Catch the move earlier | Narrow the window: `SCREEN_MAX_AGE_SECONDS=60`, lower `SCREEN_MIN_MCAP_USD` |
 | Stop buying tops | Lower `SCREEN_MAX_MCAP_USD` |
 | Include migrated coins | `SCREEN_ALLOWED_POOLS=pump,pump-amm` |
+| Only standard pump.fun launches | Default. `SNIPE_ALLOWED_POOLS=pump` and `SCREEN_ALLOWED_POOLS=pump` |
 
 Ratchet exits (`EXIT_MODE=ratchet`):
 
