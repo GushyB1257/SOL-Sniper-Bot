@@ -10,6 +10,7 @@ import {
 } from '../src/tuner/auto-tuner.js';
 import { RISK_KEYS, TUNABLES, TUNABLE_BY_KEY, vetProposal } from '../src/tuner/limits.js';
 import { TuningLedger } from '../src/tuner/ledger.js';
+import { snipeNote } from '../src/bots/bot.js';
 import { buildEvidence, renderEvidence } from '../src/tuner/evidence.js';
 import { RuntimeSettings } from '../src/settings/runtime.js';
 import { Store } from '../src/state/store.js';
@@ -176,6 +177,12 @@ describe('what the tuner may touch', () => {
       // the loss limits derive from, without the strategy getting better at
       // anything. That is not tuning, it is marking its own homework.
       'PAPER_STARTING_BALANCE_SOL',
+      // Terminal verbosity, with no trading effect. The tuner reached for it as
+      // a way to see the reject breakdown — a fair thing to want, and the wrong
+      // way to get it, since the tuner reads the evidence block and not the
+      // terminal. It also cost a change slot and rode in the same experiment as
+      // a real change, so a revert would revert both.
+      'LOG_LEVEL',
       // Read once at construction; changing it does nothing until a restart.
       'DISCOVERY_SOURCE',
     ]);
@@ -224,11 +231,72 @@ describe('what the tuner may touch', () => {
   });
 
   it('clamps to the hard range rather than trusting the model', () => {
+    // Both limits apply, so an absurd ask lands inside the range AND inside one
+    // step of where it started — it does not reach the bound in a single round.
+    // The property that matters is that nothing escapes the range.
     const spec = TUNABLE_BY_KEY.get('MIN_SAFETY_SCORE')!;
+
     const huge = vetProposal('MIN_SAFETY_SCORE', '70', 10_000, 100);
-    expect(huge.ok && Number(huge.value)).toBe(spec.max);
+    expect(huge.ok).toBe(true);
+    if (huge.ok) {
+      expect(Number(huge.value)).toBeLessThanOrEqual(spec.max!);
+      expect(Number(huge.value)).toBeGreaterThan(70);
+    }
+
     const tiny = vetProposal('MIN_SAFETY_SCORE', '70', -5, 100);
-    expect(tiny.ok && Number(tiny.value)).toBe(spec.min);
+    expect(tiny.ok).toBe(true);
+    if (tiny.ok) {
+      expect(Number(tiny.value)).toBeGreaterThanOrEqual(spec.min!);
+      expect(Number(tiny.value)).toBeLessThan(70);
+    }
+  });
+
+  it('holds a parameter to its own cap even when the global one is looser', () => {
+    // The per-parameter caps in limits.ts were dead code: the global override
+    // won outright, so every hand-picked value in that column was inert. The
+    // effective cap is the tighter of the two, which is what makes both real.
+    const spec = TUNABLE_BY_KEY.get('MIN_SAFETY_SCORE')!;
+    expect(spec.maxStepPct).toBeLessThan(100);
+
+    const r = vetProposal('MIN_SAFETY_SCORE', '70', 95, 100);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(Number(r.value)).toBeCloseTo(70 * (1 + spec.maxStepPct! / 100), 6);
+  });
+
+  it('moves a counted parameter by whole units, never a fraction of one', () => {
+    // MIN_HOLDERS: 2 -> 2.6 is what a 30% step cap does to a count of wallets.
+    // It reads as nonsense, cannot be explained back in the terms the model
+    // proposed, and silently means 3.
+    expect(TUNABLE_BY_KEY.get('MIN_HOLDERS')!.integer).toBe(true);
+
+    const r = vetProposal('MIN_HOLDERS', '2', 4, 30);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(Number(r.value)).toBe(3);
+
+    // 30% of 4 is 1.2, so the bound is a whole 5 rather than a reported 5.2 that
+    // the value could never have taken.
+    const slots = vetProposal('SNIPER_MAX_CONCURRENT_CHECKS', '4', 6, 30);
+    expect(slots.ok).toBe(true);
+    if (slots.ok) {
+      expect(Number(slots.value)).toBe(5);
+      expect(slots.clamped).toContain('to 5');
+    }
+  });
+
+  it('lets a small count move at all, rather than freezing it', () => {
+    // Without a one-unit floor, 30% of 1 is 0.3, which rounds back to 1 — the
+    // parameter is stuck wherever it happens to sit and every proposal for it is
+    // rejected as "no change".
+    const r = vetProposal('MIN_HOLDERS', '1', 2, 30);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(Number(r.value)).toBe(2);
+  });
+
+  it('says so rather than opening an experiment that changes nothing', () => {
+    // Rounding to a whole unit can land back on the current value. Measuring
+    // that for 150 trades is a wasted window and a meaningless verdict.
+    const r = vetProposal('MIN_HOLDERS', '2', 2.2, 30);
+    expect(r.ok).toBe(false);
   });
 
   it('limits how far one round can move a parameter', () => {
@@ -501,6 +569,75 @@ describe('what the evidence says about exits', () => {
     for (const key of named) {
       expect(TUNABLE_BY_KEY.has(key), `${key} is named but not tunable`).toBe(true);
     }
+  });
+});
+
+describe('what the sniper entry looked like', () => {
+  const verdict = (metrics: Record<string, number>) =>
+    ({ score: 85, passed: true, results: [], elapsedMs: 5, metrics }) as never;
+
+  function snipeTrade(devBuyPct: number, holders: number, pnlSol: number): TradeJournalEntry {
+    return trade({
+      pnlSol,
+      pnlPct: (pnlSol / 0.25) * 100,
+      proceedsSol: 0.25 + pnlSol,
+      closeReason: pnlSol > 0 ? 'ladder' : 'dead_entry: below breakeven',
+      entryNote: snipeNote(
+        verdict({ devBuyPct, holders, bundleTxs: 2, deployerSol: 1, creatorAgeMinutes: 200 }),
+      ),
+    });
+  }
+
+  it('writes the launch characteristics the battery measured', () => {
+    const note = snipeNote(
+      verdict({ devBuyPct: 6.2, holders: 1, bundleTxs: 7, deployerSol: 0.04, creatorAgeMinutes: 12 }),
+    );
+    expect(note).toContain('6.20% dev buy');
+    expect(note).toContain('1 holders');
+    expect(note).toContain('7 bundled');
+    expect(note).toContain('0.040 SOL dev balance');
+    expect(note).toContain('12m creator age');
+  });
+
+  it('omits a check that did not run rather than recording a zero', () => {
+    // A zero from a switched-off check is indistinguishable from a real
+    // measurement of zero, and the difference decides whether a bucket means
+    // anything at all.
+    const note = snipeNote(verdict({ devBuyPct: 1.1 }));
+    expect(note).toContain('1.10% dev buy');
+    expect(note).not.toContain('holders');
+    expect(note).not.toContain('bundled');
+  });
+
+  it('turns 150 dead entries into a breakdown that names a parameter', () => {
+    // The blocker the tuner reported: the sniper journal carried the safety
+    // score and nothing else, so "116 of 150 died" could not be turned into
+    // "and here is what they had in common".
+    for (let k = 0; k < 30; k++) store.appendJournal(snipeTrade(6.5, 1, -0.05));
+    for (let k = 0; k < 12; k++) store.appendJournal(snipeTrade(0.4, 6, 0.3));
+
+    const e = buildEvidence('sniper', store.journal(), cfg);
+
+    const heavy = e.byDevBuy.find((b) => b.key === '5%+')!;
+    expect(heavy.trades).toBe(30);
+    expect(heavy.wins).toBe(0);
+    const light = e.byDevBuy.find((b) => b.key === '<1%')!;
+    expect(light.trades).toBe(12);
+    expect(light.wins).toBe(12);
+
+    const rendered = renderEvidence(e);
+    expect(rendered).toContain('MAX_DEV_BUY_PCT');
+    expect(rendered).toContain('MIN_HOLDERS');
+  });
+
+  it('leaves the sniper sections out for a bot that does not run the battery', () => {
+    // The screener's own note has none of these fields, and a bucket built from
+    // absent data would be a row of zeroes reading as a real measurement.
+    fill(12); // default entryNote is the screener's
+    const e = buildEvidence('screener', store.journal(), cfg);
+    expect(e.byDevBuy).toEqual([]);
+    expect(e.byHolders).toEqual([]);
+    expect(e.byBundle).toEqual([]);
   });
 });
 

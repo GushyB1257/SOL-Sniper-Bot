@@ -15,6 +15,18 @@ export interface CheckContext {
 export interface CheckOutcome {
   passed: boolean;
   detail: string;
+  /**
+   * The numbers this check measured, for the record rather than the decision.
+   *
+   * A check's `detail` is prose for a human reading a log. The auto-tuner reads
+   * the trade journal, and the journal carried only the safety *score* — so a
+   * sniper with 116 dead entries out of 150 had no way to ask which launch
+   * characteristic predicted death, and every entry-filter proposal was a guess
+   * between equally plausible knobs. These get stamped on the position at entry
+   * and bucketised in the evidence, the same way the screener's market cap and
+   * volume already are.
+   */
+  metrics?: Record<string, number>;
 }
 
 export interface Check {

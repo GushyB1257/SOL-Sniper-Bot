@@ -101,6 +101,12 @@ export class SafetyEngine {
       results.push(...(await Promise.all(paid.map((c) => this.runOne(c, ctx)))));
     }
 
+    // Everything the checks measured, whether they passed or failed. The
+    // decision does not use these; the trade journal does, so the tuner can ask
+    // which launch characteristic the losing entries had in common.
+    const metrics: Record<string, number> = {};
+    for (const r of results) Object.assign(metrics, r.metrics);
+
     // A fatal failure is a veto regardless of how good the rest looks.
     const fatal = results.find((r) => !r.passed && r.severity === 'fatal');
 
@@ -120,6 +126,7 @@ export class SafetyEngine {
       rejectedBy: fatal?.id ?? (passed ? undefined : 'score_threshold'),
       elapsedMs,
       shortCircuited,
+      metrics,
     };
 
     if (!passed) {
@@ -160,6 +167,7 @@ export class SafetyEngine {
         severity: check.severity,
         penalty: check.penalty,
         detail: outcome.detail,
+        ...(outcome.metrics && { metrics: outcome.metrics }),
       };
     } catch (err) {
       const detail = `check errored: ${errMessage(err)}`;

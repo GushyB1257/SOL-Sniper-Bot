@@ -352,6 +352,40 @@ distinguish; it noticed the collision itself, from hold times that made no sense
 against `TIME_STOP_SECONDS`. The evidence it is given now names the parameter
 behind each exit reason.
 
+**Entry-side evidence.** The sniper's trade journal used to carry the safety
+*score* and nothing else, so a run with 116 dead entries out of 150 could not
+answer "and what did they have in common" — every entry-filter proposal was a
+guess between equally plausible knobs, and the tuner said so. The safety checks
+now report the numbers they measured alongside their prose, those get stamped on
+the position at entry, and the evidence buckets trades by them:
+
+| Breakdown | Parameter it is evidence about |
+|---|---|
+| Deployer buy % at entry | `MAX_DEV_BUY_PCT` |
+| Holders at entry | `MIN_HOLDERS` |
+| Creation-slot transactions | `MAX_LAUNCH_BUNDLE_TXS` |
+| Deployer balance | `MIN_DEPLOYER_BALANCE_SOL` |
+| Creator wallet age | `MIN_CREATOR_AGE_MINUTES` |
+
+A check that is switched off contributes nothing rather than a zero, because a
+zero from a check that never ran is indistinguishable from a real measurement of
+zero and would make the bucket meaningless.
+
+**Counted parameters move in whole units.** A percentage step cap does not work
+on small integers: 30% of 2 holders is 0.6, which produced `MIN_HOLDERS: 2 ->
+2.6` — a threshold that reads as nonsense, cannot be explained back in the terms
+the model proposed, and silently means 3. Parameters that count things are marked
+as such, rounded, and always free to move by at least one whole unit; without
+that floor a small count is frozen wherever it happens to sit and every proposal
+for it is rejected as "no change".
+
+`TUNER_MAX_STEP_PCT` and the per-parameter caps in `limits.ts` now combine as the
+**tighter of the two**. The global used to win outright, which made every
+hand-picked per-parameter value in that file dead code — `MIN_HOLDERS` is marked
+as able to move 100% for a reason and never could. If you want those wider
+allowances to be reachable, raise `TUNER_MAX_STEP_PCT`; at the default of 30 most
+of them are not.
+
 A token that dumps 70% and recovers inside the window is **held**. A token that
 dumps and stays down is sold at the checkpoint, not at the bottom of the wick.
 

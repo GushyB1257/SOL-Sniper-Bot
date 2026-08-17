@@ -43,6 +43,17 @@ export interface Evidence {
   byEntryAge: Bucket[];
   bySocials: Bucket[];
   byHoldTime: Bucket[];
+  /**
+   * Sniper entry characteristics, from the safety battery's own measurements.
+   *
+   * These are the breakdown that makes entry-filter tuning something other than
+   * guesswork. Empty for a bot whose entries do not run the battery.
+   */
+  byDevBuy: Bucket[];
+  byHolders: Bucket[];
+  byBundle: Bucket[];
+  byDeployerBalance: Bucket[];
+  byCreatorAge: Bucket[];
 }
 
 function numberFrom(note: string | undefined, re: RegExp): number | null {
@@ -134,6 +145,29 @@ export function buildEvidence(
       return v === null ? null : `${v}`;
     }),
     byHoldTime: bucketise(journal, (t) => band(t.holdSeconds, [15, 45, 120], 's')),
+    // Sniper entries, from the safety battery's own measurements. Each maps
+    // straight onto one parameter, which is the point: a losing bucket names the
+    // knob to move instead of leaving a choice between equally plausible ones.
+    byDevBuy: bucketise(journal, (t) => {
+      const v = numberFrom(t.entryNote, /([\d.]+)% dev buy/);
+      return v === null ? null : band(v, [1, 3, 5], '%');
+    }),
+    byHolders: bucketise(journal, (t) => {
+      const v = numberFrom(t.entryNote, /(\d+) holders/);
+      return v === null ? null : band(v, [2, 4, 8], '');
+    }),
+    byBundle: bucketise(journal, (t) => {
+      const v = numberFrom(t.entryNote, /(\d+) bundled/);
+      return v === null ? null : band(v, [2, 3, 5], ' txs');
+    }),
+    byDeployerBalance: bucketise(journal, (t) => {
+      const v = numberFrom(t.entryNote, /([\d.]+) SOL dev balance/);
+      return v === null ? null : band(v, [0.1, 0.5, 2], ' SOL');
+    }),
+    byCreatorAge: bucketise(journal, (t) => {
+      const v = numberFrom(t.entryNote, /(\d+)m creator age/);
+      return v === null ? null : band(v, [30, 180, 1440], 'm');
+    }),
   };
 }
 
@@ -184,6 +218,12 @@ export function renderEvidence(e: Evidence): string {
     b('Entry volume', e.byEntryVolume) +
     b('Age at entry', e.byEntryAge) +
     b('Socials at entry', e.bySocials) +
-    b('Hold time', e.byHoldTime)
+    b('Hold time', e.byHoldTime) +
+    // Sniper only, and each names the parameter it is evidence about.
+    b('Deployer buy % at entry (MAX_DEV_BUY_PCT)', e.byDevBuy) +
+    b('Holders at entry (MIN_HOLDERS)', e.byHolders) +
+    b('Creation-slot transactions (MAX_LAUNCH_BUNDLE_TXS)', e.byBundle) +
+    b('Deployer balance (MIN_DEPLOYER_BALANCE_SOL)', e.byDeployerBalance) +
+    b('Creator wallet age (MIN_CREATOR_AGE_MINUTES)', e.byCreatorAge)
   );
 }

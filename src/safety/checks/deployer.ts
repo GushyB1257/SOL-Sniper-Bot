@@ -29,12 +29,14 @@ export const deployerBalanceCheck: Check = {
   async run(ctx) {
     const bal = await deployerBalanceSol(ctx);
     const min = ctx.cfg.MIN_DEPLOYER_BALANCE_SOL;
+    const metrics = { deployerSol: bal };
     if (bal >= min) {
-      return { passed: true, detail: `deployer holds ${bal.toFixed(3)} SOL` };
+      return { passed: true, detail: `deployer holds ${bal.toFixed(3)} SOL`, metrics };
     }
     return {
       passed: false,
       detail: `deployer holds only ${bal.toFixed(4)} SOL (min ${min}) — likely a throwaway wallet`,
+      metrics,
     };
   },
 };

@@ -37,6 +37,14 @@ import type { BotId } from '../bots/bot.js';
  *    a tuner able to raise it could improve its own expectancy by loosening the
  *    checks rather than by trading better. That is not tuning, it is marking its
  *    own homework.
+ *  - **`LOG_LEVEL`.** Terminal verbosity, with — in the tuner's own words when
+ *    it changed it — "no trading effect". It was reached for as a way to see the
+ *    reject breakdown, which is a fair thing to want and the wrong way to get it:
+ *    the tuner cannot read the terminal, only the evidence block, so the change
+ *    bought nothing. Worse, it costs one of TUNER_MAX_CHANGES_PER_ROUND and rides
+ *    in the same experiment as a real change, so a revert reverts both and the
+ *    real one is measured against a slot it had to share. The reject breakdown
+ *    belongs in the evidence, and now is.
  *  - **`DISCOVERY_SOURCE`.** Read once, at construction. Changing it at runtime
  *    does nothing until a restart — which is worse than not offering it, since
  *    the tuner would spend a whole measurement window on a change that had no
@@ -62,8 +70,25 @@ export interface Tunable {
   /** Numbers only. */
   min?: number;
   max?: number;
-  /** Numbers only: largest single-round move as a share of the current value. */
+  /**
+   * Numbers only: largest single-round move as a share of the current value.
+   *
+   * The effective cap is the tighter of this and `TUNER_MAX_STEP_PCT`, so a
+   * parameter can be held stricter than the global setting but never looser.
+   * Raise `TUNER_MAX_STEP_PCT` if you want the wider allowances here to be
+   * reachable at all — at the default of 30 most of them are not.
+   */
   maxStepPct?: number;
+  /**
+   * Numbers only: this parameter counts things, so fractions are meaningless.
+   *
+   * A percentage step cap does not work on small integers — 30% of 2 holders is
+   * 0.6, which produced `MIN_HOLDERS: 2 -> 2.6`, a threshold that reads as
+   * nonsense, cannot be explained back to the model in the terms it proposed,
+   * and silently means 3. Integer parameters are rounded and are always allowed
+   * to move by at least one whole unit, or they could never move at all.
+   */
+  integer?: boolean;
   /** Enums only. */
   options?: string[];
   /** Text only: what a valid value looks like. */
@@ -88,6 +113,17 @@ const n = (
   risk = false,
 ): Tunable => ({ key, bot, kind: 'number', min, max, maxStepPct, what, ...(risk && { risk }) });
 
+/** A number that counts things: rounded, and always free to move by one. */
+const i = (
+  key: string,
+  bot: Tunable['bot'],
+  min: number,
+  max: number,
+  maxStepPct: number,
+  what: string,
+  risk = false,
+): Tunable => ({ ...n(key, bot, min, max, maxStepPct, what, risk), integer: true });
+
 const b = (key: string, bot: Tunable['bot'], what: string): Tunable => ({
   key,
   bot,
@@ -111,16 +147,16 @@ export const TUNABLES: Tunable[] = [
     'Minimum market cap. Higher = later entries on tokens that already moved.'),
   n('SCREEN_MAX_MCAP_USD', 'screener', 0, 500_000, 60,
     'Maximum market cap; 0 disables. Lower = refuses to buy tops.'),
-  n('SCREEN_MIN_SOCIALS', 'screener', 0, 3, 100, 'Social links required in metadata (0-3).'),
+  i('SCREEN_MIN_SOCIALS', 'screener', 0, 3, 100, 'Social links required in metadata (0-3).'),
   n('SCREEN_MAX_AGE_SECONDS', 'screener', 30, 3600, 50,
     'Oldest a token can be at entry. Lower = only fresh launches.'),
   n('SCREEN_MIN_AGE_SECONDS', 'screener', 0, 600, 100,
     'Youngest a token can be at entry. Higher = lets the first spike pass first.'),
-  n('SCREEN_MIN_BUYERS', 'screener', 0, 100, 100,
+  i('SCREEN_MIN_BUYERS', 'screener', 0, 100, 100,
     'Distinct buyers required; 0 disables. Higher = demands real participation.'),
   n('SCREEN_POLL_INTERVAL_MS', 'screener', 500, 10_000, 50,
     'How often watched bonding curves are re-read. Lower spots a match sooner and costs RPC.'),
-  n('SCREEN_POLL_MAX_TOKENS', 'screener', 50, 2000, 50,
+  i('SCREEN_POLL_MAX_TOKENS', 'screener', 50, 2000, 50,
     'How many tokens are watched at once. Higher covers more launches and costs RPC.'),
   n('ENTRY_QUEUE_MAX_WAIT_SECONDS', 'screener', 2, 120, 60,
     'How long a matched token waits behind another entry before it is dropped as stale.'),
@@ -139,7 +175,7 @@ export const TUNABLES: Tunable[] = [
     'Ceiling on average buy size — catches one whale posing as a crowd.'),
   n('SCREEN_MIN_LARGEST_BUY_SOL', 'screener', 0, 100, 100,
     'Largest single buy. Someone taking real size is a different signal from many small ones.'),
-  n('SCREEN_MIN_REPEAT_BUYERS', 'screener', 0, 100, 100,
+  i('SCREEN_MIN_REPEAT_BUYERS', 'screener', 0, 100, 100,
     'Wallets that bought twice. Conviction rather than a glance.'),
   n('SCREEN_MIN_CURVE_PROGRESS_PCT', 'screener', 0, 95, 100,
     'Progress toward graduating off the bonding curve, 0-100.'),
@@ -175,7 +211,7 @@ export const TUNABLES: Tunable[] = [
   n('MOMENTUM_MIN_AGE_SECONDS', 'screener', 0, 600, 100, 'Youngest a token can be to trigger.'),
   n('MOMENTUM_MAX_AGE_SECONDS', 'screener', 30, 7200, 60, 'Oldest a token can be to trigger.'),
   n('MOMENTUM_MIN_GAIN_PCT', 'screener', 1, 200, 50, 'Gain in the window that counts as momentum.'),
-  n('MOMENTUM_MIN_BUYERS', 'screener', 1, 100, 60, 'Distinct buyers in the window.'),
+  i('MOMENTUM_MIN_BUYERS', 'screener', 1, 100, 60, 'Distinct buyers in the window.'),
   n('MOMENTUM_MIN_VOLUME_SOL', 'screener', 0, 100, 60, 'SOL volume in the window.'),
   n('MOMENTUM_MIN_BUY_SELL_RATIO', 'screener', 0.5, 10, 40, 'Buys per sell — one-sided flow.'),
   n('MOMENTUM_MAX_CHASE_PCT', 'screener', 20, 5000, 50,
@@ -184,13 +220,13 @@ export const TUNABLES: Tunable[] = [
     'Cooldown before the same token can trigger again.'),
 
   // === Watchlist traction gate =========================================
-  n('WATCHLIST_MAX_SIZE', 'screener', 100, 50_000, 60, 'How many tokens are tracked at once.'),
+  i('WATCHLIST_MAX_SIZE', 'screener', 100, 50_000, 60, 'How many tokens are tracked at once.'),
   n('WATCH_MIN_AGE_SECONDS', 'screener', 5, 600, 100, 'Youngest a token is considered.'),
   n('WATCH_MAX_AGE_SECONDS', 'screener', 900, 7200, 60, 'Oldest a token is considered.'),
-  n('MIN_UNIQUE_BUYERS', 'screener', 1, 200, 60, 'Distinct buyers before a token is taken seriously.'),
+  i('MIN_UNIQUE_BUYERS', 'screener', 1, 200, 60, 'Distinct buyers before a token is taken seriously.'),
   n('MIN_BUY_VOLUME_SOL', 'screener', 0, 100, 60, 'Buy volume before a token is taken seriously.'),
   n('MIN_PRICE_CHANGE_PCT', 'screener', -90, 200, 100, 'Price change required since first seen.'),
-  n('MIN_RECENT_BUYERS', 'screener', 0, 100, 100, 'Buyers in the most recent window.'),
+  i('MIN_RECENT_BUYERS', 'screener', 0, 100, 100, 'Buyers in the most recent window.'),
 
   // === Sniper: the safety battery ======================================
   n('MIN_SAFETY_SCORE', 'sniper', 40, 95, 20,
@@ -206,18 +242,25 @@ export const TUNABLES: Tunable[] = [
     'Share of a deployer past launches that rugged before we refuse them.'),
   n('DUPLICATE_NAME_WINDOW_MINUTES', 'sniper', 0, 720, 60,
     'Window for spotting a copycat wave of the same ticker.'),
-  n('SNIPER_MAX_CONCURRENT_CHECKS', 'sniper', 1, 32, 50,
+  i('SNIPER_MAX_CONCURRENT_CHECKS', 'sniper', 1, 32, 50,
     'Safety batteries run at once. Higher covers more launches and risks RPC rate limits.'),
   b('REQUIRE_SOCIALS', 'sniper', 'Whether a launch must declare socials to pass.'),
 
   // --- Provenance. Each costs an RPC call on the entry path. ------------
-  n('MIN_HOLDERS', 'sniper', 0, 20, 100,
-    'Distinct holders required. Free — reuses a read the concentration check already makes.'),
+  i('MIN_HOLDERS', 'sniper', 0, 20, 100,
+    'Distinct wallets holding, excluding the curve. Whole wallets — 0 SWITCHES THE ' +
+      'CHECK OFF. Free: reuses a read the concentration check already makes. Note the ' +
+      'sniper buys at creation, where the only holders are the curve and the deployer, ' +
+      'so anything above 2 or 3 rejects most fresh launches.'),
   n('MIN_CREATOR_AGE_MINUTES', 'sniper', 0, 10_080, 100,
-    'Minimum age of the deployer wallet. Catches a funded throwaway. One RPC call.'),
-  n('MAX_LAUNCH_BUNDLE_TXS', 'sniper', 0, 40, 100,
-    'Reject when more than this many transactions landed in the creation slot — a bundled ' +
-      'launch whose first buyers are the deployer. One RPC call.'),
+    'Minimum age of the deployer wallet in minutes; 0 SWITCHES THE CHECK OFF. Catches a ' +
+      'funded throwaway, which a balance check alone does not. One RPC call. Movable from ' +
+      '0 — the step cap does not trap it there.'),
+  i('MAX_LAUNCH_BUNDLE_TXS', 'sniper', 0, 40, 100,
+    'Reject when MORE than this many transactions landed in the creation slot — a bundled ' +
+      'launch whose first buyers are the deployer. 0 SWITCHES THE CHECK OFF; it does not ' +
+      'mean "reject anything bundled". A normal creation slot holds the create transaction ' +
+      'and the deployer buy, so 2-3 is the floor worth setting. One RPC call.'),
   b('REJECT_IF_DEPLOYER_EXITED', 'sniper',
     'Reject when the deployer has already sold out of their own token. One RPC call.'),
 
@@ -302,7 +345,7 @@ export const TUNABLES: Tunable[] = [
     'Which exit machinery runs. Switching this changes every exit at once.'),
 
   // === Exit execution ==================================================
-  n('EXIT_MAX_ATTEMPTS', 'shared', 3, 60, 50, 'Sell attempts before a position is written off.'),
+  i('EXIT_MAX_ATTEMPTS', 'shared', 3, 60, 50, 'Sell attempts before a position is written off.'),
   n('EXIT_RETRY_SECONDS', 'shared', 2, 300, 60, 'Gap between sell attempts.'),
   n('PRICE_STALE_SECONDS', 'shared', 60, 7200, 60,
     'How long an unreadable price is tolerated before giving up on a position.'),
@@ -323,13 +366,13 @@ export const TUNABLES: Tunable[] = [
     'SOL committed per position. THE most consequential number here: it sets ' +
       'both the fee drag (a fixed priority fee hurts small positions most) and ' +
       'how much a single bad trade costs. REAL MONEY in live mode.', true),
-  n('MAX_CONCURRENT_POSITIONS', 'shared', 1, 20, 50,
+  i('MAX_CONCURRENT_POSITIONS', 'shared', 1, 20, 50,
     'Positions open at once. Multiplies total exposure.', true),
   n('DAILY_LOSS_LIMIT_SOL', 'shared', 0.1, 20, 30,
     'Realised loss that stops trading for the day. The backstop on a bad day.', true),
   n('HOURLY_SPEND_CAP_SOL', 'shared', 0.1, 50, 40,
     'SOL that may be deployed per hour.', true),
-  n('MAX_CONSECUTIVE_LOSSES', 'shared', 2, 30, 50,
+  i('MAX_CONSECUTIVE_LOSSES', 'shared', 2, 30, 50,
     'Losing streak that trips the circuit breaker.', true),
   n('BREAKER_COOLDOWN_SECONDS', 'shared', 60, 21_600, 60,
     'How long the breaker stays tripped.', true),
@@ -343,8 +386,8 @@ export const TUNABLES: Tunable[] = [
     'refused. Lowering it does not fix rate limiting — that is already handled ' +
     'in the loop — it only caps how fast the bot can ever go. Raise it if the ' +
     'dashboard shows the rate pinned at the ceiling with no 429s.'),
-  n('RPC_MAX_CONCURRENT', 'shared', 2, 64, 50, 'RPC requests in flight at once.'),
-  n('RPC_MAX_RETRIES', 'shared', 1, 10, 100, 'Retries on a 429 or 5xx.'),
+  i('RPC_MAX_CONCURRENT', 'shared', 2, 64, 50, 'RPC requests in flight at once.'),
+  i('RPC_MAX_RETRIES', 'shared', 1, 10, 100, 'Retries on a 429 or 5xx.'),
 
   // === AI analyst (ENTRY_MODE=ai) ======================================
   n('AI_MIN_CONFIDENCE', 'shared', 30, 95, 30, 'Confidence the analyst must express to buy.'),
@@ -362,8 +405,6 @@ export const TUNABLES: Tunable[] = [
   e('AI_MODEL', 'shared',
     ['claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-haiku-4-5-20251001'],
     'Which model the analyst and this tuner use. Changes cost per call materially.'),
-  e('LOG_LEVEL', 'shared', ['debug', 'info', 'warn', 'error'],
-    'Terminal verbosity. No effect on trading; quieter levels hide the reject breakdown.'),
 ];
 
 export const TUNABLE_BY_KEY = new Map(TUNABLES.map((t) => [t.key, t]));
@@ -457,11 +498,31 @@ export function vetProposal(
 
   // Step limiting is what stops a series of individually reasonable rounds
   // from walking a parameter somewhere no single round would have proposed.
-  const stepPct = maxStepPctOverride ?? spec.maxStepPct ?? 30;
+  //
+  // The tighter of the global setting and this parameter's own allowance. The
+  // global used to win outright, which made every hand-picked per-parameter cap
+  // in this file dead code — `MIN_HOLDERS` is marked as able to move 100% for a
+  // reason, and never could. Taking the minimum keeps the user's global control
+  // real while letting a specific parameter be held stricter than it.
+  const stepPct = Math.min(maxStepPctOverride ?? Infinity, spec.maxStepPct ?? 30);
+
+  // A percentage of a small integer is not a step. 30% of 2 holders is 0.6, so
+  // the cap either produces a fraction — the `MIN_HOLDERS: 2 -> 2.6` that
+  // prompted this — or rounds away to no move at all, and the parameter is
+  // frozen wherever it happens to sit. One whole unit is the smallest change
+  // that means anything, so it is always allowed.
+  const minRoom = spec.integer ? 1 : 0;
   if (current > 0) {
-    const room = current * (stepPct / 100);
-    const lo = Math.max(spec.min ?? -Infinity, current - room);
-    const hi = Math.min(spec.max ?? Infinity, current + room);
+    const room = Math.max(current * (stepPct / 100), minRoom);
+    let lo = Math.max(spec.min ?? -Infinity, current - room);
+    let hi = Math.min(spec.max ?? Infinity, current + room);
+    // Round the bounds too, not just the result, or the note explains a limit
+    // to a value that was never reachable — "step limited from 6 to 5.2" on a
+    // parameter that then becomes 5.
+    if (spec.integer) {
+      lo = Math.ceil(lo);
+      hi = Math.floor(hi);
+    }
     if (value < lo) {
       notes.push(`step limited from ${asked} to ${round(lo)}`);
       value = lo;
@@ -479,8 +540,14 @@ export function vetProposal(
     }
   }
 
-  value = round(value);
+  value = spec.integer ? Math.round(value) : round(value);
+  // Rounding to a whole unit can land back on the current value — asking for 4
+  // holders from 2 with a 0.6 step gives 2.6, which rounds to 3, but asking for
+  // 2.4 would give 2. Saying so is better than opening an experiment that
+  // changes nothing and then measuring it for 150 trades.
   if (value === current) return { ok: false, reason: `${key}: no change after limits` };
+  if (spec.min !== undefined && value < spec.min) value = spec.min;
+  if (spec.max !== undefined && value > spec.max) value = spec.max;
   return notes.length > 0
     ? { ok: true, value: String(value), typed: value, clamped: notes.join('; ') }
     : { ok: true, value: String(value), typed: value };

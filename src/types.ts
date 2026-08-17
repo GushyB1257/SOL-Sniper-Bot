@@ -64,6 +64,8 @@ export interface CheckResult {
   detail: string;
   /** Set when the check could not complete (RPC error, timeout, ...). */
   errored?: boolean;
+  /** Numbers this check measured. See `CheckOutcome.metrics`. */
+  metrics?: Record<string, number>;
 }
 
 export interface SafetyVerdict {
@@ -78,6 +80,8 @@ export interface SafetyVerdict {
    * never run. The verdict is the same either way; `results` is shorter.
    */
   shortCircuited?: boolean;
+  /** Every number the checks measured, merged. See `CheckOutcome.metrics`. */
+  metrics: Record<string, number>;
 }
 
 export type PositionStatus = 'open' | 'closing' | 'closed' | 'failed';

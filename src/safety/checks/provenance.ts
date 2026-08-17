@@ -44,10 +44,11 @@ export const holderCountCheck: Check = {
     // The curve's own account is a holder by the chain's reckoning but not by
     // any useful one, so it does not count toward participation.
     const holders = Math.max(0, stats.holders - 1);
+    const metrics = { holders };
     if (holders < min) {
-      return { passed: false, detail: `only ${holders} holders (need ${min})` };
+      return { passed: false, detail: `only ${holders} holders (need ${min})`, metrics };
     }
-    return { passed: true, detail: `${holders}+ holders` };
+    return { passed: true, detail: `${holders}+ holders`, metrics };
   },
 };
 
@@ -139,13 +140,19 @@ export const creatorAgeCheck: Check = {
     if (oldest === 0) return { passed: true, detail: 'creator wallet is well established' };
 
     const ageMinutes = (Date.now() / 1000 - oldest) / 60;
+    const metrics = { creatorAgeMinutes: ageMinutes };
     if (ageMinutes < minMinutes) {
       return {
         passed: false,
         detail: `creator wallet is ${ageMinutes.toFixed(0)}m old (need ${minMinutes}m)`,
+        metrics,
       };
     }
-    return { passed: true, detail: `creator wallet ${(ageMinutes / 60).toFixed(1)}h old` };
+    return {
+      passed: true,
+      detail: `creator wallet ${(ageMinutes / 60).toFixed(1)}h old`,
+      metrics,
+    };
   },
 };
 
@@ -182,13 +189,19 @@ export const launchBundleCheck: Check = {
       return slots.filter((s) => s === creation).length;
     });
 
+    const metrics = { bundleTxs: inFirstSlot };
     if (inFirstSlot > max) {
       return {
         passed: false,
         detail: `${inFirstSlot} transactions in the creation slot (max ${max}) — bundled launch`,
+        metrics,
       };
     }
-    return { passed: true, detail: `${inFirstSlot} transaction(s) in the creation slot` };
+    return {
+      passed: true,
+      detail: `${inFirstSlot} transaction(s) in the creation slot`,
+      metrics,
+    };
   },
 };
 

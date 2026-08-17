@@ -32,13 +32,15 @@ export const devBuyCheck: Check = {
     const pct = (tokens / supply) * 100;
     const max = ctx.cfg.MAX_DEV_BUY_PCT;
 
+    const metrics = { devBuyPct: pct };
     if (pct > max) {
       return {
         passed: false,
         detail: `deployer bought ${pct.toFixed(1)}% of supply at creation (limit ${max}%)`,
+        metrics,
       };
     }
-    return { passed: true, detail: `deployer holds ${pct.toFixed(2)}% of supply` };
+    return { passed: true, detail: `deployer holds ${pct.toFixed(2)}% of supply`, metrics };
   },
 };
 
@@ -82,15 +84,18 @@ export const holderConcentrationCheck: Check = {
 
     const { top10Pct, holders } = await holderStats(ctx);
     const max = ctx.cfg.MAX_TOP10_HOLDER_PCT;
+    const metrics = { top10Pct };
     if (top10Pct > max) {
       return {
         passed: false,
         detail: `top 10 holders control ${top10Pct.toFixed(1)}% (limit ${max}%)`,
+        metrics,
       };
     }
     return {
       passed: true,
       detail: `top 10 hold ${top10Pct.toFixed(1)}% across ${holders} tracked accounts`,
+      metrics,
     };
   },
 };

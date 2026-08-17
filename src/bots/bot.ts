@@ -10,7 +10,7 @@ import { withRpcPriority } from '../util/rpc-throttle.js';
 import { CopyTrader } from '../copy/copy-trader.js';
 import { marketCapFromState } from '../watchlist/curve-poller.js';
 import type { PriceSource } from '../execution/pricing.js';
-import { poolAllowed, type Executor, type TokenCandidate } from '../types.js';
+import { poolAllowed, type Executor, type SafetyVerdict, type TokenCandidate } from '../types.js';
 import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
 
@@ -272,6 +272,12 @@ export class TradingBot {
       const position = this.positions.open(candidate, fill, verdict.score);
       position.notionalSol = size;
       position.managedBy = 'sniper';
+      // What this launch actually looked like, in the journal rather than only
+      // in a log line that scrolls away. Without it the sniper's trade history
+      // carries the safety score and nothing else, so "116 of 150 died" cannot
+      // be turned into "which characteristic did they share" and every entry
+      // filter is a guess between equally plausible knobs.
+      position.notes.push(snipeNote(verdict));
       await this.stampMarketCap(position.mint, position, this.deps.solPrice.usd);
       this.store.savePosition(position);
     } finally {
@@ -296,4 +302,31 @@ export class TradingBot {
       // A missing entry cap is cosmetic; never let it fail a buy.
     }
   }
+}
+
+/**
+ * The launch's measured characteristics, as one journal line.
+ *
+ * A formatted string rather than structured fields because that is how the
+ * screener's entry note already works and how the evidence builder already
+ * reads one. Only what was actually measured appears — a check that is switched
+ * off or that never ran contributes nothing rather than a zero, which would be
+ * indistinguishable from a real measurement of zero.
+ */
+export function snipeNote(verdict: SafetyVerdict): string {
+  const m = verdict.metrics;
+  const parts: string[] = [`score ${verdict.score}`];
+  const add = (key: string, fmt: (v: number) => string): void => {
+    const v = m[key];
+    if (typeof v === 'number' && Number.isFinite(v)) parts.push(fmt(v));
+  };
+
+  add('devBuyPct', (v) => `${v.toFixed(2)}% dev buy`);
+  add('top10Pct', (v) => `${v.toFixed(1)}% top10`);
+  add('holders', (v) => `${v} holders`);
+  add('bundleTxs', (v) => `${v} bundled`);
+  add('deployerSol', (v) => `${v.toFixed(3)} SOL dev balance`);
+  add('creatorAgeMinutes', (v) => `${Math.round(v)}m creator age`);
+
+  return `snipe: ${parts.join(', ')}`;
 }
