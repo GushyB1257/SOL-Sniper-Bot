@@ -58,9 +58,72 @@ afterEach(() => {
 });
 
 describe('devBuyCheck', () => {
-  it('passes when the deployer takes nothing', async () => {
+  const withFloor = (min: number): Config =>
+    loadConfig({ ...BASE_ENV, DATA_DIR: dir, MIN_DEV_BUY_PCT: String(min) });
+
+  it('passes when the deployer takes nothing and no floor is set', async () => {
+    const r = await devBuyCheck.run(ctxFor(candidate({ initialBuyTokens: 0 })));
+    expect(r.passed).toBe(true);
+  });
+
+  it('measures a zero deployer buy instead of dropping it', async () => {
+    // This is the bug the floor exposed. `undefined` and `0` shared a branch
+    // that returned no metrics, so a launch where the deployer took nothing
+    // carried no devBuyPct into the entry note — and the tuner's dev-buy
+    // breakdown parses that note. The zero cohort was therefore missing from
+    // the very table a floor would be argued from, and the bucket reading
+    // "<1%" only ever held launches where the dev took a small NON-zero stake.
+    const r = await devBuyCheck.run(ctxFor(candidate({ initialBuyTokens: 0 })));
+    expect(r.metrics).toEqual({ devBuyPct: 0 });
+  });
+
+  it('rejects a deployer with no skin in the game once a floor is set', async () => {
+    cfg = withFloor(1);
+    const r = await devBuyCheck.run(ctxFor(candidate({ initialBuyTokens: 0 })));
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/no tokens at creation \(floor 1%\)/);
+  });
+
+  it('rejects a stake below the floor', async () => {
+    cfg = withFloor(3);
+    // 0.5% of supply.
+    const r = await devBuyCheck.run(ctxFor(candidate({ initialBuyTokens: 5_000_000 })));
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/only 0\.50% of supply \(floor 3%\)/);
+  });
+
+  it('admits a stake inside the band', async () => {
+    cfg = withFloor(3);
+    // 4% — above the floor, below the default 8% ceiling.
+    const r = await devBuyCheck.run(ctxFor(candidate({ initialBuyTokens: 40_000_000 })));
+    expect(r.passed).toBe(true);
+  });
+
+  it('does not treat an unreported deployer buy as zero', async () => {
+    // Only PumpPortal reports this field; the RPC discovery path never does.
+    // Reading "we cannot measure it" as "they took nothing" would make a floor
+    // reject every candidate from that feed, silently and one at a time.
+    cfg = withFloor(5);
     const r = await devBuyCheck.run(ctxFor(candidate()));
     expect(r.passed).toBe(true);
+    expect(r.detail).toMatch(/not reported by this feed/);
+    expect(r.metrics).toBeUndefined();
+  });
+
+  it('still enforces the ceiling when a floor is set', async () => {
+    cfg = withFloor(2);
+    const r = await devBuyCheck.run(ctxFor(candidate({ initialBuyTokens: 250_000_000 })));
+    expect(r.passed).toBe(false);
+    expect(r.detail).toMatch(/limit 8%/);
+  });
+
+  it('refuses a floor that leaves no admissible band', () => {
+    expect(() => loadConfig({ ...BASE_ENV, DATA_DIR: dir, MIN_DEV_BUY_PCT: '8' })).toThrow(
+      /must be below MAX_DEV_BUY_PCT/,
+    );
+    expect(() =>
+      loadConfig({ ...BASE_ENV, DATA_DIR: dir, MIN_DEV_BUY_PCT: '12', MAX_DEV_BUY_PCT: '20' }),
+    ).not.toThrow();
   });
 
   it('passes a modest deployer stake', async () => {

@@ -217,6 +217,25 @@ const schema = z.object({
   TIME_STOP_MIN_GAIN_PCT: z.coerce.number().default(10),
   MAX_HOLD_SECONDS: num(60, 604800).default(86400),
 
+  /**
+   * Reject a deployer who took LESS than this share of supply. 0 disables.
+   *
+   * The counterpart to MAX_DEV_BUY_PCT, and the other half of the same idea.
+   * The ceiling asks "have they pre-loaded a dump on me"; this asks "have they
+   * got anything to lose at all". A deployer who takes nothing at creation has
+   * no position to defend and no reason not to walk away from the token the
+   * moment it stops trending.
+   *
+   * Off by default, because it is a real narrowing of what the sniper will buy
+   * and the right floor depends on your own results. Set it from the dev-buy
+   * breakdown in `npm run report` rather than by taste: the bucket that makes
+   * money is the floor you want, and it will not be the same on every feed.
+   *
+   * Only enforced on candidates whose feed actually reports the deployer's
+   * creation buy — PumpPortal does, the RPC discovery path does not, and a
+   * launch that cannot be measured is passed rather than rejected.
+   */
+  MIN_DEV_BUY_PCT: num(0, 100).default(0),
   MAX_DEV_BUY_PCT: num(0, 100).default(8),
   MAX_TOP10_HOLDER_PCT: num(0, 100).default(65),
   MIN_DEPLOYER_BALANCE_SOL: num(0, 1000).default(0.15),
@@ -940,6 +959,16 @@ function crossValidate(cfg: Config): string[] {
   // no upside; keeping nothing back makes the rule pointless.
   if (cfg.EXIT_MODE === 'ratchet' && cfg.MOONBAG_TRIM_PCT >= 100) {
     errors.push('MOONBAG_TRIM_PCT must be below 100 — the moonbag is the entire point');
+  }
+
+  // A floor at or above the ceiling leaves no admissible band at all, so every
+  // measured launch is rejected and the sniper goes quiet for a reason that
+  // appears nowhere in its logs except one rejection at a time.
+  if (cfg.MIN_DEV_BUY_PCT > 0 && cfg.MIN_DEV_BUY_PCT >= cfg.MAX_DEV_BUY_PCT) {
+    errors.push(
+      `MIN_DEV_BUY_PCT (${cfg.MIN_DEV_BUY_PCT}) must be below MAX_DEV_BUY_PCT ` +
+        `(${cfg.MAX_DEV_BUY_PCT}); together they would admit no deployer buy at all`,
+    );
   }
 
   if (cfg.WATCH_MIN_AGE_SECONDS >= cfg.WATCH_MAX_AGE_SECONDS) {

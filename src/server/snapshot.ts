@@ -384,6 +384,7 @@ const CONFIG_GROUPS: Record<string, string[]> = {
   ],
   Safety: [
     'MIN_SAFETY_SCORE',
+    'MIN_DEV_BUY_PCT',
     'MAX_DEV_BUY_PCT',
     'MAX_TOP10_HOLDER_PCT',
     'MIN_DEPLOYER_BALANCE_SOL',

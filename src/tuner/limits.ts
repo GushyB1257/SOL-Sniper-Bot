@@ -254,7 +254,24 @@ export const TUNABLES: Tunable[] = [
     'Inert while SNIPE_CONFIRM_MS is 0.'),
   n('MAX_CANDIDATE_AGE_MS', 'sniper', 1000, 60_000, 50,
     'How stale a launch can be before the sniper ignores it.'),
-  n('MAX_DEV_BUY_PCT', 'sniper', 1, 50, 40,
+  // The floor and the ceiling are one band, and `crossValidate` refuses a
+  // config where they cross. RuntimeSettings.apply() rejects a patch WHOLE, so
+  // overlapping tunable ranges would let the model propose a perfectly sensible
+  // floor, have the entire round refused, and learn nothing — the same wasted
+  // round that an out-of-range HOURLY_SPEND_CAP_SOL produced.
+  //
+  // So the two ranges are disjoint by construction rather than merely validated:
+  // no combination the tuner can reach inverts the band. The cost is that a
+  // ceiling below 6% is no longer tunable, which is a ceiling that rejects every
+  // launch where the deployer took the normal few percent anyway.
+  //
+  // 0 is a real value on the floor — the filter switched off — not a point on a
+  // scale, so the zero exemption in the tuner's bounds is what lets it leave.
+  n('MIN_DEV_BUY_PCT', 'sniper', 0, 5, 60,
+    'Least of supply the deployer must buy at creation for the launch to be ' +
+      'considered; 0 disables. A deployer who took nothing at all has no position ' +
+      'to defend and nothing to lose by walking away. Always below MAX_DEV_BUY_PCT.'),
+  n('MAX_DEV_BUY_PCT', 'sniper', 6, 50, 40,
     'How much of supply the deployer may buy at creation before it is a red flag.'),
   n('MAX_TOP10_HOLDER_PCT', 'sniper', 20, 95, 30, 'Concentration limit across the top ten holders.'),
   n('MIN_DEPLOYER_BALANCE_SOL', 'sniper', 0, 10, 100,

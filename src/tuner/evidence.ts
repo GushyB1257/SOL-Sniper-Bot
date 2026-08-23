@@ -411,7 +411,7 @@ export function renderEvidence(e: Evidence): string {
     b('Socials at entry', e.bySocials) +
     b('Hold time', e.byHoldTime) +
     // Sniper only, and each names the parameter it is evidence about.
-    b('Deployer buy % at entry (MAX_DEV_BUY_PCT)', e.byDevBuy) +
+    b('Deployer buy % at entry (MIN_DEV_BUY_PCT / MAX_DEV_BUY_PCT)', e.byDevBuy) +
     b('Holders at entry (MIN_HOLDERS)', e.byHolders) +
     b('Creation-slot transactions (MAX_LAUNCH_BUNDLE_TXS)', e.byBundle) +
     b('Deployer balance (MIN_DEPLOYER_BALANCE_SOL)', e.byDeployerBalance) +

@@ -115,6 +115,11 @@ export const FIELDS: FieldSpec[] = [
   // --- Sniper ----------------------------------------------------------
   { key: 'MIN_SAFETY_SCORE', label: 'Min safety score', bot: 'sniper', group: 'Safety',
     kind: 'number', min: 0, max: 100, step: 5 },
+  { key: 'MIN_DEV_BUY_PCT', label: 'Min dev buy', bot: 'sniper', group: 'Safety',
+    kind: 'number', min: 0, max: 100, step: 0.5,
+    help: 'Skin in the game: reject a deployer who took LESS than this at creation. ' +
+      '0 disables. Must stay below Max dev buy. Only applied when the feed reports ' +
+      'the creation buy — PumpPortal does, the RPC discovery path does not.' },
   { key: 'MAX_DEV_BUY_PCT', label: 'Max dev buy', bot: 'sniper', group: 'Safety',
     kind: 'number', min: 0, max: 100, step: 1, help: '% of supply in the creation transaction.' },
   { key: 'MAX_TOP10_HOLDER_PCT', label: 'Max top-10 holders', bot: 'sniper', group: 'Safety',

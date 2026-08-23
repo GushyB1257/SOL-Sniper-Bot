@@ -14,6 +14,12 @@ const PUMP_TOTAL_SUPPLY = 1_000_000_000;
  * the moment the chart moves, they dump a position with an infinite cost-basis
  * advantage. A few percent is normal (they need a stake); double digits is a
  * pre-loaded dump.
+ *
+ * The opposite edge matters too, and is the reason there is a floor as well as
+ * a ceiling. A deployer who takes nothing at all has no position to defend and
+ * nothing to lose by abandoning the token the moment it stops trending — which
+ * is most of them. "A few percent is normal (they need a stake)" was always the
+ * theory; a floor is what lets it be enforced rather than assumed.
  */
 export const devBuyCheck: Check = {
   id: 'dev_buy_share',
@@ -24,13 +30,31 @@ export const devBuyCheck: Check = {
   failClosed: false,
   async run(ctx) {
     const tokens = ctx.candidate.initialBuyTokens;
-    if (tokens === undefined || tokens <= 0) {
-      return { passed: true, detail: 'deployer took no tokens at creation' };
+
+    // "We do not know" and "we know it was nothing" used to share this branch,
+    // and share a `passed: true` with no metric attached. That was harmless
+    // while the only rule was a ceiling — both are safely under it — and it is
+    // wrong in two ways the moment there is a floor.
+    //
+    // They are opposite cases for a floor: a deployer who took nothing has no
+    // skin in the game and is exactly what a floor exists to reject, while an
+    // unmeasured launch must not be assumed to be zero or the floor rejects
+    // every candidate from a feed that does not report the field. Only
+    // PumpPortal populates it; the RPC discovery path never does.
+    //
+    // And returning no metric meant the zero cohort was invisible downstream:
+    // the entry note carries `devBuyPct` into the trade journal, and the
+    // tuner's dev-buy breakdown parses it back out of that note. A launch with
+    // no metric is dropped from the breakdown entirely, so the bucket that
+    // reads as "<1%" has never included the true zeros — the group a floor is
+    // aimed squarely at. It is measured now.
+    if (tokens === undefined) {
+      return { passed: true, detail: 'deployer buy not reported by this feed' };
     }
 
     const supply = PUMP_TOTAL_SUPPLY;
-    const pct = (tokens / supply) * 100;
-    const max = ctx.cfg.MAX_DEV_BUY_PCT;
+    const pct = tokens <= 0 ? 0 : (tokens / supply) * 100;
+    const { MIN_DEV_BUY_PCT: min, MAX_DEV_BUY_PCT: max } = ctx.cfg;
 
     const metrics = { devBuyPct: pct };
     if (pct > max) {
@@ -40,7 +64,24 @@ export const devBuyCheck: Check = {
         metrics,
       };
     }
-    return { passed: true, detail: `deployer holds ${pct.toFixed(2)}% of supply`, metrics };
+    if (min > 0 && pct < min) {
+      return {
+        passed: false,
+        detail:
+          pct === 0
+            ? `deployer took no tokens at creation (floor ${min}%)`
+            : `deployer bought only ${pct.toFixed(2)}% of supply (floor ${min}%)`,
+        metrics,
+      };
+    }
+    return {
+      passed: true,
+      detail:
+        pct === 0
+          ? 'deployer took no tokens at creation'
+          : `deployer holds ${pct.toFixed(2)}% of supply`,
+      metrics,
+    };
   },
 };
 
