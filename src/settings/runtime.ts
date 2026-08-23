@@ -339,6 +339,16 @@ export const FIELDS: FieldSpec[] = [
     help: 'How often each open position is re-priced. This is the floor on how ' +
       'late a stop can fire: the loss you realise is the trigger plus whatever ' +
       'the price did since the last look.' },
+  { key: 'AFTERMATH_ENABLED', label: 'Track tokens after selling', bot: 'shared',
+    group: 'Exit', kind: 'boolean',
+    help: 'Keeps watching a token after the position closes and records the best it ' +
+      'did. This is what tells you whether an exit rule is cutting winners — the ' +
+      'journal alone cannot separate a good exit from a lucky one. Costs about one ' +
+      'RPC call per poll however many tokens are being followed.' },
+  { key: 'AFTERMATH_WINDOW_MINUTES', label: 'Watch for', bot: 'shared',
+    group: 'Exit', kind: 'number', min: 1, max: 1440, step: 5,
+    help: 'How long after the exit to keep watching. Longer catches later peaks and ' +
+      'takes longer before a trade counts toward the table.' },
   { key: 'POSITION_PRICE_TIMEOUT_MS', label: 'Price read timeout', bot: 'shared',
     group: 'Exit', kind: 'number', min: 500, max: 30_000, step: 250,
     help: 'A read that takes longer than this has missed the beat it was for. ' +

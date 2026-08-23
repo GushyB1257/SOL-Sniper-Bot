@@ -24,6 +24,7 @@ import type { Discovery, Executor, TokenCandidate } from './types.js';
 import type { Keypair } from '@solana/web3.js';
 import { connection, lamportsToSol, loadKeypair } from './util/solana.js';
 import { errMessage } from './util/async.js';
+import { AftermathTracker } from './strategy/aftermath.js';
 import { breakevenGrossPct, costModel } from './strategy/costs.js';
 
 const log = logger('main');
@@ -65,6 +66,7 @@ class Supervisor {
   private tickTimer: NodeJS.Timeout | null = null;
   private strategyTimer: NodeJS.Timeout | null = null;
   private tunerTimer: NodeJS.Timeout | null = null;
+  private readonly aftermath: AftermathTracker;
   private readonly tuner: AutoTuner;
   private shuttingDown = false;
   private readonly startedAt = Date.now();
@@ -120,6 +122,14 @@ class Supervisor {
       killSwitchPath: KILL_SWITCH_PATH,
     });
     this.bots.set('arb', this.arb);
+
+    // Reads the journals directly rather than being told about closes, so a
+    // restart resumes any window that was still open.
+    this.aftermath = new AftermathTracker(
+      conn,
+      cfg,
+      new Map([...this.bots].map(([id, bot]) => [id, bot.store])),
+    );
 
     this.tuner = new AutoTuner({
       cfg,
@@ -211,6 +221,8 @@ class Supervisor {
     }
 
     await this.discovery.start((c) => this.onCandidate(c));
+
+    this.aftermath.start();
 
     this.tickTimer = setInterval(() => {
       for (const bot of this.bots.values()) {
@@ -381,6 +393,7 @@ class Supervisor {
     if (this.strategyTimer) clearInterval(this.strategyTimer);
     if (this.tunerTimer) clearInterval(this.tunerTimer);
     for (const bot of this.bots.values()) bot.stop();
+    this.aftermath.stop();
     await this.discovery.stop();
     await this.dashboard?.stop();
 

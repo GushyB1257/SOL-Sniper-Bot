@@ -17,6 +17,9 @@ import { pctChange } from '../util/solana.js';
 
 const log = logger('positions');
 
+/** pump.fun mints a fixed 1,000,000,000 tokens, so mcap is price x this. */
+export const PUMP_TOTAL_SUPPLY = 1_000_000_000;
+
 
 /**
  * Owns the lifecycle of every open position: entry bookkeeping, the monitoring
@@ -450,6 +453,14 @@ export class PositionManager {
         (n) => n.startsWith('screen:') || n.startsWith('momentum:') || n.startsWith('snipe:'),
       ),
       copiedFrom: p.copiedFrom,
+      // The reference point the aftermath tracker measures against. This is the
+      // price the exit DECISION was made on, which is the honest baseline for
+      // "what did it do after we sold" — a peak measured against a fill we got
+      // by luck would flatter or damn the exit rule for the wrong reason.
+      ...(p.lastPrice > 0 && {
+        exitPrice: p.lastPrice,
+        exitMcapSol: p.lastPrice * PUMP_TOTAL_SUPPLY,
+      }),
     });
 
     this.risk.recordOutcome(pnlSol);

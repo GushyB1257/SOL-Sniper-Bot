@@ -55,6 +55,11 @@ import type { BotId } from '../bots/bot.js';
  *  - **`ARB_TOKENS` and `ARB_VENUES`.** Which assets and venues to look at is
  *    your input, the same as `COPY_WALLETS`. Nothing should quietly drop a route
  *    from the list it is being measured on.
+ *  - **The post-exit measurement** (`AFTERMATH_*`). This is the instrument that
+ *    can show an exit rule is cutting winners, and the cheapest way to make it
+ *    stop saying so is to shorten its window — fewer minutes of watching catches
+ *    fewer peaks, and every exit rule starts looking correct. A tuner that can
+ *    narrow the evidence against it is not being tuned, it is being flattered.
  *  - **`DISCOVERY_SOURCE`.** Read once, at construction. Changing it at runtime
  *    does nothing until a restart — which is worse than not offering it, since
  *    the tuner would spend a whole measurement window on a change that had no

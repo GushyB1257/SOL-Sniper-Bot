@@ -364,4 +364,21 @@ export class Store {
   journal(): readonly TradeJournalEntry[] {
     return this.data.journal;
   }
+
+  /**
+   * Amends one journal entry in place.
+   *
+   * The journal is append-only as a rule, and this is the one exception: what
+   * a token did AFTER we sold is not knowable when the row is written, only
+   * some minutes later. It amends nothing about the trade itself — no P&L, no
+   * reason, no timing — so the record of what happened stays immutable and
+   * only the observations that could not exist yet are filled in.
+   */
+  amendJournal(positionId: string, patch: Partial<TradeJournalEntry>): boolean {
+    const entry = this.data.journal.find((t) => t.positionId === positionId);
+    if (!entry) return false;
+    Object.assign(entry, patch);
+    this.markDirty();
+    return true;
+  }
 }

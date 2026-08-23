@@ -388,6 +388,32 @@ const schema = z.object({
    * the trigger plus however far the price travelled since the last look.
    */
   POSITION_TICK_INTERVAL_MS: num(250, 30_000).default(1500),
+
+  // === What tokens did after we sold them ===============================
+  /**
+   * Keep watching a token for a while after the position closes.
+   *
+   * The journal records what a trade made, which cannot separate a good exit
+   * from a lucky one: +20% is a fine result if the token then collapsed and a
+   * mistake if it went on to 5x, and nothing else in the journal tells those
+   * apart. Every exit rule is a bet about which is happening; this is what
+   * measures whether the bet is paying.
+   *
+   * Cheap by construction — one `getMultipleAccountsInfo` covers 100 mints, so
+   * the whole feature is about one RPC call per poll regardless of how many
+   * tokens are being followed.
+   */
+  AFTERMATH_ENABLED: bool.default('true'),
+  /** How long after the exit to keep watching. */
+  AFTERMATH_WINDOW_MINUTES: num(1, 1440).default(30),
+  /**
+   * Gap between reads. Slow on purpose: this measures a peak over minutes and
+   * nothing is waiting on the answer, so it should never compete for RPC with
+   * anything that is.
+   */
+  AFTERMATH_POLL_INTERVAL_MS: num(2000, 600_000).default(15_000),
+  /** Ceiling on tokens followed at once, so a busy hour cannot run away. */
+  AFTERMATH_MAX_TOKENS: num(1, 500).default(200),
   /**
    * Deadline on a single position price read.
    *

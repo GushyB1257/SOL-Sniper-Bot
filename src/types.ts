@@ -326,4 +326,38 @@ export interface TradeJournalEntry {
    * renaming a wallet relabels its whole history instead of only new trades.
    */
   copiedFrom?: string;
+
+  /**
+   * Price the exit decision was made on — the last price observed before the
+   * position closed. The reference point everything below is measured against.
+   */
+  exitPrice?: number;
+
+  // --- what the token did AFTER we sold ---------------------------------
+  //
+  // The journal records what we made. On its own that cannot distinguish a
+  // good exit from a lucky one, or a bad exit from an unavoidable one: selling
+  // at +20% is a win if the token then collapsed and a mistake if it went on
+  // to 5x, and those two are identical in every field above. So a closed
+  // position is watched for a while longer and the best it did is recorded.
+  //
+  // Directly the measurement for "the shape is wrong" — the case where the
+  // win rate is far under what the winner/loser pair needs. That says winners
+  // are closed too early or losers held too long, and these fields say which,
+  // per exit rule.
+
+  /** Highest price seen after the exit, as a % above `exitPrice`. */
+  peakAfterExitPct?: number;
+  /** Seconds between the exit and that peak. */
+  peakAfterExitSeconds?: number;
+  /** Market cap in SOL at the exit, and at the post-exit peak. */
+  exitMcapSol?: number;
+  peakMcapSol?: number;
+  /**
+   * Tracking finished — the window elapsed, or the curve went away (migrated
+   * or closed). Until this is true the numbers above are provisional, and a
+   * peak that has not finished forming must not be averaged with ones that
+   * have.
+   */
+  aftermathDone?: boolean;
 }

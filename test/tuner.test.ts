@@ -178,6 +178,16 @@ describe('what the tuner may touch', () => {
       // the loss limits derive from, without the strategy getting better at
       // anything. That is not tuning, it is marking its own homework.
       'PAPER_STARTING_BALANCE_SOL',
+      // The post-exit measurement itself. This is the instrument that can show
+      // an exit rule is cutting winners, and the cheapest way to make it stop
+      // saying so is to shorten the window: fewer minutes of watching catches
+      // fewer peaks, and every rule starts looking correct. Same failure as
+      // raising the paper balance or softening the arbitrage frictions —
+      // improving the measurement rather than the thing measured.
+      'AFTERMATH_ENABLED',
+      'AFTERMATH_WINDOW_MINUTES',
+      'AFTERMATH_POLL_INTERVAL_MS',
+      'AFTERMATH_MAX_TOKENS',
       // Terminal verbosity, with no trading effect. The tuner reached for it as
       // a way to see the reject breakdown — a fair thing to want, and the wrong
       // way to get it, since the tuner reads the evidence block and not the

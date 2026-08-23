@@ -70,6 +70,41 @@ export interface Evidence {
    * loss size — and, correctly, hedging.
    */
   exitQuality?: ExitQuality;
+  /**
+   * What the tokens did AFTER we sold them, per exit rule.
+   *
+   * `undefined` until some closed trades have finished their tracking window.
+   */
+  aftermath?: Aftermath;
+}
+
+/** One exit rule, and how the tokens it sold behaved afterwards. */
+export interface AftermathBucket {
+  key: string;
+  trades: number;
+  /** Mean peak above the exit price, in percent. */
+  avgPeakPct: number;
+  /** Median, because one 40x drags a mean somewhere no trade actually was. */
+  medianPeakPct: number;
+  /** Trades where the token never traded above our exit at all. */
+  neverHigher: number;
+  /** Trades that went on to at least double from the exit. */
+  doubled: number;
+  /** Typical seconds from exit to peak, for the ones that did run. */
+  medianSecondsToPeak: number;
+  pnlSol: number;
+}
+
+export interface Aftermath {
+  /** Closed trades whose tracking window has finished. */
+  samples: number;
+  /** Still being watched — excluded, since a peak still forming is not a peak. */
+  pending: number;
+  byExitReason: AftermathBucket[];
+  /** The single most useful line: median peak across every completed trade. */
+  medianPeakPct: number;
+  /** Share of exits the token never traded above. */
+  neverHigherPct: number;
 }
 
 /** One poll-gap band, and how far past its trigger the average exit in it landed. */
@@ -141,6 +176,47 @@ function percentile(xs: number[], p: number): number {
   if (xs.length === 0) return 0;
   const s = [...xs].sort((a, b) => a - b);
   return s[Math.min(s.length - 1, Math.floor(p * s.length))]!;
+}
+
+function buildAftermath(journal: readonly TradeJournalEntry[]): Aftermath | undefined {
+  // Only completed windows. A peak that is still forming is not a peak, and
+  // mixing half-measured trades in would bias every average toward zero in
+  // exactly the direction that argues for selling earlier.
+  const done = journal.filter((t) => t.aftermathDone && t.peakAfterExitPct !== undefined);
+  const pending = journal.filter((t) => !t.aftermathDone && t.exitPrice !== undefined).length;
+  if (done.length === 0) return undefined;
+
+  const groups = new Map<string, TradeJournalEntry[]>();
+  for (const t of done) {
+    const key = t.closeReason.split(':')[0]?.trim() || 'unknown';
+    groups.set(key, [...(groups.get(key) ?? []), t]);
+  }
+
+  const bucketFor = (key: string, rows: TradeJournalEntry[]): AftermathBucket => {
+    const peaks = rows.map((t) => t.peakAfterExitPct!);
+    const ran = rows.filter((t) => (t.peakAfterExitPct ?? 0) > 0);
+    return {
+      key,
+      trades: rows.length,
+      avgPeakPct: peaks.reduce((a, b) => a + b, 0) / rows.length,
+      medianPeakPct: median(peaks),
+      neverHigher: rows.filter((t) => (t.peakAfterExitPct ?? 0) <= 0).length,
+      doubled: rows.filter((t) => (t.peakAfterExitPct ?? 0) >= 100).length,
+      medianSecondsToPeak: median(ran.map((t) => t.peakAfterExitSeconds ?? 0)),
+      pnlSol: rows.reduce((a, t) => a + t.pnlSol, 0),
+    };
+  };
+
+  const all = done.map((t) => t.peakAfterExitPct!);
+  return {
+    samples: done.length,
+    pending,
+    byExitReason: [...groups.entries()]
+      .map(([k, rows]) => bucketFor(k, rows))
+      .sort((a, b) => b.trades - a.trades),
+    medianPeakPct: median(all),
+    neverHigherPct: (done.filter((t) => (t.peakAfterExitPct ?? 0) <= 0).length / done.length) * 100,
+  };
 }
 
 function buildExitQuality(journal: readonly TradeJournalEntry[]): ExitQuality | undefined {
@@ -258,6 +334,7 @@ export function buildEvidence(
     feeKilled,
     exitReasons: bucketise(journal, (t) => t.closeReason.split(':')[0]?.trim() || 'unknown'),
     exitQuality: buildExitQuality(journal),
+    aftermath: buildAftermath(journal),
     byEntryMcap: bucketise(journal, (t) => {
       const v = numberFrom(t.entryNote, /\$([\d.]+)k mcap/);
       return v === null ? null : band(v, [8, 12, 18], 'k');
@@ -362,6 +439,54 @@ function renderExitQuality(q: ExitQuality | undefined): string {
   );
 }
 
+/**
+ * What happened after each exit rule fired.
+ *
+ * The one table in the whole evidence block that can say an exit was WRONG
+ * rather than merely unprofitable. Everything else measures what we made;
+ * this measures what was there to be made and we did not take.
+ */
+function renderAftermath(a: Aftermath | undefined): string {
+  if (!a) return '';
+
+  const rows = a.byExitReason
+    .map(
+      (r) =>
+        `  ${r.key.padEnd(16)} ${String(r.trades).padStart(4)} trades  ` +
+        `median ${(r.medianPeakPct >= 0 ? '+' : '') + r.medianPeakPct.toFixed(0)}%`.padEnd(16) +
+        `  never higher ${String(r.neverHigher).padStart(3)}` +
+        `  doubled ${String(r.doubled).padStart(3)}` +
+        (r.medianSecondsToPeak > 0 ? `  peak +${r.medianSecondsToPeak}s` : '') +
+        (r.trades < 10 ? '  (thin)' : ''),
+    )
+    .join('\n');
+
+  return (
+    `\nWhat the token did AFTER each exit (${a.samples} completed` +
+    `${a.pending > 0 ? `, ${a.pending} still being watched` : ''})\n` +
+    '  Measured from the price the exit decision was made on, so it is the\n' +
+    '  upside the rule gave up, not the fill we happened to get.\n' +
+    rows +
+    '\n' +
+    `  Across all of them: median peak +${a.medianPeakPct.toFixed(0)}% after exit, and ` +
+    `${a.neverHigherPct.toFixed(0)}% never\n  traded above the exit at all.\n` +
+    '\n' +
+    '  How to use it, because it is easy to read backwards:\n' +
+    '  - A rule whose tokens mostly NEVER go higher is working. That is what a\n' +
+    '    good exit looks like, including on a losing trade — the loss was real\n' +
+    '    and getting out was right. Do not loosen it because it lost money.\n' +
+    '  - A rule whose tokens routinely double after we sell is cutting winners.\n' +
+    '    That is the case for a wider take-profit, a looser trailing stop, or a\n' +
+    '    later checkpoint, and it is the one thing that closes a gap between the\n' +
+    '    actual win rate and the win rate the winner/loser pair requires.\n' +
+    '  - Median, not mean, and check "doubled": one 40x makes an average that\n' +
+    '    describes no trade that happened.\n' +
+    '  - Time to peak bounds the fix. If the peak lands 30s after exit, holding\n' +
+    '    longer could have caught it; if it lands 20 minutes later, no exit\n' +
+    '    parameter would have, and the entry is the thing to look at.\n'
+  );
+}
+
 export function renderEvidence(e: Evidence): string {
   const b = (name: string, rows: Bucket[]): string =>
     rows.length < 2
@@ -392,6 +517,7 @@ export function renderEvidence(e: Evidence): string {
     `Losses that were wins before fees: ${e.feeKilled}\n` +
     b('Exits by reason', e.exitReasons) +
     renderExitQuality(e.exitQuality) +
+    renderAftermath(e.aftermath) +
     // A reason is only useful if it names the parameter behind it. Without
     // this the model has to infer which timer produced an exit from hold times,
     // which is what it was reduced to while three separate timers all reported
