@@ -345,6 +345,11 @@ export const FIELDS: FieldSpec[] = [
     help: 'How often each open position is re-priced. This is the floor on how ' +
       'late a stop can fire: the loss you realise is the trigger plus whatever ' +
       'the price did since the last look.' },
+  { key: 'REJECT_TRACK_SAMPLE_PCT', label: 'Follow rejected launches', bot: 'shared',
+    group: 'Exit', kind: 'number', min: 0, max: 100, step: 5,
+    help: 'Percent of REJECTED launches to keep watching, to find out whether the ' +
+      'filters were right. Everything else the bot learns from is a trade it took, ' +
+      'so a filter quietly rejecting the winners is otherwise invisible. 0 disables.' },
   { key: 'AFTERMATH_ENABLED', label: 'Track tokens after selling', bot: 'shared',
     group: 'Exit', kind: 'boolean',
     help: 'Keeps watching a token after the position closes and records the best it ' +

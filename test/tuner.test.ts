@@ -188,6 +188,11 @@ describe('what the tuner may touch', () => {
       'AFTERMATH_WINDOW_MINUTES',
       'AFTERMATH_POLL_INTERVAL_MS',
       'AFTERMATH_MAX_TOKENS',
+      // The sample of rejected launches. Same shape of problem: it is the only
+      // evidence that can show a FILTER is throwing away winners, and setting
+      // the rate to 0 makes that evidence disappear without any filter getting
+      // better. An instrument the subject can switch off is not an instrument.
+      'REJECT_TRACK_SAMPLE_PCT',
       // Terminal verbosity, with no trading effect. The tuner reached for it as
       // a way to see the reject breakdown — a fair thing to want, and the wrong
       // way to get it, since the tuner reads the evidence block and not the

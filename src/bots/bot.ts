@@ -209,6 +209,31 @@ export class TradingBot {
    * than "has this launch already started moving" — and running both makes
    * that comparison with real numbers instead of an argument.
    */
+  /**
+   * Keeps a sample of what was turned down, so the filters can be confronted
+   * with it later.
+   *
+   * Sampled, and cheap: no RPC here at all. The price comes from the curve
+   * reserves the candidate already carries, and the follow-up reads are batched
+   * a hundred at a time by the aftermath tracker.
+   */
+  private trackReject(candidate: TokenCandidate, reason: string): void {
+    const pct = this.deps.cfg.REJECT_TRACK_SAMPLE_PCT;
+    if (pct <= 0 || Math.random() * 100 >= pct) return;
+
+    const vSol = candidate.vSolInBondingCurve;
+    const vTokens = candidate.vTokensInBondingCurve;
+    if (!vSol || !vTokens || vTokens <= 0) return;
+
+    this.store.recordReject({
+      mint: candidate.mint,
+      symbol: candidate.symbol,
+      reason,
+      at: Date.now(),
+      price: vSol / vTokens,
+    });
+  }
+
   private async considerCandidate(candidate: TokenCandidate): Promise<void> {
     const { cfg } = this.deps;
     const label = candidate.symbol ?? candidate.mint.slice(0, 8);
@@ -273,6 +298,7 @@ export class TradingBot {
 
     if (!verdict.passed) {
       this.stats.rejected += 1;
+      this.trackReject(candidate, verdict.rejectedBy ?? 'safety');
       log.info(`REJECT ${label} — ${formatVerdict(verdict)} (${verdict.elapsedMs}ms)`);
       return;
     }
@@ -283,6 +309,7 @@ export class TradingBot {
     const confirm = await this.confirmMove(candidate, label);
     if (!confirm.ok) {
       this.stats.rejected += 1;
+      this.trackReject(candidate, 'no_confirm_move');
       log.info(`REJECT ${label} — ${confirm.detail}`);
       return;
     }

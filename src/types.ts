@@ -280,6 +280,31 @@ export interface ExitOrder {
   ruleLabel?: string;
 }
 
+/**
+ * A launch the filters turned down, followed to see whether they were right.
+ *
+ * Everything else the bot records is about trades it TOOK, which is the
+ * textbook shape of a selection bias: the filters are tuned on the outcomes of
+ * the candidates they admitted, and are never confronted with what they threw
+ * away. When nothing is profitable, "are my filters rejecting the winners?" is
+ * the first question, and without this it has no answer at any price.
+ */
+export interface RejectedCandidate {
+  mint: string;
+  symbol?: string;
+  /** Which filter said no — the bucket the tuner reasons about. */
+  reason: string;
+  at: number;
+  /** Price at the moment of rejection, the baseline for everything after. */
+  price: number;
+  /** Best price seen since, as a percent above `price`. */
+  peakPct?: number;
+  /** Seconds from rejection to that peak. */
+  peakSeconds?: number;
+  /** Window finished; until then the numbers above are provisional. */
+  done?: boolean;
+}
+
 export interface BuyResult {
   ok: boolean;
   signature?: string;

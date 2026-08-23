@@ -416,6 +416,20 @@ const schema = z.object({
   /** Ceiling on tokens followed at once, so a busy hour cannot run away. */
   AFTERMATH_MAX_TOKENS: num(1, 500).default(200),
   /**
+   * Percent of REJECTED launches to follow, to find out if the filters were
+   * right.
+   *
+   * Everything else the bot learns from is a trade it took, which is a
+   * selection bias with a name: the filters are tuned on the outcomes of what
+   * they let through and never see what they turned away. A filter that is
+   * quietly rejecting the winners looks exactly like a filter that is working.
+   *
+   * Sampled rather than exhaustive because rejections outnumber trades by
+   * orders of magnitude. 0 disables. The sample only needs to be large enough
+   * to compare bucket against bucket, not to catch every token.
+   */
+  REJECT_TRACK_SAMPLE_PCT: num(0, 100).default(15),
+  /**
    * Deadline on a single position price read.
    *
    * The curve read is a bare `getAccountInfo` with no bound of its own, so

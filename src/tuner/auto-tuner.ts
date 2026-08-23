@@ -7,7 +7,7 @@ import { ClaudeAnalyst, type AiUsageTotals } from '../ai/client.js';
 import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
 import type { TradeJournalEntry } from '../types.js';
-import { buildEvidence, renderEvidence, type Evidence } from './evidence.js';
+import { buildEvidence, renderEvidence, renderRejects, type Evidence } from './evidence.js';
 import { TUNABLES, TUNABLE_BY_KEY, vetProposal } from './limits.js';
 import { TuningLedger, type Change, type Experiment, type RpcSnapshot } from './ledger.js';
 import { rpcStats } from '../util/rpc-throttle.js';
@@ -342,7 +342,7 @@ export class AutoTuner {
     }
 
     const evidence = buildEvidence(bot, since, cfg);
-    const proposal = await this.propose(bot, evidence, journal);
+    const proposal = await this.propose(bot, evidence, journal, store);
     if (!proposal) return;
 
     const changes = this.vet(bot, proposal, journal);
@@ -532,6 +532,7 @@ export class AutoTuner {
     bot: string,
     evidence: Evidence,
     journal: readonly TradeJournalEntry[],
+    store: Store,
   ): Promise<Proposal | null> {
     const knobs = TUNABLES.filter((t) => t.bot === bot || t.bot === 'shared');
     const current = this.deps.settings.values();
@@ -617,6 +618,7 @@ export class AutoTuner {
         userContent:
           `${renderEvidence(evidence)}\n` +
           `${renderBacktests(journal, this.deps.cfg)}\n` +
+          `${renderRejects(store.rejects())}\n` +
           `${rpcBlock}\n` +
           `PARAMETERS YOU MAY CHANGE (current value, allowed values):\n${catalogue}\n\n` +
           'Parameters marked *** RISK *** decide how much capital is exposed rather than ' +
@@ -992,6 +994,8 @@ How to read the evidence:
 - Buckets marked (thin) have under 10 trades. They are noise. Do not move a threshold because of one.
 - A bucket only justifies a change if it is both LARGE and clearly losing. One big loser in an otherwise fine bucket is not a signal.
 - You are not limited to the three built-in exit modes. EXIT_MODE=custom runs EXIT_RULES, a strategy you write yourself: an ordered list of rules, each a set of conditions over the position's own metrics and a share of it to sell. First match wins and each rule fires once. Use it when the evidence points at a shape none of ladder, ratchet or scalp can express — "sell half if it doubles inside twenty seconds, hold the rest until it stops making new highs" is a strategy, not a setting, and nothing in the three modes says it. Two things follow from writing one. It has no step cap, so a single round can replace the whole strategy: that is deliberate and it is higher variance, so make it the only change in its round. And your rule LABELS lead the close reason, which means every table you are shown — exits by reason, the post-exit peaks, the stop overshoot — groups by your own rule names, and you can see exactly which of your rules earns its place. Change EXIT_MODE to custom in the same round you first write EXIT_RULES, or the rules sit there doing nothing.
+- The rejected-launch table is the only evidence not conditioned on the filters themselves. Everything else you are shown happened to a trade that PASSED them, so a filter throwing away the winners is invisible everywhere except there. Loosening a filter whose rejects routinely double is usually worth more than any exit change, because it adds opportunities rather than re-cutting the ones you already have — but move ONE filter by ONE step and measure it, since a token that doubled might still have been unsellable and the sample cannot see that.
+- The backtest table lets you test an exit strategy before spending a measurement window on it. Propose EXIT_RULES freely: it is simulated against recorded price paths first and refused if it is clearly worse than what is actually happening. Read the coverage figure — a strategy holding past the end of the recorded data is valued at the last price seen, which is a guess, and a low coverage number means the expectancy beside it mostly is too.
 - The post-exit block is the only evidence that can show an exit was WRONG rather than merely unprofitable. Everything else tells you what a trade made; that tells you what was there and was not taken. A rule whose tokens mostly never trade higher is doing its job even when its trades lost money — the loss was real and getting out was correct — and loosening it would only hold the same losers longer. A rule whose tokens routinely double after the sell is cutting winners, and widening it is the strongest available move on a win rate that sits under what the winner/loser pair requires.
 - The RPC health block already answers "is the endpoint the problem", so do not ask for it to be checked. It names which constraint was binding over the same window the trades came from, and each state implies a different move: the provider rate limiting means the ceiling is already too high; saturation at your own ceiling with no 429s means RPC_MAX_REQUESTS_PER_SEC and RPC_MAX_CONCURRENT are the lever and a latency parameter is not; neither means RPC is not involved and a latency symptom is coming from somewhere else. All three of those parameters are yours.
 

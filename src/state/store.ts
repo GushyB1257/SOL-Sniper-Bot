@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join, dirname } from 'node:path';
-import type { CreatorRecord, Position, TradeJournalEntry } from '../types.js';
+import type { CreatorRecord, Position, TradeJournalEntry, RejectedCandidate } from '../types.js';
 import { logger } from '../logger.js';
 
 const log = logger('store');
@@ -21,6 +21,7 @@ interface Snapshot {
   positions: Record<string, Position>;
   creators: Record<string, CreatorRecord>;
   journal: TradeJournalEntry[];
+  rejects: RejectedCandidate[];
   /** UTC date string -> realised PnL in SOL, for the daily loss breaker. */
   dailyPnl: Record<string, number>;
   /** Rolling log of buys: [timestampMs, solSpent]. */
@@ -34,6 +35,7 @@ const EMPTY: Snapshot = {
   positions: {},
   creators: {},
   journal: [],
+  rejects: [],
   dailyPnl: {},
   spendLog: [],
   consecutiveLosses: 0,
@@ -363,6 +365,37 @@ export class Store {
 
   journal(): readonly TradeJournalEntry[] {
     return this.data.journal;
+  }
+
+  // --- rejected candidates -----------------------------------------------
+
+  /**
+   * Records a launch the filters refused, so it can be followed.
+   *
+   * Bounded hard. Rejections outnumber trades by orders of magnitude — the
+   * sniper turns down most of what pump.fun deploys — so this keeps a rolling
+   * window rather than a history. It is a sample for answering "are the filters
+   * too tight", not an audit trail.
+   */
+  recordReject(r: RejectedCandidate, cap = 600): void {
+    this.data.rejects ??= [];
+    this.data.rejects.push(r);
+    if (this.data.rejects.length > cap) {
+      this.data.rejects = this.data.rejects.slice(-cap);
+    }
+    this.markDirty();
+  }
+
+  rejects(): readonly RejectedCandidate[] {
+    return this.data.rejects ?? [];
+  }
+
+  amendReject(mint: string, at: number, patch: Partial<RejectedCandidate>): boolean {
+    const row = (this.data.rejects ?? []).find((r) => r.mint === mint && r.at === at);
+    if (!row) return false;
+    Object.assign(row, patch);
+    this.markDirty();
+    return true;
   }
 
   /**

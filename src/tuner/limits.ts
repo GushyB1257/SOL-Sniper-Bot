@@ -61,6 +61,11 @@ import { checkRuleset, METRICS } from '../strategy/custom-exit.js';
  *    stop saying so is to shorten its window — fewer minutes of watching catches
  *    fewer peaks, and every exit rule starts looking correct. A tuner that can
  *    narrow the evidence against it is not being tuned, it is being flattered.
+ *  - **`REJECT_TRACK_SAMPLE_PCT`.** The sample of launches the filters turned
+ *    down, and the only evidence that can show a FILTER is throwing away
+ *    winners — every other table is conditioned on having passed those filters.
+ *    Setting the rate to 0 makes that evidence disappear without any filter
+ *    getting better. An instrument the subject can switch off is not one.
  *  - **`DISCOVERY_SOURCE`.** Read once, at construction. Changing it at runtime
  *    does nothing until a restart — which is worse than not offering it, since
  *    the tuner would spend a whole measurement window on a change that had no

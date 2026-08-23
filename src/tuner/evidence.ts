@@ -1,5 +1,5 @@
 import type { Config } from '../config.js';
-import type { TradeJournalEntry } from '../types.js';
+import type { RejectedCandidate, TradeJournalEntry } from '../types.js';
 import { breakevenGrossPct, costModel, roundTripCostSol } from '../strategy/costs.js';
 
 /**
@@ -484,6 +484,71 @@ function renderAftermath(a: Aftermath | undefined): string {
     '  - Time to peak bounds the fix. If the peak lands 30s after exit, holding\n' +
     '    longer could have caught it; if it lands 20 minutes later, no exit\n' +
     '    parameter would have, and the entry is the thing to look at.\n'
+  );
+}
+
+/**
+ * What the filters turned down, and what it did next.
+ *
+ * The one table in the evidence that is not about trades the bot took. Every
+ * other number here is conditioned on having passed the filters, so the filters
+ * themselves have never been tested against their own rejections — a filter
+ * quietly discarding the winners looks identical to one that is working.
+ *
+ * Sampled, so the counts are a fraction of real rejections. Compare buckets
+ * against each other, never against the trade table.
+ */
+export function renderRejects(rejects: readonly RejectedCandidate[]): string {
+  const done = rejects.filter((r) => r.done && r.peakPct !== undefined);
+  if (done.length < 20) {
+    return (
+      `\nRejected launches: ${done.length} followed to completion so far — not enough ` +
+      'to read yet.\n'
+    );
+  }
+
+  const groups = new Map<string, RejectedCandidate[]>();
+  for (const r of done) groups.set(r.reason, [...(groups.get(r.reason) ?? []), r]);
+
+  const rows = [...groups.entries()]
+    .map(([reason, rs]) => {
+      const peaks = rs.map((r) => r.peakPct ?? 0);
+      return {
+        reason,
+        n: rs.length,
+        median: median(peaks),
+        ran: rs.filter((r) => (r.peakPct ?? 0) >= 50).length,
+        doubled: rs.filter((r) => (r.peakPct ?? 0) >= 100).length,
+      };
+    })
+    .sort((a, b) => b.doubled / b.n - a.doubled / a.n);
+
+  const lines = rows
+    .map(
+      (r) =>
+        `  ${r.reason.padEnd(22)} ${String(r.n).padStart(4)} rejected  ` +
+        `median ${(r.median >= 0 ? '+' : '') + r.median.toFixed(0)}%`.padEnd(16) +
+        `  ran 50%+ ${String(r.ran).padStart(3)}  doubled ${String(r.doubled).padStart(3)}` +
+        (r.n < 10 ? '  (thin)' : ''),
+    )
+    .join('\n');
+
+  return (
+    `\nWhat the filters REJECTED, and what it did afterwards (${done.length} sampled)\n` +
+    '  Every other table above is conditioned on having passed these filters, so\n' +
+    '  this is the only evidence that can show one is throwing away winners.\n' +
+    lines +
+    '\n' +
+    '  A filter whose rejects mostly go nowhere is earning its place — that is\n' +
+    '  what a working filter looks like. A filter whose rejects routinely double\n' +
+    '  is costing you trades, and loosening it is the highest-value change\n' +
+    '  available, because it adds opportunities rather than re-cutting the ones\n' +
+    '  you already have.\n' +
+    '  These are SAMPLED, so the counts are a fraction of real rejections.\n' +
+    '  Compare buckets against each other, never against the trade counts above.\n' +
+    '  Rejects are not free trades: a token that doubled might still have been\n' +
+    '  unsellable, and the sample cannot see that. Treat a doubling bucket as a\n' +
+    '  reason to loosen ONE filter by ONE step and measure, not as forgone profit.\n'
   );
 }
 

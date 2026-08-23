@@ -1,7 +1,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import type { Config } from '../config.js';
 import type { Store } from '../state/store.js';
-import type { TradeJournalEntry } from '../types.js';
+import type { RejectedCandidate, TradeJournalEntry } from '../types.js';
 import { logger } from '../logger.js';
 import { errMessage } from '../util/async.js';
 import { bondingCurvePda, decodeBondingCurve } from '../execution/bonding-curve.js';
@@ -150,6 +150,32 @@ export class AftermathTracker {
     }
   }
 
+  /**
+   * Sampled rejections still inside their window, plus those to close out.
+   *
+   * Shares the trade window and the same batched read: following a token we
+   * turned down is the same operation as following one we sold, so it costs
+   * nothing extra beyond the mints themselves.
+   */
+  private scanRejects(): {
+    poll: Array<{ store: Store; row: RejectedCandidate }>;
+    expired: Array<{ store: Store; row: RejectedCandidate }>;
+  } {
+    const windowMs = this.cfg.AFTERMATH_WINDOW_MINUTES * 60_000;
+    const now = Date.now();
+    const poll: Array<{ store: Store; row: RejectedCandidate }> = [];
+    const expired: Array<{ store: Store; row: RejectedCandidate }> = [];
+
+    for (const store of this.stores.values()) {
+      for (const row of store.rejects()) {
+        if (row.done || row.price <= 0) continue;
+        if (now - row.at > windowMs) expired.push({ store, row });
+        else poll.push({ store, row });
+      }
+    }
+    return { poll: poll.slice(0, this.cfg.AFTERMATH_MAX_TOKENS), expired };
+  }
+
   async poll(): Promise<void> {
     // Overlapping polls would multiply RPC load exactly when the node is
     // already slow — the worst possible moment.
@@ -158,8 +184,20 @@ export class AftermathTracker {
     const { poll: due, expired } = this.scan();
     this.finaliseExpired(expired);
 
-    this.stats.tracked = due.length;
-    if (due.length === 0) return;
+    const rejects = this.scanRejects();
+    for (const { store, row } of rejects.expired) {
+      // Closed at 0, not dropped. "It went nowhere either" is the finding that
+      // vindicates a filter, and discarding those rows would leave the table
+      // made only of rejects that ran — which would indict every filter.
+      store.amendReject(row.mint, row.at, {
+        done: true,
+        peakPct: row.peakPct ?? 0,
+        peakSeconds: row.peakSeconds ?? 0,
+      });
+    }
+
+    this.stats.tracked = due.length + rejects.poll.length;
+    if (due.length === 0 && rejects.poll.length === 0) return;
 
     this.polling = true;
     try {
@@ -219,6 +257,46 @@ export class AftermathTracker {
             }
           }
 
+        }
+      }
+
+      for (let i = 0; i < rejects.poll.length; i += 100) {
+        const batch = rejects.poll.slice(i, i + 100);
+        const keyed = batch
+          .map((b) => ({ ...b, pda: this.pdaFor(b.row.mint) }))
+          .filter((b): b is typeof b & { pda: PublicKey } => b.pda !== null);
+        if (keyed.length === 0) continue;
+
+        const infos = await this.conn.getMultipleAccountsInfo(
+          keyed.map((k) => k.pda),
+          'processed',
+        );
+
+        for (let j = 0; j < keyed.length; j++) {
+          const { store, row } = keyed[j]!;
+          const info = infos[j];
+          if (!info) {
+            // The curve is gone. On a REJECT that is a finding rather than a
+            // dead end: a token that migrated is one that made it all the way
+            // off the bonding curve after we turned it down.
+            store.amendReject(row.mint, row.at, {
+              done: true,
+              peakPct: Math.max(row.peakPct ?? 0, 0),
+              peakSeconds: row.peakSeconds ?? Math.round((Date.now() - row.at) / 1000),
+            });
+            continue;
+          }
+          const state = decodeBondingCurve(info.data);
+          const price = state ? curveSpotPrice(state, PUMP_TOKEN_DECIMALS) : null;
+          if (price === null || price <= 0) continue;
+
+          const pct = ((price - row.price) / row.price) * 100;
+          if (pct > (row.peakPct ?? 0)) {
+            store.amendReject(row.mint, row.at, {
+              peakPct: pct,
+              peakSeconds: Math.round((Date.now() - row.at) / 1000),
+            });
+          }
         }
       }
     } catch (err) {
