@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  PricePoint,
   BuyResult,
   Executor,
   ExitOrder,
@@ -16,6 +17,48 @@ import { buildLadder, checkpointElapsed, decideExit, positionPnl } from './exit-
 import { pctChange } from '../util/solana.js';
 
 const log = logger('positions');
+
+/**
+ * Largest number of samples kept for one position.
+ *
+ * Bounded because these live in the state file and every closed trade keeps
+ * its own. At the 1s base interval this is two minutes at full resolution,
+ * which covers most holds outright; longer ones widen the interval instead of
+ * growing without limit.
+ */
+const MAX_PATH_POINTS = 120;
+const BASE_PATH_INTERVAL_SEC = 1;
+
+/**
+ * Records one price sample, widening the interval rather than growing forever.
+ *
+ * When the buffer fills, every other sample is dropped and the interval
+ * doubles — so a long hold keeps the whole shape of the trade at lower
+ * resolution instead of keeping the first two minutes and losing the rest.
+ * Detail is what gets sacrificed, never coverage, because a backtest that can
+ * only see the start of a trade is worse than useless: it would judge every
+ * patient strategy on its opening seconds.
+ */
+export function samplePath(p: Position, price: number, now: number): void {
+  const t = (now - p.openedAt) / 1000;
+  const interval = p.pathIntervalSec ?? BASE_PATH_INTERVAL_SEC;
+  const path = (p.path ??= []);
+
+  const last = path[path.length - 1];
+  if (last && t - last[0] < interval) return;
+  path.push([Number(t.toFixed(2)), price]);
+
+  if (path.length > MAX_PATH_POINTS) {
+    // Keep the first and last, and every other one between: the endpoints are
+    // the entry and the most recent price, and losing either would misreport
+    // the trade rather than merely coarsen it.
+    const kept: PricePoint[] = [path[0]!];
+    for (let i = 1; i < path.length - 1; i += 2) kept.push(path[i]!);
+    kept.push(path[path.length - 1]!);
+    p.path = kept;
+    p.pathIntervalSec = interval * 2;
+  }
+}
 
 /** pump.fun mints a fixed 1,000,000,000 tokens, so mcap is price x this. */
 export const PUMP_TOTAL_SUPPLY = 1_000_000_000;
@@ -188,6 +231,8 @@ export class PositionManager {
       // late. Those have different fixes and the number tells you which.
       const gapMs = p.lastPriceAt > 0 ? Date.now() - p.lastPriceAt : 0;
       this.pollGapMs.set(p.id, Math.max(this.pollGapMs.get(p.id) ?? 0, gapMs));
+
+      samplePath(p, price, Date.now());
 
       p.lastPrice = price;
       p.lastPriceAt = Date.now();
@@ -480,6 +525,13 @@ export class PositionManager {
       ...(p.lastPrice > 0 && {
         exitPrice: p.lastPrice,
         exitMcapSol: p.lastPrice * PUMP_TOTAL_SUPPLY,
+      }),
+      // The shape of the trade, not just its endpoints. The aftermath tracker
+      // extends this past the exit, which is what lets a backtest judge a
+      // strategy that would have held on rather than only ones that sell sooner.
+      ...(p.path && p.path.length > 1 && {
+        path: p.path,
+        exitAtSec: ((p.closedAt ?? Date.now()) - p.openedAt) / 1000,
       }),
     });
 

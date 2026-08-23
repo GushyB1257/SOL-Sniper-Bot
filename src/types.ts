@@ -157,6 +157,18 @@ export interface Position {
   /** Indexes of custom rules that have already fired. A rule fires once. */
   firedRules?: number[];
 
+  /**
+   * The price path, sampled while the position is open.
+   *
+   * Recorded so a strategy can be tested against what actually happened rather
+   * than argued about. Entry, exit and peak — the three points the journal used
+   * to hold — cannot evaluate a rule about drawdown from peak or time since the
+   * last high, because those are questions about the SHAPE between the points.
+   */
+  path?: PricePoint[];
+  /** Current gap between samples, in seconds. Widens as the buffer fills. */
+  pathIntervalSec?: number;
+
   /** Consecutive failed sell attempts; resets on a successful sell. */
   exitFailures?: number;
   /** Epoch ms before which no further sell should be attempted. */
@@ -238,6 +250,15 @@ export type ExitReason =
   | 'unpriceable';
 
 /** An instruction produced by the strategy for the executor to carry out. */
+/**
+ * One sample of a position's price: [seconds since the position opened, price].
+ *
+ * A pair rather than an object because thousands of these live in the state
+ * file, and `{"t":12.5,"p":1.2e-7}` is three times the bytes of `[12.5,1.2e-7]`
+ * for the same information.
+ */
+export type PricePoint = [number, number];
+
 export interface ExitOrder {
   mint: string;
   positionId: string;
@@ -359,6 +380,21 @@ export interface TradeJournalEntry {
   // win rate is far under what the winner/loser pair needs. That says winners
   // are closed too early or losers held too long, and these fields say which,
   // per exit rule.
+
+  /**
+   * The price path over the position's life, and onward past the exit.
+   *
+   * The post-exit half comes from the aftermath tracker, and it is what makes a
+   * backtest able to evaluate a strategy that HOLDS LONGER than the one that
+   * ran. Without it the data stops at the exit the old strategy chose, so any
+   * rule that would have held on has nothing to be judged against — and a
+   * backtest that quietly truncates there would report every patient strategy
+   * as a break-even, which is not a neutral error: it argues for selling early
+   * regardless of what the market did.
+   */
+  path?: PricePoint[];
+  /** Seconds after open at which the position actually closed. */
+  exitAtSec?: number;
 
   /** Highest price seen after the exit, as a % above `exitPrice`. */
   peakAfterExitPct?: number;

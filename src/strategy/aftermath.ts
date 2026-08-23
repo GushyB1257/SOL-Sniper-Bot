@@ -195,6 +195,18 @@ export class AftermathTracker {
           const state = decodeBondingCurve(info.data);
           const price = state ? curveSpotPrice(state, PUMP_TOKEN_DECIMALS) : null;
           if (price !== null && price > 0) {
+            // Extend the recorded price path past the exit. This is the half of
+            // the data a backtest cannot get any other way: everything before
+            // the exit is the path the OLD strategy produced, so a candidate
+            // rule that would have held on has nothing to be judged against
+            // unless the path keeps going after the old rule sold.
+            const path = [...(entry.path ?? [])];
+            const t = (entry.closedAt - entry.openedAt + elapsed) / 1000;
+            if (path.length > 0 && t > path[path.length - 1]![0]) {
+              path.push([Number(t.toFixed(2)), price]);
+              store.amendJournal(entry.positionId, { path });
+            }
+
             const pct = ((price - entry.exitPrice!) / entry.exitPrice!) * 100;
             // Only ever record a NEW high. The field is the peak since exit, so
             // a later, lower reading must not overwrite it.

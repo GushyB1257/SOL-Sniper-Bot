@@ -11,6 +11,7 @@ import { buildEvidence, renderEvidence, type Evidence } from './evidence.js';
 import { TUNABLES, TUNABLE_BY_KEY, vetProposal } from './limits.js';
 import { TuningLedger, type Change, type Experiment, type RpcSnapshot } from './ledger.js';
 import { rpcStats } from '../util/rpc-throttle.js';
+import { backtest, backtestRuleset, actualResult } from './backtest.js';
 
 const log = logger('tuner');
 
@@ -341,10 +342,10 @@ export class AutoTuner {
     }
 
     const evidence = buildEvidence(bot, since, cfg);
-    const proposal = await this.propose(bot, evidence);
+    const proposal = await this.propose(bot, evidence, journal);
     if (!proposal) return;
 
-    const changes = this.vet(bot, proposal);
+    const changes = this.vet(bot, proposal, journal);
     if (changes.length === 0) {
       log.info(`${bot}: no change this round${proposal.notes?.length ? ' (see notes)' : ''}`);
       if (proposal.notes?.length) for (const n of proposal.notes) log.info(`  note: ${n}`);
@@ -527,7 +528,11 @@ export class AutoTuner {
       .join('\n');
   }
 
-  private async propose(bot: string, evidence: Evidence): Promise<Proposal | null> {
+  private async propose(
+    bot: string,
+    evidence: Evidence,
+    journal: readonly TradeJournalEntry[],
+  ): Promise<Proposal | null> {
     const knobs = TUNABLES.filter((t) => t.bot === bot || t.bot === 'shared');
     const current = this.deps.settings.values();
 
@@ -611,6 +616,7 @@ export class AutoTuner {
         jsonSchema: JSON_SCHEMA,
         userContent:
           `${renderEvidence(evidence)}\n` +
+          `${renderBacktests(journal, this.deps.cfg)}\n` +
           `${rpcBlock}\n` +
           `PARAMETERS YOU MAY CHANGE (current value, allowed values):\n${catalogue}\n\n` +
           'Parameters marked *** RISK *** decide how much capital is exposed rather than ' +
@@ -637,7 +643,7 @@ export class AutoTuner {
   }
 
   /** Applies the limits. Anything that does not survive them is dropped. */
-  private vet(bot: string, proposal: Proposal): Change[] {
+  private vet(bot: string, proposal: Proposal, journal: readonly TradeJournalEntry[] = []): Change[] {
     const { cfg } = this.deps;
     const current = this.deps.settings.values();
     const out: Change[] = [];
@@ -671,6 +677,26 @@ export class AutoTuner {
         log.info(`${bot}: rejected ${c.key}=${vet.value} — already tried and reverted`);
         continue;
       }
+
+      // A whole strategy gets tested against history before it is allowed to
+      // trade. Every other change is one number inside a known-shaped rule; a
+      // ruleset is arbitrary, has no step cap, and can be wrong in ways no
+      // range check catches — a rule that never fires, or one that sells the
+      // position in its first second. Those are cheap to find here and cost a
+      // full measurement window to find live.
+      //
+      // The bar is deliberately not "must be better". A backtest is a
+      // simulation over a bounded window and being slightly behind on it is
+      // not evidence of anything; being far behind is. So this refuses only a
+      // clear regression, and lets the live measure-and-revert loop decide the
+      // rest, which it does on real trades.
+      if (c.key === 'EXIT_RULES' && journal.length > 0) {
+        const verdict = this.backtestGate(bot, String(vet.value), journal);
+        if (verdict) {
+          log.info(`${bot}: rejected EXIT_RULES — ${verdict}`);
+          continue;
+        }
+      }
       out.push({
         key: c.key,
         from: spec?.kind === 'number' ? Number(nowRaw) : nowRaw,
@@ -681,6 +707,54 @@ export class AutoTuner {
       });
     }
     return out;
+  }
+
+  /**
+   * Backtests a proposed ruleset. Returns a refusal reason, or null to allow.
+   *
+   * Silent when there is not enough recorded history to judge — a backtest over
+   * five trades is noise, and refusing a strategy on noise would be worse than
+   * not testing it. Paths only exist for trades closed since recording began,
+   * so this stays quiet for a while after an upgrade and then starts working.
+   */
+  private backtestGate(
+    bot: string,
+    rules: string,
+    journal: readonly TradeJournalEntry[],
+  ): string | null {
+    const MIN_BACKTEST_TRADES = 25;
+    const sim = backtestRuleset(journal, this.deps.cfg, rules);
+    if (!sim.ok || !sim.result) return sim.error ?? 'ruleset could not be simulated';
+
+    const r = sim.result;
+    if (r.trades < MIN_BACKTEST_TRADES) {
+      log.info(
+        `${bot}: only ${r.trades} trades have a recorded price path, so the proposed ` +
+          'strategy was applied without a backtest',
+      );
+      return null;
+    }
+
+    const actual = actualResult(journal);
+    log.info(
+      `${bot}: backtest of proposed strategy — ${r.expectancySol.toFixed(5)} SOL/trade over ` +
+        `${r.trades} trades (${r.coveragePct.toFixed(0)}% reached a real exit) vs ` +
+        `${actual.expectancySol.toFixed(5)} actually achieved`,
+    );
+
+    // Scaled to the position size, so the threshold means the same thing at any
+    // size. A tenth of a position per trade worse is not a rounding error.
+    const margin = this.deps.cfg.BUY_AMOUNT_SOL * 0.1;
+    if (r.expectancySol < actual.expectancySol - margin) {
+      return (
+        `backtests at ${r.expectancySol.toFixed(5)} SOL/trade against ` +
+        `${actual.expectancySol.toFixed(5)} actually achieved over the same ${r.trades} trades`
+      );
+    }
+    if (r.byReason['still_holding'] === r.trades) {
+      return 'no rule ever fired in simulation — every trade ran to the end of its data';
+    }
+    return null;
   }
 
   /**
@@ -742,6 +816,67 @@ function rpcHealth(): RpcSnapshot {
  *  - 429s: the provider is the constraint and the ceiling is already above what
  *    it grants. Raising it buys more 429s, not more throughput.
  */
+/**
+ * How the current exit strategy compares against the alternatives, replayed
+ * over the same trades.
+ *
+ * Every round, without being asked. The tuner has spent rounds reasoning about
+ * whether a different exit shape would do better and had no way to find out
+ * short of spending a live measurement window on it; this answers the question
+ * from data already collected, for free, before any capital is committed.
+ */
+export function renderBacktests(journal: readonly TradeJournalEntry[], cfg: Config): string {
+  const actual = actualResult(journal);
+  if (actual.trades < 15) {
+    return (
+      '\nStrategy backtests: not yet — only ' +
+      `${actual.trades} closed trades have a recorded price path. Paths are recorded from ` +
+      'the entry through to thirty minutes past the exit, and only for trades closed since ' +
+      'that recording began.\n'
+    );
+  }
+
+  const modes: Array<[string, Config]> = [
+    ['ratchet', { ...cfg, EXIT_MODE: 'ratchet' }],
+    ['scalp', { ...cfg, EXIT_MODE: 'scalp' }],
+    ['ladder', { ...cfg, EXIT_MODE: 'ladder' }],
+  ];
+  if (cfg.EXIT_MODE === 'custom') modes.push(['custom (yours)', cfg]);
+
+  const row = (label: string, r: { expectancySol: number; winRatePct: number; netSol: number; coveragePct: number }): string =>
+    `  ${label.padEnd(16)} ${(r.expectancySol >= 0 ? '+' : '') + r.expectancySol.toFixed(5)} SOL/trade  ` +
+    `${r.winRatePct.toFixed(0).padStart(3)}% win  ` +
+    `net ${(r.netSol >= 0 ? '+' : '') + r.netSol.toFixed(4)}` +
+    (r.coveragePct < 100 ? `  (${r.coveragePct.toFixed(0)}% reached a real exit)` : '');
+
+  const lines = modes
+    .map(([label, c]) => {
+      const r = backtest(journal, c);
+      return r.trades > 0 ? row(label, r) : null;
+    })
+    .filter((x): x is string => x !== null);
+
+  return (
+    `\nStrategy backtests over the last ${actual.trades} trades with recorded paths\n` +
+    '  Entries are held fixed and only the EXIT is re-decided. Re-picking entries\n' +
+    '  using knowledge of how they turned out is how every backtest becomes\n' +
+    '  profitable, so it is not done here.\n' +
+    row('ACTUAL', actual) +
+    '  <- what really happened\n' +
+    lines.join('\n') +
+    '\n' +
+    '  Costs are charged from the same model live trading uses, so a strategy that\n' +
+    '  only wins before fees loses here too.\n' +
+    '  "reached a real exit" is the share of simulated trades that actually hit a\n' +
+    '  rule rather than running off the end of the recorded data. A strategy that\n' +
+    '  holds longer than thirty minutes past the old exit has no data to be judged\n' +
+    '  on and is valued at the last price seen — treat a low figure as a warning\n' +
+    '  that the number above it is mostly a guess.\n' +
+    '  You may propose EXIT_RULES freely: a ruleset is backtested before it is\n' +
+    '  applied and refused if it is clearly worse than what is actually happening.\n'
+  );
+}
+
 export function renderRpcHealth(
   start: RpcSnapshot | undefined,
   cfg: Config,
