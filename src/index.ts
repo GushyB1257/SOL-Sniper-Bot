@@ -28,9 +28,6 @@ import { breakevenGrossPct, costModel } from './strategy/costs.js';
 
 const log = logger('main');
 
-/** How often open positions are re-priced and re-evaluated for exits. */
-const TICK_INTERVAL_MS = 1500;
-
 /** How often watchlists are swept and analyst reviews run. */
 const STRATEGY_TICK_INTERVAL_MS = 10_000;
 
@@ -221,7 +218,7 @@ class Supervisor {
           log.error(`${bot.name} tick failed: ${errMessage(err)}`),
         );
       }
-    }, TICK_INTERVAL_MS);
+    }, this.cfg.POSITION_TICK_INTERVAL_MS);
 
     this.strategyTimer = setInterval(() => {
       for (const bot of this.bots.values()) {

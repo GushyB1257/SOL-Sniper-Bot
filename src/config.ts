@@ -359,6 +359,27 @@ const schema = z.object({
    * a position; short enough that a genuinely dead token frees its slot.
    */
   PRICE_STALE_SECONDS: num(30, 86_400).default(600),
+  /**
+   * How often each open position is re-priced and re-checked for an exit.
+   *
+   * This was a hardcoded constant, which made the single biggest lever on
+   * stop-loss slippage the one thing that could not be adjusted or tuned. Every
+   * exit rule in the system is evaluated on this beat, so it is the floor on
+   * how late any stop can fire: whatever the trigger says, the loss realised is
+   * the trigger plus however far the price travelled since the last look.
+   */
+  POSITION_TICK_INTERVAL_MS: num(250, 30_000).default(1500),
+  /**
+   * Deadline on a single position price read.
+   *
+   * The curve read is a bare `getAccountInfo` with no bound of its own, so
+   * without this the only limit was the throttle's retry chain — roughly four
+   * seconds of backoff plus queueing, and longer if the provider sends a
+   * Retry-After. A read that has taken this long has already missed the beat it
+   * was for; abandoning it and re-reading gets a current price sooner than
+   * waiting for a stale one.
+   */
+  POSITION_PRICE_TIMEOUT_MS: num(500, 30_000).default(4000),
 
   // === Entry path ===
   /**

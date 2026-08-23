@@ -378,6 +378,15 @@ export const TUNABLES: Tunable[] = [
   n('EXIT_RETRY_SECONDS', 'shared', 2, 300, 60, 'Gap between sell attempts.'),
   n('PRICE_STALE_SECONDS', 'shared', 60, 7200, 60,
     'How long an unreadable price is tolerated before giving up on a position.'),
+  // The floor on how late any stop can fire. Every exit rule is evaluated on
+  // this beat, so a loss realised is always the trigger plus whatever the price
+  // did since the last look — which on a token doing most of its falling in a
+  // few seconds is the larger of the two terms.
+  n('POSITION_TICK_INTERVAL_MS', 'shared', 250, 30_000, 40,
+    'How often open positions are re-priced and checked for an exit. Lower is ' +
+      'tighter stops and more RPC load.'),
+  n('POSITION_PRICE_TIMEOUT_MS', 'shared', 500, 30_000, 40,
+    'Deadline on one position price read before it is abandoned and retried.'),
 
   // === Trade execution =================================================
   n('BUY_SLIPPAGE_PCT', 'shared', 1, 60, 40,

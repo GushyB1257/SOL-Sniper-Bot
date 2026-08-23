@@ -10,7 +10,7 @@ import type { Config } from '../config.js';
 import type { Store } from '../state/store.js';
 import type { RiskManager } from '../risk/risk-manager.js';
 import { logger } from '../logger.js';
-import { KeyedMutex, errMessage } from '../util/async.js';
+import { KeyedMutex, errMessage, withTimeout } from '../util/async.js';
 import { withRpcPriority } from '../util/rpc-throttle.js';
 import { buildLadder, checkpointElapsed, decideExit, positionPnl } from './exit-planner.js';
 import { pctChange } from '../util/solana.js';
@@ -25,7 +25,18 @@ const log = logger('positions');
 export class PositionManager {
   /** One in-flight action per position; a tick must never race an exit. */
   private readonly locks = new KeyedMutex();
-  private ticking = false;
+  /**
+   * Which positions are mid-tick right now.
+   *
+   * Per position, not one flag for the whole manager. `KeyedMutex` QUEUES, so
+   * this cannot be left to the lock: a position whose price read is stuck would
+   * accumulate a backlog of ticks that all run against a price minutes old.
+   * Skipping is the right response to a missed beat — the next tick reads a
+   * fresh price, which is the only price worth acting on.
+   */
+  private readonly inFlight = new Set<string>();
+  /** Widest gap between consecutive price reads, per position, this session. */
+  private readonly pollGapMs = new Map<string, number>();
 
   constructor(
     private readonly cfg: Config,
@@ -74,21 +85,39 @@ export class PositionManager {
   }
 
   /**
-   * One monitoring pass over every open position. Positions are processed in
-   * parallel — a stuck RPC read on one must not delay the stop loss on another.
+   * One monitoring pass over every open position.
+   *
+   * Each position is polled independently. This used to hold a single `ticking`
+   * flag across the whole manager and `await Promise.all(...)` over every
+   * position, which meant the loop only came round again once the SLOWEST read
+   * finished — and every timer beat in between was dropped by the flag. The
+   * parallel map made the reads concurrent but not the ticks: one position on a
+   * stuck or retrying RPC read set the cadence for all of them, so the nominal
+   * 1.5s could become five or ten seconds for a position that was perfectly
+   * readable. That is a stop loss firing several seconds late on a token doing
+   * most of its falling in those seconds, and it is worst exactly when it costs
+   * most, because the launch bursts that saturate the RPC lane are the same
+   * bursts the dumps happen in.
+   *
+   * Now a slow position stalls only itself.
    */
   async tick(): Promise<void> {
-    if (this.ticking) return; // skip overlapping ticks rather than queueing them
-    this.ticking = true;
+    const open = this.store.openPositions();
+    await Promise.all(
+      open.filter((p) => !this.inFlight.has(p.id)).map((p) => this.tickPosition(p.id)),
+    );
+  }
+
+  private async tickPosition(positionId: string): Promise<void> {
+    this.inFlight.add(positionId);
     try {
-      const open = this.store.openPositions();
-      await Promise.all(open.map((p) => this.tickPosition(p.id)));
+      await this.runTick(positionId);
     } finally {
-      this.ticking = false;
+      this.inFlight.delete(positionId);
     }
   }
 
-  private tickPosition(positionId: string): Promise<void> {
+  private runTick(positionId: string): Promise<void> {
     return this.locks.run(positionId, async () => {
       const p = this.store.getPosition(positionId);
       if (!p || p.status !== 'open') return;
@@ -99,7 +128,30 @@ export class PositionManager {
       // seconds instead of over three minutes.
       const inBackoff = p.nextExitAttemptAt !== undefined && Date.now() < p.nextExitAttemptAt;
 
-      const price = await this.executor.price(p);
+      // Two things this read did not used to have, both of which mattered most
+      // on a position that was falling.
+      //
+      // A deadline: `fetchBondingCurve` is a bare `getAccountInfo`, and the
+      // only bound on it was the throttle's own retry chain — four backoffs
+      // totalling ~3.75s plus queueing plus the request itself. Unbounded, a
+      // single read could hold this position's tick for ten seconds or more.
+      // Timing out and re-reading on the next beat gets a fresh price sooner
+      // than waiting for a stale one to arrive.
+      //
+      // And the priority lane, for a position that is already losing. Buys and
+      // sells have always taken the fast lane; the read that DECIDES to sell
+      // did not, so it queued behind the safety-check burst from discovery —
+      // again, at exactly the moment it mattered. Gating on "already below
+      // water" keeps the lane for the few positions that could plausibly exit
+      // this tick rather than handing it to all of them.
+      const atRisk = p.lastPrice > 0 && pctChange(p.entryPrice, p.lastPrice) <= 0;
+      const read = () => this.executor.price(p);
+      const price = await withTimeout(
+        atRisk ? withRpcPriority(read) : read(),
+        this.cfg.POSITION_PRICE_TIMEOUT_MS,
+        'position price',
+      ).catch(() => null);
+
       if (price === null || !Number.isFinite(price) || price <= 0) {
         // Being unable to READ a price is a data problem, not a market one.
         // This used to write the position off as a rug after two minutes, then
@@ -125,6 +177,14 @@ export class PositionManager {
         }
         return;
       }
+
+      // How long this position went unpriced. The exit detail carries it so an
+      // oversized loser can be attributed rather than guessed at: a stop that
+      // fired 20% down on a 15% trigger after a 400ms gap is the market moving
+      // in one tick, and the same stop after an 8s gap is the bot arriving
+      // late. Those have different fixes and the number tells you which.
+      const gapMs = p.lastPriceAt > 0 ? Date.now() - p.lastPriceAt : 0;
+      this.pollGapMs.set(p.id, Math.max(this.pollGapMs.get(p.id) ?? 0, gapMs));
 
       p.lastPrice = price;
       p.lastPriceAt = Date.now();
@@ -154,6 +214,7 @@ export class PositionManager {
         return;
       }
 
+      order.detail += ` after ${(gapMs / 1000).toFixed(1)}s unpriced`;
       await this.executeExit(p, order);
     });
   }

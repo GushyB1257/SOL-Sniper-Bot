@@ -329,6 +329,15 @@ export const FIELDS: FieldSpec[] = [
   { key: 'PRICE_STALE_SECONDS', label: 'Give up when unpriceable for', bot: 'shared',
     group: 'Exit', kind: 'number', min: 30, max: 86_400, step: 30,
     help: 'Cannot READ a price is not the same as worthless. Be generous here.' },
+  { key: 'POSITION_TICK_INTERVAL_MS', label: 'Position poll interval', bot: 'shared',
+    group: 'Exit', kind: 'number', min: 250, max: 30_000, step: 250,
+    help: 'How often each open position is re-priced. This is the floor on how ' +
+      'late a stop can fire: the loss you realise is the trigger plus whatever ' +
+      'the price did since the last look.' },
+  { key: 'POSITION_PRICE_TIMEOUT_MS', label: 'Price read timeout', bot: 'shared',
+    group: 'Exit', kind: 'number', min: 500, max: 30_000, step: 250,
+    help: 'A read that takes longer than this has missed the beat it was for. ' +
+      'Abandoning it gets a current price sooner than waiting for a stale one.' },
   { key: 'PAPER_STARTING_BALANCE_SOL', label: 'Paper wallet balance', bot: 'shared',
     group: 'Risk', kind: 'number', min: 0.01, max: 100_000, step: 0.5,
     help: 'Paper mode only, and what every risk check sizes against. Changing it ' +
