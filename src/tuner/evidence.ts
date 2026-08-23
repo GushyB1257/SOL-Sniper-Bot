@@ -55,6 +55,53 @@ export interface Evidence {
   byDeployerBalance: Bucket[];
   byCreatorAge: Bucket[];
   byConfirmMove: Bucket[];
+  /**
+   * How well stop-triggered exits actually landed.
+   *
+   * `undefined` when no closed trade recorded both a trigger and a realised
+   * move — a bot with no price stops, or a journal written before exits carried
+   * the detail.
+   *
+   * This exists because the tuner could see that stop exits lost heavily and
+   * could not see WHY. A stop is the level at which the bot decides to sell,
+   * not the level it sells at, and the difference splits two ways with opposite
+   * fixes: a trigger set too loose, or a bot that looked too late. Everything
+   * above is silent on which, so the model was left inferring it from average
+   * loss size — and, correctly, hedging.
+   */
+  exitQuality?: ExitQuality;
+}
+
+/** One poll-gap band, and how far past its trigger the average exit in it landed. */
+export interface GapBucket {
+  key: string;
+  trades: number;
+  avgOvershootPct: number;
+  pnlSol: number;
+}
+
+export interface ExitQuality {
+  /** Stop exits that recorded both the trigger and the move realised. */
+  samples: number;
+  /** Mean trigger across them, so the overshoot has something to sit against. */
+  avgTriggerPct: number;
+  /** Mean move actually realised at the moment of the decision. */
+  avgRealisedPct: number;
+  /** Points past the trigger, on average. The whole quantity in question. */
+  avgOvershootPct: number;
+  /** Exits that also recorded a poll gap. Older journal rows will not have one. */
+  gapSamples: number;
+  medianGapSeconds: number;
+  p90GapSeconds: number;
+  /**
+   * Overshoot banded by how long the position went unpriced.
+   *
+   * The decisive table: overshoot that climbs with the gap is the bot arriving
+   * late, and overshoot flat across the bands is the market moving inside a
+   * single tick — in which case the trigger is what wants changing, not the
+   * cadence.
+   */
+  byPollGap: GapBucket[];
 }
 
 function numberFrom(note: string | undefined, re: RegExp): number | null {
@@ -62,6 +109,87 @@ function numberFrom(note: string | undefined, re: RegExp): number | null {
   if (!m?.[1]) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Pulls the exit detail back apart: `stop_loss: down -31.2% (stop -15.75%)
+ * after 6.4s unpriced`.
+ *
+ * The gap is optional on purpose — trades closed before exits started recording
+ * it still carry a usable trigger and realised move, and dropping them would
+ * throw away most of the history on the first run after the change.
+ */
+function exitDetail(
+  t: TradeJournalEntry,
+): { realisedPct: number; triggerPct: number; gapSeconds: number | null } | null {
+  const move = t.closeReason.match(/down (-?[\d.]+)% \(stop (-?[\d.]+)%\)/);
+  if (!move?.[1] || !move[2]) return null;
+  const realisedPct = Number(move[1]);
+  const triggerPct = Number(move[2]);
+  if (!Number.isFinite(realisedPct) || !Number.isFinite(triggerPct)) return null;
+  const gap = numberFrom(t.closeReason, /after ([\d.]+)s unpriced/);
+  return { realisedPct, triggerPct, gapSeconds: gap };
+}
+
+function median(xs: number[]): number {
+  if (xs.length === 0) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.floor((s.length - 1) / 2)]!;
+}
+
+function percentile(xs: number[], p: number): number {
+  if (xs.length === 0) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(p * s.length))]!;
+}
+
+function buildExitQuality(journal: readonly TradeJournalEntry[]): ExitQuality | undefined {
+  const rows = journal
+    .map((t) => {
+      const d = exitDetail(t);
+      return d === null ? null : { ...d, pnlSol: t.pnlSol };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+  if (rows.length === 0) return undefined;
+
+  const mean = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / (xs.length || 1);
+  // Both are negative percentages, so the overshoot is how much further the
+  // realised move fell past the trigger: |realised| - |trigger|.
+  const overshoot = (r: { realisedPct: number; triggerPct: number }): number =>
+    Math.abs(r.realisedPct) - Math.abs(r.triggerPct);
+
+  const withGap = rows.filter((r) => r.gapSeconds !== null);
+  const gaps = withGap.map((r) => r.gapSeconds!);
+
+  const bands = new Map<string, { trades: number; overshoot: number; pnlSol: number }>();
+  for (const r of withGap) {
+    const key = band(r.gapSeconds!, [1, 3, 6], 's');
+    const cur = bands.get(key) ?? { trades: 0, overshoot: 0, pnlSol: 0 };
+    cur.trades += 1;
+    cur.overshoot += overshoot(r);
+    cur.pnlSol += r.pnlSol;
+    bands.set(key, cur);
+  }
+
+  return {
+    samples: rows.length,
+    avgTriggerPct: mean(rows.map((r) => r.triggerPct)),
+    avgRealisedPct: mean(rows.map((r) => r.realisedPct)),
+    avgOvershootPct: mean(rows.map(overshoot)),
+    gapSamples: withGap.length,
+    medianGapSeconds: median(gaps),
+    p90GapSeconds: percentile(gaps, 0.9),
+    byPollGap: [...bands.entries()]
+      .map(([key, v]) => ({
+        key,
+        trades: v.trades,
+        avgOvershootPct: v.overshoot / v.trades,
+        pnlSol: v.pnlSol,
+      }))
+      // Ascending by band, not by trade count: the shape of the relationship is
+      // the finding, and it only reads as a trend in order.
+      .sort((a, b) => parseFloat(a.key.replace('<', '')) - parseFloat(b.key.replace('<', ''))),
+  };
 }
 
 function band(v: number, cuts: number[], unit: string): string {
@@ -129,6 +257,7 @@ export function buildEvidence(
     breakevenPct: breakevenGrossPct(costModel(cfg, avgSize)),
     feeKilled,
     exitReasons: bucketise(journal, (t) => t.closeReason.split(':')[0]?.trim() || 'unknown'),
+    exitQuality: buildExitQuality(journal),
     byEntryMcap: bucketise(journal, (t) => {
       const v = numberFrom(t.entryNote, /\$([\d.]+)k mcap/);
       return v === null ? null : band(v, [8, 12, 18], 'k');
@@ -177,6 +306,62 @@ export function buildEvidence(
 }
 
 /** Compact enough to sit in a prompt without burying the signal. */
+/**
+ * The stop-quality section.
+ *
+ * Written to be read as an argument rather than a table dump, because the
+ * conclusion depends on the SHAPE of the last block and a model reading a bare
+ * list of bands will not necessarily notice that.
+ */
+function renderExitQuality(q: ExitQuality | undefined): string {
+  if (!q) return '';
+
+  const head =
+    `\nStop exits: how far past the trigger they actually landed (${q.samples} trades)\n` +
+    `  trigger averaged ${q.avgTriggerPct.toFixed(1)}%, realised move averaged ` +
+    `${q.avgRealisedPct.toFixed(1)}%\n` +
+    `  overshoot: ${q.avgOvershootPct.toFixed(1)} points past the trigger, on average\n` +
+    '  A stop is the level the bot DECIDES to sell at, not the level it sells at.\n' +
+    '  Overshoot is everything between the two, and it is not a cost you can\n' +
+    '  price in — it is either the trigger sitting too loose or the bot looking\n' +
+    '  too late.\n';
+
+  if (q.gapSamples === 0) {
+    return (
+      head +
+      '  No poll-gap data on these trades yet (they closed before exits started\n' +
+      '  recording it). Until some accumulates, the split above is unattributed —\n' +
+      '  do not move POSITION_TICK_INTERVAL_MS on the overshoot figure alone.\n'
+    );
+  }
+
+  const rows = q.byPollGap
+    .map(
+      (r) =>
+        `  ${r.key.padEnd(10)} ${String(r.trades).padStart(4)} trades  ` +
+        `${r.avgOvershootPct.toFixed(1).padStart(6)} pts past trigger  ` +
+        `${r.pnlSol >= 0 ? '+' : ''}${r.pnlSol.toFixed(4)} SOL` +
+        (r.trades < 10 ? '  (thin)' : ''),
+    )
+    .join('\n');
+
+  return (
+    head +
+    `  time unpriced when the stop fired: median ${q.medianGapSeconds.toFixed(1)}s, ` +
+    `p90 ${q.p90GapSeconds.toFixed(1)}s (${q.gapSamples} trades)\n` +
+    '\nOvershoot by how long the position went unpriced:\n' +
+    rows +
+    '\n' +
+    '  Read the SHAPE, not the rows. Overshoot that climbs across the bands is\n' +
+    '  the bot arriving late -> POSITION_TICK_INTERVAL_MS (and check whether the\n' +
+    '  RPC health block shows reads queueing). Overshoot roughly flat across them\n' +
+    '  is the market moving inside a single tick, which a faster poll cannot\n' +
+    '  catch -> the trigger itself is what wants changing, or the entry that put\n' +
+    '  you in front of that move. Lowering the tick interval costs RPC load on\n' +
+    '  every position, so it needs the climbing shape to justify it.\n'
+  );
+}
+
 export function renderEvidence(e: Evidence): string {
   const b = (name: string, rows: Bucket[]): string =>
     rows.length < 2
@@ -206,6 +391,7 @@ export function renderEvidence(e: Evidence): string {
     `Breakeven move at the average size: ${e.breakevenPct.toFixed(2)}% gross\n` +
     `Losses that were wins before fees: ${e.feeKilled}\n` +
     b('Exits by reason', e.exitReasons) +
+    renderExitQuality(e.exitQuality) +
     // A reason is only useful if it names the parameter behind it. Without
     // this the model has to infer which timer produced an exit from hold times,
     // which is what it was reduced to while three separate timers all reported

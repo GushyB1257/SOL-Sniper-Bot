@@ -7,6 +7,7 @@ import { PaperExecutor } from '../src/execution/paper.js';
 import { RiskManager } from '../src/risk/risk-manager.js';
 import { Store } from '../src/state/store.js';
 import { loadConfig, type Config } from '../src/config.js';
+import { buildEvidence, renderEvidence } from '../src/tuner/evidence.js';
 import type { PriceSource } from '../src/execution/pricing.js';
 import type { BondingCurveState } from '../src/execution/bonding-curve.js';
 import type { BuyResult, Executor, Position, SellResult, TokenCandidate } from '../src/types.js';
@@ -205,5 +206,100 @@ describe('attributing an oversized loser', () => {
     // arrived late, and those have different fixes.
     expect(closed?.closeReason).toMatch(/stop_loss/);
     expect(closed?.closeReason).toMatch(/unpriced/);
+  });
+});
+
+describe('what the tuner can see', () => {
+  it('surfaces stop overshoot and the poll gap in the evidence it reasons over', async () => {
+    const p = await open(FAST);
+    await manager.tick();
+    prices.setMultiple(p.entryPrice, 0.5);
+    await manager.tick();
+
+    const e = buildEvidence('screener', store.journal(), cfg);
+
+    // Before this, `exitReasons` bucketed on the text before the first colon,
+    // so the entire detail — the realised move, the trigger it was measured
+    // against, and the poll gap — was thrown away. The tuner saw `stop_loss`
+    // and a P&L total, which is why its own advice on this could only name the
+    // two possible causes and say it could not reach the parameter.
+    expect(e.exitQuality).toBeDefined();
+    expect(e.exitQuality!.samples).toBe(1);
+    expect(e.exitQuality!.avgTriggerPct).toBeCloseTo(-20, 0);
+    // Fell to half of entry before anyone looked: ~50% down on a 20% stop.
+    expect(e.exitQuality!.avgRealisedPct).toBeLessThan(-45);
+    expect(e.exitQuality!.avgOvershootPct).toBeGreaterThan(25);
+    expect(e.exitQuality!.gapSamples).toBe(1);
+
+    const text = renderEvidence(e);
+    expect(text).toMatch(/past the trigger/);
+    expect(text).toMatch(/POSITION_TICK_INTERVAL_MS/);
+  });
+
+  it('still reads the trigger off trades that predate poll-gap recording', () => {
+    // The journal is append-only and full of history written before exits
+    // carried a gap. Refusing to parse those would throw away almost every
+    // sample on the first run after the change, which is exactly when the
+    // question is being asked.
+    store.appendJournal({
+      positionId: 'p1',
+      mint: FAST,
+      symbol: 'F4st',
+      creator: 'D',
+      openedAt: Date.now() - 60_000,
+      closedAt: Date.now(),
+      costSol: 0.25,
+      proceedsSol: 0.16,
+      pnlSol: -0.09,
+      pnlPct: -36,
+      closeReason: 'stop_loss: down -31.2% (stop -15.75%)',
+      safetyScore: 80,
+      holdSeconds: 60,
+      entryNote: 'screen: $12.6k mcap',
+    });
+
+    const q = buildEvidence('screener', store.journal(), cfg).exitQuality!;
+    expect(q.samples).toBe(1);
+    expect(q.avgOvershootPct).toBeCloseTo(15.45, 1);
+    // No gap on the row, so nothing to band it by — and the renderer must say
+    // so rather than letting the overshoot alone argue for a faster poll.
+    expect(q.gapSamples).toBe(0);
+    expect(renderEvidence(buildEvidence('screener', store.journal(), cfg))).toMatch(
+      /No poll-gap data/,
+    );
+  });
+
+  it('bands overshoot by gap so the shape is visible, ascending', () => {
+    const row = (gapS: number, realised: number): void =>
+      store.appendJournal({
+        positionId: 'p' + Math.random(),
+        mint: FAST,
+        symbol: 'F',
+        creator: 'D',
+        openedAt: Date.now() - 60_000,
+        closedAt: Date.now(),
+        costSol: 0.25,
+        proceedsSol: 0.2,
+        pnlSol: -0.05,
+        pnlPct: realised,
+        closeReason: `stop_loss: down ${realised}% (stop -15%) after ${gapS}s unpriced`,
+        safetyScore: 80,
+        holdSeconds: 60,
+        entryNote: 'screen',
+      });
+
+    row(0.4, -17);
+    row(0.6, -18);
+    row(4.5, -33);
+    row(8.0, -41);
+
+    const q = buildEvidence('screener', store.journal(), cfg).exitQuality!;
+    expect(q.byPollGap.map((r) => r.key)).toEqual(['<1s', '3-6s', '6s+']);
+    // Ascending overshoot across ascending bands is the signature of a late
+    // bot rather than a fast market. Sorting by trade count, as every other
+    // bucket in the evidence does, would have hidden it.
+    const pts = q.byPollGap.map((r) => r.avgOvershootPct);
+    expect(pts[0]).toBeLessThan(pts[1]!);
+    expect(pts[1]).toBeLessThan(pts[2]!);
   });
 });
