@@ -1,4 +1,5 @@
 import type { BotId } from '../bots/bot.js';
+import { checkRuleset, METRICS } from '../strategy/custom-exit.js';
 
 /**
  * What the auto-tuner is allowed to touch, and how far.
@@ -108,6 +109,14 @@ export interface Tunable {
   options?: string[];
   /** Text only: what a valid value looks like. */
   pattern?: RegExp;
+  /**
+   * Text only: a check a regex cannot express. Returns an error, or null.
+   *
+   * When present the raw string is validated as written, without the
+   * whitespace-stripping the pattern path does — that is safe for a
+   * comma-separated list and not safe in general for structured text.
+   */
+  validate?: (raw: string) => string | null;
   /**
    * True for parameters that decide how much capital is exposed, rather than
    * what gets traded. Surfaced in the log and on the dashboard so a change to
@@ -392,7 +401,22 @@ export const TUNABLES: Tunable[] = [
   // === Which entry and exit machinery runs at all ======================
   e('ENTRY_MODE', 'shared', ['screener', 'fast', 'ai', 'rules'],
     'How entries are decided: the screener filter, a momentum trigger, Claude, or creation-time rules.'),
-  e('EXIT_MODE', 'shared', ['ratchet', 'scalp', 'ladder'],
+  {
+    key: 'EXIT_RULES',
+    bot: 'shared',
+    kind: 'text',
+    validate: (raw) => checkRuleset(raw).error ?? null,
+    what:
+      'YOUR OWN exit strategy, as JSON, used when EXIT_MODE=custom. An ordered list of ' +
+      '{"when":[{"metric":M,"op":">"|">="|"<"|"<=","value":N}],"sell":<pct>|"all",' +
+      '"label":"snake_case"}. First match wins; each rule fires once. Metrics: ' +
+      `${METRICS.join(', ')}. Partial sells are shares of the ORIGINAL position and ` +
+      'must total <= 100. Labels lead the close reason, so every table you are shown ' +
+      'groups by rule and you can see which of your own rules works. Unlike a number ' +
+      'this has no step cap: one round can replace the whole strategy, which is higher ' +
+      'variance and is the point of it.',
+  },
+  e('EXIT_MODE', 'shared', ['ratchet', 'scalp', 'ladder', 'custom'],
     'Which exit machinery runs. Switching this changes every exit at once.'),
 
   // === Exit execution ==================================================
@@ -572,6 +596,13 @@ export function vetProposal(
   }
 
   if (spec.kind === 'text') {
+    if (spec.validate) {
+      const raw = String(proposed).trim();
+      const bad = spec.validate(raw);
+      if (bad) return { ok: false, reason: `${key}: ${bad}` };
+      if (raw === currentRaw.trim()) return { ok: false, reason: `${key}: unchanged` };
+      return { ok: true, value: raw, typed: raw };
+    }
     const want = String(proposed).replace(/\s+/g, '');
     if (spec.pattern && !spec.pattern.test(want)) {
       return { ok: false, reason: `${key}: "${want}" is not a valid value` };

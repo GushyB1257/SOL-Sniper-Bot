@@ -191,7 +191,12 @@ export class PositionManager {
 
       p.lastPrice = price;
       p.lastPriceAt = Date.now();
-      if (price > p.peakPrice) p.peakPrice = price;
+      if (price > p.peakPrice) {
+        p.peakPrice = price;
+        // Stamped so a rule can ask "how long since it last made a new high",
+        // which the ratchet could only approximate with fixed checkpoints.
+        p.peakAt = Date.now();
+      }
 
       // A readable price is worth recording even while backing off, so the
       // position's mark-to-market keeps updating between sell attempts.
@@ -218,6 +223,16 @@ export class PositionManager {
       }
 
       order.detail += ` after ${(gapMs / 1000).toFixed(1)}s unpriced`;
+
+      // A custom rule fires once. Marked BEFORE the sell is attempted, not
+      // after: a rule whose sell fails and is retried each tick would otherwise
+      // re-enter here every time, and a partial rule would keep taking its
+      // share of the position on every attempt.
+      if (order.ruleIndex !== undefined) {
+        p.firedRules = [...(p.firedRules ?? []), order.ruleIndex];
+        this.store.savePosition(p);
+      }
+
       await this.executeExit(p, order);
     });
   }
@@ -357,7 +372,12 @@ export class PositionManager {
     if (closed) {
       p.status = 'closed';
       p.closedAt = Date.now();
-      p.closeReason = `${order.reason}: ${order.detail}`;
+      // The RULE's label leads, not the generic 'custom_rule'. Every table in
+      // the tuner's evidence groups on the text before the first colon, so
+      // without this every invented rule would collapse into one bucket and
+      // the post-exit table could not say WHICH rule was cutting winners —
+      // which is the entire reason for letting it invent them.
+      p.closeReason = `${order.ruleLabel ?? order.reason}: ${order.detail}`;
       this.finalise(p, false);
     } else {
       this.store.savePosition(p);

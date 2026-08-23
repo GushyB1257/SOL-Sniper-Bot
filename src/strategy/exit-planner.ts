@@ -1,6 +1,7 @@
 import type { ExitOrder, LadderTier, Position } from '../types.js';
 import type { Config } from '../config.js';
 import { pctChange } from '../util/solana.js';
+import { checkRuleset, decideCustomExit } from './custom-exit.js';
 import { breakevenGrossPct, costModel, targetGrossPct, type CostModel } from './costs.js';
 
 /**
@@ -52,6 +53,7 @@ export function decideExit(ctx: ExitContext): ExitOrder | null {
   // trader must never do.
   if (p.managedBy === 'copy') return decideFollowExit(ctx);
 
+  if (cfg.EXIT_MODE === 'custom') return decideRuleExit(ctx);
   if (cfg.EXIT_MODE === 'ratchet') return decideRatchetExit(ctx);
   if (cfg.EXIT_MODE === 'scalp') return decideScalpExit(ctx);
 
@@ -504,7 +506,43 @@ export function decideRatchetExit(ctx: ExitContext): ExitOrder | null {
  * can go quiet holding a dead token indefinitely, and "mirror them exactly"
  * should not mean holding a zero forever while it occupies a position slot.
  */
-export function decideFollowExit(ctx: ExitContext): ExitOrder | null {
+export /**
+ * Runs a tuner-authored ruleset, behind the one guarantee it cannot waive.
+ *
+ * `MAX_HOLD_SECONDS` is checked FIRST and outside the ruleset. Everything else
+ * about how a trade ends is the ruleset's to decide — including having no stop
+ * at all, which the config already permits elsewhere — but "this position will
+ * eventually close" is not a strategy question. Without it a ruleset whose
+ * conditions never come true would hold a bag until the process restarted, and
+ * the tuner would be measuring a window that never ends.
+ *
+ * A ruleset that fails to parse holds rather than sells. It is vetted before it
+ * is ever written to config, so reaching here means something rewrote the file
+ * by hand; refusing to trade on an unreadable strategy is the safe direction,
+ * and the log line says so.
+ */
+function decideRuleExit(ctx: ExitContext): ExitOrder | null {
+  const { position: p, price, cfg, now } = ctx;
+  const heldSeconds = (now - p.openedAt) / 1000;
+
+  if (heldSeconds >= cfg.MAX_HOLD_SECONDS) {
+    return {
+      mint: p.mint,
+      positionId: p.id,
+      qty: p.remainingQty,
+      reason: 'max_hold',
+      closeAll: true,
+      tierIndexes: [],
+      detail: `held ${Math.round(heldSeconds)}s (max ${cfg.MAX_HOLD_SECONDS}s)`,
+    };
+  }
+
+  const check = checkRuleset(cfg.EXIT_RULES);
+  if (!check.ok || !check.ruleset) return null;
+  return decideCustomExit(check.ruleset, p, price, cfg, now);
+}
+
+function decideFollowExit(ctx: ExitContext): ExitOrder | null {
   const { position: p, cfg, now } = ctx;
   const heldSeconds = (now - p.openedAt) / 1000;
   if (heldSeconds < cfg.COPY_MAX_HOLD_SECONDS) return null;

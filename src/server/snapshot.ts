@@ -350,6 +350,7 @@ const CONFIG_GROUPS: Record<string, string[]> = {
   ],
   Exit: [
     'EXIT_MODE',
+    'EXIT_RULES',
     'EXIT_MAX_ATTEMPTS',
     'EXIT_RETRY_SECONDS',
     'PRICE_STALE_SECONDS',

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { z } from 'zod';
+import { checkRuleset } from './strategy/custom-exit.js';
 
 /**
  * Config is validated once at boot. A bot that trades real money should refuse
@@ -564,7 +565,26 @@ const schema = z.object({
    * scalp   : fee-aware net target with a give-back floor and a hard stop.
    * ladder  : the original multi-rung take-profit with trailing stops.
    */
-  EXIT_MODE: z.enum(['ratchet', 'scalp', 'ladder']).default('ratchet'),
+  EXIT_MODE: z.enum(['ratchet', 'scalp', 'ladder', 'custom']).default('ratchet'),
+  /**
+   * A strategy written as rules rather than chosen from the three above.
+   *
+   * JSON: an ordered list of `{ when: [...conditions], sell: <pct>|"all",
+   * label: "..." }`. First match wins and each rule fires once, the same
+   * semantics as a ladder rung. Only read when EXIT_MODE=custom.
+   *
+   * This exists so the auto-tuner can propose a strategy rather than only a
+   * setting. Ladder, ratchet and scalp are three fixed opinions about how a
+   * trade should end; nothing could express "sell half if it doubles inside
+   * twenty seconds, then hold the rest until it stops making new highs", and
+   * so nothing could find out whether that works.
+   *
+   * A ruleset is measured and reverted exactly like any other change. Note that
+   * unlike a number it has no step cap — a round can replace the whole strategy
+   * at once, which is higher variance than nudging a threshold and is the point
+   * of it.
+   */
+  EXIT_RULES: z.string().default('[]'),
 
   // === Ratchet exit (EXIT_MODE=ratchet) ===
   /** How often the "is it higher than last time?" question gets asked. */
@@ -990,6 +1010,18 @@ function crossValidate(cfg: Config): string[] {
   // A floor at or above the ceiling leaves no admissible band at all, so every
   // measured launch is rejected and the sniper goes quiet for a reason that
   // appears nowhere in its logs except one rejection at a time.
+  // A custom exit mode with no readable strategy would hold every position to
+  // MAX_HOLD_SECONDS while looking configured. Refuse at load rather than
+  // discover it one unsold bag at a time.
+  if (cfg.EXIT_MODE === 'custom') {
+    const check = checkRuleset(cfg.EXIT_RULES);
+    if (!check.ok) {
+      errors.push(`EXIT_MODE=custom but EXIT_RULES ${check.error}`);
+    } else if (check.ruleset!.length === 0) {
+      errors.push('EXIT_MODE=custom but EXIT_RULES is empty; nothing would ever sell');
+    }
+  }
+
   if (cfg.MIN_DEV_BUY_PCT > 0 && cfg.MIN_DEV_BUY_PCT >= cfg.MAX_DEV_BUY_PCT) {
     errors.push(
       `MIN_DEV_BUY_PCT (${cfg.MIN_DEV_BUY_PCT}) must be below MAX_DEV_BUY_PCT ` +

@@ -135,6 +135,11 @@ export interface Position {
 
   /** Best price seen since entry, for trailing stops. */
   peakPrice: number;
+  /**
+   * When that peak was set, so "it has stopped making new highs" is a thing a
+   * rule can ask about directly rather than approximate with a checkpoint.
+   */
+  peakAt?: number;
   lastPrice: number;
   lastPriceAt: number;
 
@@ -148,6 +153,9 @@ export interface Position {
   safetyScore: number;
   /** Free-form notes appended over the position's life, for the trade journal. */
   notes: string[];
+
+  /** Indexes of custom rules that have already fired. A rule fires once. */
+  firedRules?: number[];
 
   /** Consecutive failed sell attempts; resets on a successful sell. */
   exitFailures?: number;
@@ -194,6 +202,8 @@ export type ExitReason =
    * auto-tuner cannot attribute what it cannot distinguish.
    */
   | 'time_stop'
+  /** Fired by a rule the tuner wrote. `ruleLabel` says which. */
+  | 'custom_rule'
   /**
    * Ratchet: below breakeven at the FIRST checkpoint, so the entry never
    * started. Governed by `RATCHET_FIRST_CHECKPOINT_SECONDS`. This is the
@@ -243,6 +253,10 @@ export interface ExitOrder {
   tierIndexes: number[];
   /** Human-readable trigger, for the log and the trade journal. */
   detail: string;
+  /** Custom rulesets: which rule fired, so it is marked used and not repeated. */
+  ruleIndex?: number;
+  /** That rule's label, so the journal can group exits by rule. */
+  ruleLabel?: string;
 }
 
 export interface BuyResult {

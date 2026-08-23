@@ -307,6 +307,12 @@ export const FIELDS: FieldSpec[] = [
     kind: 'number', min: 0, max: 100, step: 0.05 },
   { key: 'EXIT_MODE', label: 'Exit mode', bot: 'shared', group: 'Exit', kind: 'enum',
     options: ['ratchet', 'scalp', 'ladder'], help: 'ratchet has no stop loss.' },
+  { key: 'EXIT_RULES', label: 'Custom exit strategy (JSON)', bot: 'shared',
+    group: 'Exit', kind: 'text',
+    help: 'Only used when the exit mode is "custom". An ordered list of rules: ' +
+      'conditions over the position, and how much of it to sell. First match wins ' +
+      'and each rule fires once. This is what lets the auto-tuner propose a STRATEGY ' +
+      'rather than only a setting — it is measured and reverted like any other change.' },
   { key: 'CHECKPOINT_SECONDS', label: 'Checkpoint', bot: 'shared', group: 'Exit',
     kind: 'number', min: 5, max: 3600, step: 5, help: 'Must beat the last check within this.' },
   { key: 'RATCHET_FIRST_CHECKPOINT_SECONDS', label: 'First checkpoint', bot: 'shared', group: 'Exit',
