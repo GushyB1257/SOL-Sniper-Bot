@@ -2,6 +2,24 @@ import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from '
 import { join, dirname } from 'node:path';
 import { logger } from '../logger.js';
 
+/**
+ * RPC counters at a moment in time, so a window can be measured as a delta.
+ *
+ * Every field but the first two is optional because entries written before
+ * this widened are already in the ledger on disk, and a health block that
+ * silently reported zeros for them would be worse than one that says it
+ * cannot tell.
+ */
+export interface RpcSnapshot {
+  requests: number;
+  rateLimited: number;
+  at?: number;
+  retries?: number;
+  givenUp?: number;
+  waitedMs?: number;
+}
+
+
 const log = logger('tuner');
 
 /** One parameter the tuner moved, and what it was before. */
@@ -59,8 +77,8 @@ export interface Experiment {
    * and a confounded window is told to the next round rather than silently
    * counted as evidence.
    */
-  rpcAtStart?: { requests: number; rateLimited: number };
-  rpcAtDecision?: { requests: number; rateLimited: number };
+  rpcAtStart?: RpcSnapshot;
+  rpcAtDecision?: RpcSnapshot;
 }
 
 interface LedgerFile {

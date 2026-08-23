@@ -9,7 +9,7 @@ import { errMessage } from '../util/async.js';
 import type { TradeJournalEntry } from '../types.js';
 import { buildEvidence, renderEvidence, type Evidence } from './evidence.js';
 import { TUNABLES, TUNABLE_BY_KEY, vetProposal } from './limits.js';
-import { TuningLedger, type Change, type Experiment } from './ledger.js';
+import { TuningLedger, type Change, type Experiment, type RpcSnapshot } from './ledger.js';
 import { rpcStats } from '../util/rpc-throttle.js';
 
 const log = logger('tuner');
@@ -138,9 +138,21 @@ export class AutoTuner {
   private lastError?: string;
   private lastErrorAt = 0;
 
+  /**
+   * RPC counters as of the last round, so the next one can be measured as a
+   * delta rather than as totals since boot.
+   *
+   * Totals since boot would answer the wrong question: a session that was badly
+   * rate limited for its first hour and healthy since reads as unhealthy
+   * forever, and the tuner would keep declining to act on a problem that had
+   * already gone away.
+   */
+  private lastRpc: RpcSnapshot;
+
   constructor(private readonly deps: TunerDeps) {
     this.ledger = new TuningLedger(deps.dataDir);
     this.claude = new ClaudeAnalyst(deps.cfg);
+    this.lastRpc = rpcHealth();
   }
 
   get history(): readonly Experiment[] {
@@ -575,6 +587,12 @@ export class AutoTuner {
       )
       .join('\n');
 
+    // Measured before the call, and the snapshot rolled forward straight after,
+    // so the window is "since you last looked" — the same window the trades in
+    // the evidence came from.
+    const rpcBlock = renderRpcHealth(this.lastRpc, this.deps.cfg);
+    this.lastRpc = rpcHealth();
+
     const result = await this.claude.ask<Proposal>(
       {
         label: `tuner:${bot}`,
@@ -592,7 +610,8 @@ export class AutoTuner {
         timeoutMs: this.deps.cfg.AI_TUNER_TIMEOUT_MS,
         jsonSchema: JSON_SCHEMA,
         userContent:
-          `${renderEvidence(evidence)}\n\n` +
+          `${renderEvidence(evidence)}\n` +
+          `${rpcBlock}\n` +
           `PARAMETERS YOU MAY CHANGE (current value, allowed values):\n${catalogue}\n\n` +
           'Parameters marked *** RISK *** decide how much capital is exposed rather than ' +
           'what gets traded. In live mode they move real money. Propose one only when the ' +
@@ -692,9 +711,105 @@ export class AutoTuner {
  * fail on the mismatch rather than the model quietly being lied to.
  */
 /** RPC counters right now, for stamping on an experiment. */
-function rpcHealth(): { requests: number; rateLimited: number } {
+function rpcHealth(): RpcSnapshot {
   const s = rpcStats();
-  return { requests: s.requests, rateLimited: s.rateLimited };
+  return {
+    at: Date.now(),
+    requests: s.requests,
+    rateLimited: s.rateLimited,
+    retries: s.retries,
+    givenUp: s.givenUp,
+    waitedMs: s.waitedMs,
+  };
+}
+
+/**
+ * What the RPC layer did over the round, and which constraint — if any — was
+ * actually binding.
+ *
+ * The tuner asked for this in as many words: "check the RPC dashboard for read
+ * queueing/429s alongside this window; if the rate is pinned at the ceiling
+ * with no 429s, the tick reduction will not help on its own." It could not
+ * check, because nothing about RPC health reached it except a confounding
+ * caveat that fires only above 5% rate limiting — which is silent in exactly
+ * the state it was asking about.
+ *
+ * Three states, three different actions, and they are easy to confuse:
+ *
+ *  - Rate well under the ceiling, no 429s: RPC is not the constraint at all.
+ *  - Rate at the ceiling, no 429s: OUR OWN cap is the constraint. The provider
+ *    is not pushing back, so headroom is the lever and a tighter trigger is not.
+ *  - 429s: the provider is the constraint and the ceiling is already above what
+ *    it grants. Raising it buys more 429s, not more throughput.
+ */
+export function renderRpcHealth(
+  start: RpcSnapshot | undefined,
+  cfg: Config,
+  end: RpcSnapshot = rpcHealth(),
+): string {
+  if (!start || start.at === undefined) {
+    return '\nRPC health: no baseline snapshot yet — available from the next round.\n';
+  }
+
+  const seconds = (end.at! - start.at) / 1000;
+  const requests = end.requests - start.requests;
+  if (seconds < 30 || requests < 100) {
+    return `\nRPC health: too little traffic this window (${requests} calls in ` +
+      `${Math.round(seconds)}s) to say anything.\n`;
+  }
+
+  const limited = end.rateLimited - start.rateLimited;
+  const limitedPct = (limited / requests) * 100;
+  const perSec = requests / seconds;
+  const ceiling = cfg.RPC_MAX_REQUESTS_PER_SEC;
+  const usedPct = ceiling > 0 ? (perSec / ceiling) * 100 : 0;
+  const waited = (end.waitedMs ?? 0) - (start.waitedMs ?? 0);
+  const queueMs = waited / requests;
+  const live = rpcStats();
+
+  // "Pinned" is deliberately loose. The bucket meters per second, so a window
+  // averaging 85% of the ceiling has spent much of it hard against the cap —
+  // waiting for a demand curve to average 100% would never fire.
+  const pinned = ceiling > 0 && usedPct >= 85;
+
+  let verdict: string;
+  if (limitedPct >= 2) {
+    verdict =
+      `  BINDING CONSTRAINT: the provider. ${limitedPct.toFixed(1)}% of calls were rate\n` +
+      `  limited, and the adaptive limiter has backed the rate down to ` +
+      `${live.rateNow.toFixed(1)}/s.\n` +
+      `  RPC_MAX_REQUESTS_PER_SEC (${ceiling}) is already above what this endpoint\n` +
+      '  grants. Raising it produces more 429s, not more throughput. Any result\n' +
+      '  measured over this window is also less trustworthy than its trade count\n' +
+      '  suggests.\n';
+  } else if (pinned) {
+    verdict =
+      `  BINDING CONSTRAINT: your own ceiling. ${perSec.toFixed(1)}/s sustained against a\n` +
+      `  configured ${ceiling}/s, with only ${limitedPct.toFixed(1)}% rate limited — the provider\n` +
+      '  is not pushing back. More headroom (RPC_MAX_REQUESTS_PER_SEC,\n' +
+      '  RPC_MAX_CONCURRENT) is the lever here. A latency parameter such as\n' +
+      '  POSITION_TICK_INTERVAL_MS cannot help while calls are queueing behind a\n' +
+      '  cap: polling more often against a saturated limiter adds queue depth\n' +
+      '  rather than fresher prices.\n';
+  } else {
+    verdict =
+      `  NOT THE CONSTRAINT: ${perSec.toFixed(1)}/s sustained is ${usedPct.toFixed(0)}% of the ${ceiling}/s\n` +
+      `  ceiling and ${limitedPct.toFixed(1)}% of calls were rate limited. There is no queueing\n` +
+      '  problem to fix, so more RPC headroom will not change anything — and a\n' +
+      '  latency symptom that persists here is not an RPC symptom.\n';
+  }
+
+  return (
+    `\nRPC health over this window (${requests} calls in ${(seconds / 60).toFixed(1)} min)\n` +
+    `  sustained ${perSec.toFixed(1)}/s of a ${ceiling}/s ceiling (${usedPct.toFixed(0)}%), ` +
+    `currently allowing ${live.rateNow.toFixed(1)}/s\n` +
+    `  rate limited ${limited} (${limitedPct.toFixed(1)}%)   retried ` +
+    `${(end.retries ?? 0) - (start.retries ?? 0)}   given up ` +
+    `${(end.givenUp ?? 0) - (start.givenUp ?? 0)}\n` +
+    `  average queue delay ${queueMs.toFixed(0)}ms per call   peak in flight ` +
+    `${live.peakInFlight} of RPC_MAX_CONCURRENT=${cfg.RPC_MAX_CONCURRENT}\n` +
+    verdict
+  );
 }
 
 /**
@@ -741,6 +856,7 @@ How to read the evidence:
 - The required win rate is computed from the average winner and average loser. If the actual win rate is below it, the SHAPE is wrong — winners are being closed too early or losers held too long — and moving entry filters will not close that gap.
 - Buckets marked (thin) have under 10 trades. They are noise. Do not move a threshold because of one.
 - A bucket only justifies a change if it is both LARGE and clearly losing. One big loser in an otherwise fine bucket is not a signal.
+- The RPC health block already answers "is the endpoint the problem", so do not ask for it to be checked. It names which constraint was binding over the same window the trades came from, and each state implies a different move: the provider rate limiting means the ceiling is already too high; saturation at your own ceiling with no 429s means RPC_MAX_REQUESTS_PER_SEC and RPC_MAX_CONCURRENT are the lever and a latency parameter is not; neither means RPC is not involved and a latency symptom is coming from somewhere else. All three of those parameters are yours.
 
 Rules:
 
