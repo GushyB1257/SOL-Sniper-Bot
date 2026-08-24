@@ -285,6 +285,22 @@ export const FIELDS: FieldSpec[] = [
   { key: 'AUTO_TUNE_ENABLED', label: 'Auto-tune strategies', bot: 'shared', group: 'Auto-tune',
     kind: 'boolean',
     help: 'Let Claude adjust strategy settings from each bot\'s own results. Never touches position size or a risk limit. Every change is measured and reverted if it does not beat its baseline.' },
+  { key: 'TUNER_SCREENER_ENABLED', label: 'Auto-tune this bot', bot: 'screener', group: 'Auto-tune',
+    kind: 'boolean',
+    help: 'Auto-tune THIS bot. The master switch above gates everything; this narrows it, ' +
+      'so one bot can be frozen for a clean measurement week while the others keep learning.' },
+  { key: 'TUNER_SNIPER_ENABLED', label: 'Auto-tune this bot', bot: 'sniper', group: 'Auto-tune',
+    kind: 'boolean',
+    help: 'Auto-tune THIS bot. The master switch above gates everything; this narrows it, ' +
+      'so one bot can be frozen for a clean measurement week while the others keep learning.' },
+  { key: 'TUNER_COPY_ENABLED', label: 'Auto-tune this bot', bot: 'copy', group: 'Auto-tune',
+    kind: 'boolean',
+    help: 'Auto-tune THIS bot. The master switch above gates everything; this narrows it, ' +
+      'so one bot can be frozen for a clean measurement week while the others keep learning.' },
+  { key: 'TUNER_ARB_ENABLED', label: 'Auto-tune this bot', bot: 'arb', group: 'Auto-tune',
+    kind: 'boolean',
+    help: 'Auto-tune THIS bot. The master switch above gates everything; this narrows it, ' +
+      'so one bot can be frozen for a clean measurement week while the others keep learning.' },
   { key: 'TUNER_INTERVAL_MINUTES', label: 'Min gap between changes', bot: 'shared', group: 'Auto-tune',
     kind: 'number', min: 1, max: 10_080, step: 5,
     help: 'A floor on how often a bot can change, not a schedule — reviews are triggered by trade count. Timed from the last change, so measuring it counts toward the gap rather than adding to it.' },

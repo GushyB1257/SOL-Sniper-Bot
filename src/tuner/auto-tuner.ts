@@ -299,8 +299,21 @@ export class AutoTuner {
     }
   }
 
+  /** The per-bot switch, read fresh each tick so a dashboard change applies. */
+  private tuningEnabledFor(bot: string): boolean {
+    const cfg = this.deps.cfg as unknown as Record<string, unknown>;
+    const flag = cfg[`TUNER_${bot.toUpperCase()}_ENABLED`];
+    // A bot without its own switch (a future one, before the key is added)
+    // stays tunable — the master switch is the gate that fails safe.
+    return flag !== false;
+  }
+
   private async tuneBot(bot: string, store: Store): Promise<void> {
     const { cfg } = this.deps;
+    if (!this.tuningEnabledFor(bot)) {
+      log.debug(`${bot}: auto-tune is switched off for this bot`);
+      return;
+    }
     const journal = store.journal();
 
     // The cooldown is not about statistics — the trade count handles that. It

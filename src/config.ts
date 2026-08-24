@@ -777,6 +777,20 @@ const schema = z.object({
    */
   AUTO_TUNE_ENABLED: bool.default('false'),
   /**
+   * Per-bot switches under the master one.
+   *
+   * These exist because the four strategies mature at different rates. A bot
+   * mid-experiment on a promising change and a bot whose strategy you want
+   * frozen for a clean week of measurement are both reasons to stop tuning ONE
+   * bot — and the only control was the master switch, which threw away every
+   * other bot's learning to get it. All default on: the master switch still
+   * gates everything, and these only narrow it.
+   */
+  TUNER_SCREENER_ENABLED: bool.default('true'),
+  TUNER_SNIPER_ENABLED: bool.default('true'),
+  TUNER_COPY_ENABLED: bool.default('true'),
+  TUNER_ARB_ENABLED: bool.default('true'),
+  /**
    * Minimum minutes between reviews OF THE SAME BOT.
    *
    * The trade count is what decides whether a change is justified — 40 trades

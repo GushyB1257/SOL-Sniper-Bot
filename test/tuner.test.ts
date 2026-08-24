@@ -102,6 +102,37 @@ function cooled(t: AutoTuner): void {
   }
 }
 
+describe('per-bot switches', () => {
+  it('skips a bot whose own switch is off, and only that bot', async () => {
+    cfg = loadConfig({ ...ENV(dir), TUNER_SCREENER_ENABLED: 'false' });
+    settings = new RuntimeSettings(cfg, ENV(dir), dir);
+    const other = new Store(dir, 'sniper');
+    fill(20);
+    for (let i = 0; i < 20; i++) other.appendJournal(trade());
+
+    const asked: string[] = [];
+    const t = tunerWith((bot: string) => {
+      asked.push(bot);
+      return { changes: [] };
+    }, new Map([['screener', store], ['sniper', other]]));
+    await t.tick();
+
+    // The frozen bot never reaches the model; the other still does. This is
+    // the whole point of a per-bot switch: freezing one strategy for a clean
+    // measurement week must not cost every other bot its learning.
+    expect(asked).not.toContain('screener');
+    expect(asked).toContain('sniper');
+    other.close();
+  });
+
+  it('defaults every switch on, so the master switch stays the only gate', () => {
+    expect(cfg.TUNER_SCREENER_ENABLED).toBe(true);
+    expect(cfg.TUNER_SNIPER_ENABLED).toBe(true);
+    expect(cfg.TUNER_COPY_ENABLED).toBe(true);
+    expect(cfg.TUNER_ARB_ENABLED).toBe(true);
+  });
+});
+
 describe('what the tuner may touch', () => {
   it('still refuses the four things that are excluded on purpose', () => {
     // The list is broad by request, but these four are out for reasons that
@@ -116,6 +147,12 @@ describe('what the tuner may touch', () => {
       'TUNER_MIN_TRADES',
       'TUNER_MAX_CHANGES_PER_ROUND',
       'TUNER_MAX_STEP_PCT',
+      // The per-bot switches are the same mechanism, per bot: a tuner able to
+      // re-enable tuning on a bot someone froze has overridden the human.
+      'TUNER_SCREENER_ENABLED',
+      'TUNER_SNIPER_ENABLED',
+      'TUNER_COPY_ENABLED',
+      'TUNER_ARB_ENABLED',
       'PROGRAM_FEE_PCT',
       'ROUTER_FEE_PCT',
       'SOL_USD_FALLBACK',
@@ -162,6 +199,12 @@ describe('what the tuner may touch', () => {
       'TUNER_MIN_TRADES',
       'TUNER_MAX_CHANGES_PER_ROUND',
       'TUNER_MAX_STEP_PCT',
+      // The per-bot switches are the same mechanism, scoped: a tuner able to
+      // re-enable tuning on a bot someone froze has overridden the human.
+      'TUNER_SCREENER_ENABLED',
+      'TUNER_SNIPER_ENABLED',
+      'TUNER_COPY_ENABLED',
+      'TUNER_ARB_ENABLED',
       // Facts about the world, not choices.
       'PROGRAM_FEE_PCT',
       'ROUTER_FEE_PCT',
