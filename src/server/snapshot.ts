@@ -195,6 +195,12 @@ export interface TunerView {
   nextRunAt: number;
   /** Where each bot sits in the gather -> change -> measure cycle. */
   byBot: Record<string, { phase: string; trades: number; needed: number; since?: number }>;
+  /**
+   * Each bot's own tuning switch. A bot absent from this map is not in the
+   * tuner's loop at all (the Bitcoin lab carries its own optimizer), which is
+   * a different fact from "switched off" and renders differently.
+   */
+  perBot: Record<string, boolean>;
   lastError?: string;
   /** When it happened — a stale error and a recurring one read the same without it. */
   lastErrorAt?: number;
@@ -252,6 +258,7 @@ export interface BotView {
   /** New entries suspended, existing positions still managed. */
   paused: boolean;
   stats: SessionStats;
+  currency: 'SOL' | 'USD';
   pnl: PnlSummary;
   risk: RiskView;
   positions: PositionView[];
@@ -655,6 +662,15 @@ export interface BotInput {
   /** Set only for the arbitrage tab. */
   arb: ArbView | null;
   btc: BtcView | null;
+  /** What this bot's P&L is denominated in. The memecoin bots trade SOL; the
+   * Bitcoin lab trades USD, and a number wearing the wrong unit is a lie. */
+  currency: 'SOL' | 'USD';
+  /**
+   * Replaces the journal-derived summary when set. The Bitcoin lab's results
+   * live in its forward-test state rather than the shared journal, so summing
+   * an empty journal would show zeros over a tab full of real numbers.
+   */
+  pnlOverride?: PnlSummary | null;
 }
 
 export interface SnapshotInput {
@@ -698,7 +714,8 @@ export function buildBotView(input: BotInput, cfg: Config, solUsd: number, now: 
     running: input.running,
     paused: input.paused,
     stats: input.stats,
-    pnl: summarisePnl(journal, open, input.store.todayPnl()),
+    currency: input.currency,
+    pnl: input.pnlOverride ?? summarisePnl(journal, open, input.store.todayPnl()),
     risk: {
       killSwitch: false,
       breakerActive: now < input.store.breakerUntil,

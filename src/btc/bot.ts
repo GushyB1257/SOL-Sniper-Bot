@@ -351,6 +351,75 @@ export class BtcBot {
     renameSync(tmp, this.file);
   }
 
+  /**
+   * The shared P&L header, in the lab's own terms.
+   *
+   * The other bots' header sums the trade journal; the lab's journal is empty
+   * (its results live in forward-test state), so without this the header showed
+   * zeros over a tab full of real numbers — and labelled them SOL, which this
+   * bot has never touched. Every field here is USD.
+   *
+   * Per-trade figures (best, worst, the averages) are derived from consecutive
+   * fills of the same strategy: the equity change between them is the round
+   * trip that closed at the second fill, costs included. The fills list is
+   * capped, so these describe recent trades; the totals describe everything.
+   */
+  pnlSummary(): {
+    netSol: number;
+    todaySol: number;
+    realizedSol: number;
+    unrealizedSol: number;
+    deployedSol: number;
+    trades: number;
+    wins: number;
+    losses: number;
+    winRatePct: number;
+    profitFactor: number | null;
+    avgWinSol: number;
+    avgLossSol: number;
+    bestSol: number;
+    worstSol: number;
+    returnPct: number;
+  } {
+    const forwards = Object.values(this.lab.forward);
+    const notional = this.cfg.BTC_PAPER_NOTIONAL_USD;
+    const net = forwards.reduce((a, f) => a + (f.equityUsd - notional), 0);
+    const deployed = forwards.length * notional;
+    const trades = forwards.reduce((a, f) => a + f.trades, 0);
+    const wins = forwards.reduce((a, f) => a + f.wins, 0);
+
+    const perTrade: Array<{ at: number; pnl: number }> = [];
+    const lastEquity = new Map<string, number>();
+    for (const fill of this.lab.fills) {
+      const prev = lastEquity.get(fill.id);
+      if (prev !== undefined) perTrade.push({ at: fill.at, pnl: fill.equityUsd - prev });
+      lastEquity.set(fill.id, fill.equityUsd);
+    }
+    const tradeWins = perTrade.filter((x) => x.pnl > 0);
+    const tradeLosses = perTrade.filter((x) => x.pnl <= 0);
+    const grossWin = tradeWins.reduce((a, b) => a + b.pnl, 0);
+    const grossLoss = Math.abs(tradeLosses.reduce((a, b) => a + b.pnl, 0));
+    const dayStart = new Date(this.now()).setUTCHours(0, 0, 0, 0);
+
+    return {
+      netSol: net,
+      todaySol: perTrade.filter((x) => x.at >= dayStart).reduce((a, b) => a + b.pnl, 0),
+      realizedSol: net,
+      unrealizedSol: 0,
+      deployedSol: deployed,
+      trades,
+      wins,
+      losses: Math.max(0, trades - wins),
+      winRatePct: trades > 0 ? (wins / trades) * 100 : 0,
+      profitFactor: grossLoss > 0 ? grossWin / grossLoss : tradeWins.length > 0 ? null : 0,
+      avgWinSol: tradeWins.length > 0 ? grossWin / tradeWins.length : 0,
+      avgLossSol: tradeLosses.length > 0 ? -grossLoss / tradeLosses.length : 0,
+      bestSol: perTrade.length > 0 ? Math.max(...perTrade.map((x) => x.pnl)) : 0,
+      worstSol: perTrade.length > 0 ? Math.min(...perTrade.map((x) => x.pnl)) : 0,
+      returnPct: deployed > 0 ? (net / deployed) * 100 : 0,
+    };
+  }
+
   // ---- the tab ----------------------------------------------------------
 
   view(): BtcView {

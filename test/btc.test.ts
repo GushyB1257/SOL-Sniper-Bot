@@ -303,6 +303,36 @@ describe('the lab bot', () => {
     expect(moved.length).toBeGreaterThan(0);
   });
 
+  it('reports its P&L header in USD terms that add up', async () => {
+    let now = NOW;
+    const candles = [...history];
+    const b = bot({ candles, now: () => now });
+    await b.tick();
+
+    const last = candles[candles.length - 1]!;
+    let price = last.c;
+    for (let i = 1; i <= 80; i++) {
+      price *= i % 2 === 0 ? 0.97 : 1.005; // choppy slide: forces position changes
+      const t = last.t + i * HOUR_MS;
+      candles.push({ t, o: price, h: price * 1.001, l: price * 0.999, c: price, v: 400, qv: price * 400, n: 1000, tb: 80 });
+    }
+    now = NOW + 80 * HOUR_MS;
+    await b.tick();
+
+    const pnl = b.pnlSummary();
+    const v = b.view();
+
+    // The header's net must be exactly the sum of the forward equities against
+    // their notionals — the same numbers the tab shows, not a parallel account.
+    const expectedNet = v.forward.reduce((a, f) => a + (f.equityUsd - 1000), 0);
+    expect(pnl.netSol).toBeCloseTo(expectedNet, 6);
+    expect(pnl.deployedSol).toBe(v.forward.length * 1000);
+    expect(pnl.trades).toBe(v.forward.reduce((a, f) => a + f.trades, 0));
+    expect(Number.isFinite(pnl.returnPct)).toBe(true);
+    // Best/worst derive from fill-to-fill deltas; with trades they must exist.
+    if (pnl.trades > 1) expect(pnl.bestSol).toBeGreaterThanOrEqual(pnl.worstSol);
+  });
+
   it('survives a restart with its sweep and forward record intact', async () => {
     const b = bot();
     await b.tick();

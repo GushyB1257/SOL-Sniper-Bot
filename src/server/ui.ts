@@ -795,8 +795,8 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
 
       tip.innerHTML = '';
       tip.appendChild(el('div', 't-sym', best.d.symbol));
-      tip.appendChild(el('div', 't-row', 'trade P&L  ' + signed(best.d.pnl, 4) + ' SOL'));
-      tip.appendChild(el('div', 't-row', 'cumulative ' + signed(best.d.cum, 4) + ' SOL'));
+      tip.appendChild(el('div', 't-row', 'trade P&L  ' + signed(best.d.pnl, 4) + ' ' + CUR));
+      tip.appendChild(el('div', 't-row', 'cumulative ' + signed(best.d.cum, 4) + ' ' + CUR));
       tip.appendChild(el('div', 't-row', new Date(best.d.t).toLocaleString()));
       tip.style.opacity = '1';
       var px = (best.x / W) * box.width;
@@ -1038,7 +1038,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       var track = el('div', 'bar-track');
       var bar = el('div', 'bar');
       bar.style.width = Math.max(2, (r.count / max) * 100) + '%';
-      bar.title = r.count + ' exits, ' + signed(r.pnlSol, 4) + ' SOL';
+      bar.title = r.count + ' exits, ' + signed(r.pnlSol, 4) + ' ' + CUR;
       track.appendChild(bar);
       row.appendChild(track);
       // Value at the tip, plus the P&L that reason produced.
@@ -1083,11 +1083,46 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     if (!t.enabled) {
       sub.textContent = 'off';
       host.appendChild(el('div', 'tile-note',
-        'Claude is not tuning this bot. Turn on "Auto-tune strategies" under Settings ' +
-        'and it will adjust the filters from this bot\\'s own results.'));
+        'Claude is not tuning anything: the MASTER switch is off. Turn on ' +
+        '“Auto-tune (all bots)” under Settings, then use the per-bot switch here ' +
+        'to control each strategy separately.'));
       return;
     }
 
+    // Not in the tuner's loop at all — a different fact from "switched off".
+    if (!t.perBot || !(botId in t.perBot)) {
+      sub.textContent = 'n/a';
+      host.appendChild(el('div', 'tile-note',
+        'This bot is not in the auto-tuner’s loop. The Bitcoin lab carries its own ' +
+        'optimizer — the daily sweep already tests the whole strategy catalogue ' +
+        'against a year of data, which a one-change-per-round proposer cannot improve on.'));
+      return;
+    }
+
+    // The master is on; this bot's OWN switch decides, and it toggles right
+    // here. This card used to show only the master state, which taught the
+    // reasonable-but-wrong lesson that the master WAS the per-bot control —
+    // and the master turns off every bot's learning at once.
+    var mine = t.perBot[botId] !== false;
+    var toggle = el('button', 'badge ' + (mine ? 'live' : 'paper'),
+      mine ? 'ON for this bot' : 'OFF for this bot');
+    toggle.style.cursor = 'pointer';
+    toggle.style.border = 'none';
+    toggle.title = 'Toggles auto-tuning for ' + botId + ' only. The other bots keep learning.';
+    toggle.addEventListener('click', function () {
+      var key = 'TUNER_' + botId.toUpperCase() + '_ENABLED';
+      var patch = {};
+      patch[key] = String(!mine);
+      post('/api/settings', { patch: patch });
+    });
+    host.appendChild(toggle);
+
+    if (!mine) {
+      host.appendChild(el('div', 'tile-note',
+        'Frozen: Claude is not changing this bot’s settings. Its parameters hold ' +
+        'still — useful for a clean measurement week — while the other bots keep learning.'));
+      return;
+    }
     sub.textContent = 'triggered by trades \u00b7 min gap ' + t.intervalMinutes + ' min';
 
     // Where this bot is in the cycle, with the trade count that gates it. This
@@ -1164,7 +1199,14 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     }
 
     var head = el('div', 'tuner-head');
-    var pill = el('span', 'badge ' + (t.enabled ? 'live' : 'paper'), t.enabled ? 'ON' : 'OFF');
+    // Master AND this bot's own switch. Showing only the master here is how
+    // the master got mistaken for the per-bot control.
+    var inLoop = t.perBot && (botId in t.perBot);
+    var mineOn = t.enabled && inLoop && t.perBot[botId] !== false;
+    var pillText = !t.enabled ? 'OFF'
+      : !inLoop ? 'N/A for this bot'
+      : t.perBot[botId] !== false ? 'ON' : 'OFF for this bot';
+    var pill = el('span', 'badge ' + (mineOn ? 'live' : 'paper'), pillText);
     head.appendChild(pill);
     head.appendChild(el('span', 'meta',
       t.enabled
@@ -1403,6 +1445,9 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
   }
 
   // ---- bot switching ---------------------------------------------------
+  // What the active bot's P&L is denominated in. The memecoin bots trade SOL;
+  // the Bitcoin lab trades USD, and a number wearing the wrong unit is a lie.
+  var CUR = 'SOL';
   var activeBot = null;
   try { activeBot = localStorage.getItem('sniper-bot'); } catch (e) {}
 
@@ -1951,8 +1996,10 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
       s.executor + ' · ' + s.discovery + ' · up ' + dur(s.uptimeSeconds) +
       ' · SOL $' + (s.solUsd ? s.solUsd.toFixed(2) : '?') + (s.solPriceLive ? '' : ' (fallback)');
 
+    CUR = b.currency || 'SOL';
+
     var hero = $('heroPnl');
-    hero.textContent = signed(b.pnl.netSol, 4) + ' SOL';
+    hero.textContent = signed(b.pnl.netSol, 4) + ' ' + CUR;
     hero.className = 'hero-val num ' + signClass(b.pnl.netSol);
     $('heroSub').textContent =
       'realised ' + signed(b.pnl.realizedSol, 4) + ' · open ' + signed(b.pnl.unrealizedSol, 4) +
@@ -1968,7 +2015,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     }
     hrow('Return on capital deployed',
       b.pnl.trades ? signed(b.pnl.returnPct, 1) + '%' : '—', signClass(b.pnl.returnPct));
-    hrow('Total deployed', plain(b.pnl.deployedSol, 4) + ' SOL');
+    hrow('Total deployed', plain(b.pnl.deployedSol, 4) + ' ' + CUR);
     hrow('Best trade', b.pnl.trades ? signed(b.pnl.bestSol, 4) : '—', signClass(b.pnl.bestSol));
     hrow('Worst trade', b.pnl.trades ? signed(b.pnl.worstSol, 4) : '—', signClass(b.pnl.worstSol));
     hrow('Average winner', b.pnl.wins ? signed(b.pnl.avgWinSol, 4) : '—', 'pos');
@@ -1988,7 +2035,9 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     var today = $('kToday');
     today.textContent = signed(b.pnl.todaySol, 4);
     today.className = 'tile-val num ' + signClass(b.pnl.todaySol);
-    $('kTodaySub').textContent = 'limit ' + plain(b.risk.dailyLossLimitSol, 2) + ' SOL';
+    $('kTodaySub').textContent = CUR === 'USD'
+      ? 'paper forward test'
+      : 'limit ' + plain(b.risk.dailyLossLimitSol, 2) + ' SOL';
 
     $('kOpen').textContent = b.risk.openPositions + ' / ' + b.risk.maxConcurrentPositions;
     $('kOpenSub').textContent = b.stats.bought + ' bought this session';

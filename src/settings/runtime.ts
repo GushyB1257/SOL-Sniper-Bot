@@ -310,9 +310,9 @@ export const FIELDS: FieldSpec[] = [
     help: 'How often to check for a newly closed candle. They close hourly, so ' +
       'faster polling only tightens how quickly a close is noticed.' },
 
-  { key: 'AUTO_TUNE_ENABLED', label: 'Auto-tune strategies', bot: 'shared', group: 'Auto-tune',
+  { key: 'AUTO_TUNE_ENABLED', label: 'Auto-tune (all bots)', bot: 'shared', group: 'Auto-tune',
     kind: 'boolean',
-    help: 'Let Claude adjust strategy settings from each bot\'s own results. Never touches position size or a risk limit. Every change is measured and reverted if it does not beat its baseline.' },
+    help: 'The MASTER switch: off stops tuning for every bot at once. To stop just one, use "Auto-tune this bot" below (or the toggle on its Auto-tune card) — the others keep learning. Never touches position size or a risk limit; every change is measured and reverted if it does not beat its baseline.' },
   { key: 'TUNER_SCREENER_ENABLED', label: 'Auto-tune this bot', bot: 'screener', group: 'Auto-tune',
     kind: 'boolean',
     help: 'Auto-tune THIS bot. The master switch above gates everything; this narrows it, ' +

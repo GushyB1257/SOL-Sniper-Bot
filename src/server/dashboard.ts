@@ -333,6 +333,8 @@ export class Dashboard {
         paused: bot.paused,
         store: bot.store,
         stats: bot.snapshotStats(),
+        currency: (bot.id === 'btc' ? 'USD' : 'SOL') as 'SOL' | 'USD',
+        pnlOverride: bot instanceof BtcBot ? bot.pnlSummary() : null,
         arb: bot instanceof ArbBot ? bot.view() : null,
         btc: bot instanceof BtcBot ? bot.view() : null,
         ai: this.aiView(bot),
@@ -381,6 +383,13 @@ export class Dashboard {
     const s = t.status;
     return {
       enabled: cfg.AUTO_TUNE_ENABLED,
+      perBot: {
+        screener: cfg.TUNER_SCREENER_ENABLED,
+        sniper: cfg.TUNER_SNIPER_ENABLED,
+        copy: cfg.TUNER_COPY_ENABLED,
+        arb: cfg.TUNER_ARB_ENABLED,
+        // btc is deliberately absent: not switched off, not in the loop.
+      },
       intervalMinutes: cfg.TUNER_INTERVAL_MINUTES,
       minTrades: cfg.TUNER_MIN_TRADES,
       lastRunAt: s.lastRunAt,
