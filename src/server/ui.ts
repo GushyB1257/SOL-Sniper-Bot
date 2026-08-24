@@ -483,6 +483,45 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     </div>
   </div>
 
+  <div class="grid g-half hidden" id="btcRow">
+    <div class="card">
+      <h2>Strategy lab <span class="sub" id="btcSub"></span></h2>
+      <div id="btcStatus"></div>
+    </div>
+    <div class="card">
+      <h2>Backtest leaderboard <span class="sub">ranked on train; test is the honest column</span></h2>
+      <div class="scroll"><table>
+        <thead><tr>
+          <th>Strategy</th><th class="r">Train</th><th class="r">Max DD</th>
+          <th class="r">Test</th><th class="r">Trades</th><th></th>
+        </tr></thead>
+        <tbody id="btcBoard"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="grid g-half hidden" id="btcRow2">
+    <div class="card">
+      <h2>Forward paper test <span class="sub">the only numbers picked without hindsight</span></h2>
+      <div class="scroll"><table>
+        <thead><tr>
+          <th>Strategy</th><th>Pos</th><th class="r">Equity</th><th class="r">Net</th>
+          <th class="r">Max DD</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Days</th>
+        </tr></thead>
+        <tbody id="btcForward"></tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <h2>Recent fills <span class="sub">paper, at candle close</span></h2>
+      <div class="scroll"><table>
+        <thead><tr>
+          <th>When</th><th>Strategy</th><th>Move</th><th class="r">Price</th><th class="r">Equity</th>
+        </tr></thead>
+        <tbody id="btcFills"></tbody>
+      </table></div>
+    </div>
+  </div>
+
   <div class="grid g-half hidden" id="copyRow">
     <div class="card">
       <h2>Tracked wallets</h2>
@@ -1570,6 +1609,107 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     zero_size: 'Sizing produced nothing'
   };
 
+  function renderBtc(b) {
+    var row = $('btcRow');
+    var row2 = $('btcRow2');
+    if (!b) { row.classList.add('hidden'); row2.classList.add('hidden'); return; }
+    row.classList.remove('hidden');
+    row2.classList.remove('hidden');
+
+    $('btcSub').textContent = b.symbol + (b.priceUsd ? ' at $' + b.priceUsd.toLocaleString() : '');
+
+    var st = $('btcStatus');
+    st.innerHTML = '';
+    function line(label, value, note) {
+      var r = el('div', 'kv');
+      r.appendChild(el('span', 'k', label));
+      r.appendChild(el('span', 'v', value));
+      st.appendChild(r);
+      if (note) st.appendChild(el('div', 'tile-note', note));
+    }
+
+    line('Candles', b.candles.toLocaleString() + ' hourly',
+      b.firstCandleAt ? new Date(b.firstCandleAt).toISOString().slice(0, 10) + ' to ' +
+        new Date(b.lastCandleAt).toISOString().slice(0, 10) +
+        (b.source ? ', from ' + b.source.replace('https://', '') : '') : '');
+    line('Last sweep', b.sweepAt ? tuneAgo(b.sweepAt) : 'not yet');
+    line('Round-trip cost', (b.feeBps * 2).toFixed(0) + ' bps',
+      'Fee plus slippage, charged per side in every number on this page.');
+    if (b.benchmark) {
+      line('Buy & hold', signed(b.benchmark.train.netPct, 1) + '% train, ' +
+        signed(b.benchmark.test.netPct, 1) + '% test',
+        'The bar. A strategy below this is a worse way to hold bitcoin.');
+    }
+    st.appendChild(el('div', 'tile-note',
+      'The sweep backtests every strategy on the older 70% of history and RANKS on ' +
+      'that, so the newer 30% (test) is a read the ranking never saw. A strategy ' +
+      'great on train and poor on test memorised the past. The forward table below ' +
+      'is the only evidence produced with no ability to peek at all — trust it in ' +
+      'that order: forward, then test, then train.'));
+    if (b.dataError) st.appendChild(el('div', 'tile-note neg', 'Data: ' + b.dataError));
+
+    var board = $('btcBoard');
+    board.innerHTML = '';
+    if (!b.leaderboard.length) {
+      var tre = el('tr');
+      var tde = el('td', null, 'No sweep yet — waiting for candles.');
+      tde.colSpan = 6;
+      tre.appendChild(tde);
+      board.appendChild(tre);
+    }
+    b.leaderboard.forEach(function (r) {
+      var tr = el('tr');
+      tr.appendChild(el('td', null, r.label));
+      tr.appendChild(el('td', 'r ' + signClass(r.trainNetPct), signed(r.trainNetPct, 1) + '%'));
+      tr.appendChild(el('td', 'r', '-' + r.trainMaxDdPct.toFixed(0) + '%'));
+      tr.appendChild(el('td', 'r ' + signClass(r.testNetPct), signed(r.testNetPct, 1) + '%'));
+      tr.appendChild(el('td', 'r', String(r.trainTrades)));
+      tr.appendChild(el('td', null, r.inTop ? 'forward' : (r.id === 'hold' ? 'benchmark' : '')));
+      board.appendChild(tr);
+    });
+
+    var fwd = $('btcForward');
+    fwd.innerHTML = '';
+    if (!b.forward.length) {
+      var trf = el('tr');
+      var tdf = el('td', null, 'Starts after the first sweep picks its top ' + 'strategies.');
+      tdf.colSpan = 8;
+      trf.appendChild(tdf);
+      fwd.appendChild(trf);
+    }
+    b.forward.forEach(function (f) {
+      var tr = el('tr');
+      tr.appendChild(el('td', null, f.label + (f.inTop ? '' : ' (dropped)')));
+      tr.appendChild(el('td', null, f.pos));
+      tr.appendChild(el('td', 'r', '$' + f.equityUsd.toFixed(2)));
+      tr.appendChild(el('td', 'r ' + signClass(f.netPct), signed(f.netPct, 2) + '%'));
+      tr.appendChild(el('td', 'r', '-' + f.maxDrawdownPct.toFixed(1) + '%'));
+      tr.appendChild(el('td', 'r', String(f.trades)));
+      tr.appendChild(el('td', 'r', f.trades ? f.winRatePct.toFixed(0) + '%' : '—'));
+      tr.appendChild(el('td', 'r', f.days.toFixed(1)));
+      fwd.appendChild(tr);
+    });
+
+    var fills = $('btcFills');
+    fills.innerHTML = '';
+    if (!b.fills.length) {
+      var trn = el('tr');
+      var tdn = el('td', null, 'No fills yet. Positions change on hourly candle closes.');
+      tdn.colSpan = 5;
+      trn.appendChild(tdn);
+      fills.appendChild(trn);
+    }
+    b.fills.forEach(function (f) {
+      var tr = el('tr');
+      tr.appendChild(el('td', null, tuneAgo(f.at)));
+      tr.appendChild(el('td', null, f.id));
+      tr.appendChild(el('td', null, f.move));
+      tr.appendChild(el('td', 'r', '$' + f.price.toLocaleString()));
+      tr.appendChild(el('td', 'r', '$' + f.equityUsd.toFixed(2)));
+      fills.appendChild(tr);
+    });
+  }
+
   function renderArb(a) {
     var row = $('arbRow');
     if (!a) { row.classList.add('hidden'); return; }
@@ -1764,6 +1904,7 @@ button.primary:hover { filter: brightness(1.08); color: #fff; }
     renderSettings(s, b.id);
     renderCopy(b.copy);
     renderArb(b.arb);
+    renderBtc(b.btc);
 
     var badge = $('modeBadge');
     badge.textContent = s.mode === 'live' ? 'LIVE — REAL FUNDS' : 'PAPER';

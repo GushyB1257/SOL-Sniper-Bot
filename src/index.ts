@@ -9,6 +9,7 @@ import { AxiomExecutor } from './execution/axiom.js';
 import { Dashboard } from './server/dashboard.js';
 import { TradingBot, type BotId, type DashboardBot } from './bots/bot.js';
 import { ArbBot } from './arb/bot.js';
+import { BtcBot } from './btc/bot.js';
 
 /** Which config flag turns each bot on. */
 const ENABLE_KEYS: Record<BotId, string> = {
@@ -16,6 +17,7 @@ const ENABLE_KEYS: Record<BotId, string> = {
   sniper: 'BOT_SNIPER_ENABLED',
   copy: 'BOT_COPY_ENABLED',
   arb: 'BOT_ARB_ENABLED',
+  btc: 'BOT_BTC_ENABLED',
 };
 import { RuntimeSettings } from './settings/runtime.js';
 import { AutoTuner } from './tuner/auto-tuner.js';
@@ -42,6 +44,7 @@ const BOT_NAMES: Record<BotId, string> = {
   sniper: 'Sniper',
   copy: 'Copy trader',
   arb: 'Arbitrage',
+  btc: 'Bitcoin Lab',
 };
 
 /**
@@ -122,6 +125,10 @@ class Supervisor {
       killSwitchPath: KILL_SWITCH_PATH,
     });
     this.bots.set('arb', this.arb);
+    // The Bitcoin lab drives its own candle clock: no launch feed, no shared
+    // executor, no RPC. It is a fifth tab because the dashboard renders every
+    // strategy from one template, and nothing more.
+    this.bots.set('btc', new BtcBot({ cfg, dataDir: cfg.DATA_DIR }));
 
     // Reads the journals directly rather than being told about closes, so a
     // restart resumes any window that was still open.
@@ -134,7 +141,15 @@ class Supervisor {
     this.tuner = new AutoTuner({
       cfg,
       settings: this.settings,
-      stores: new Map([...this.bots].map(([id, bot]) => [id, bot.store])),
+      // The Bitcoin lab is not in the tuner's stores ON PURPOSE. It carries
+      // its own optimizer — a daily sweep of the whole catalogue against a
+      // year of candles — and a proposer limited to one change per measurement
+      // window cannot add anything to an exhaustive search that is already
+      // free. Its journal is empty anyway; this makes the exclusion explicit
+      // rather than incidental.
+      stores: new Map(
+        [...this.bots].filter(([id]) => id !== 'btc').map(([id, bot]) => [id, bot.store]),
+      ),
       dataDir: cfg.DATA_DIR,
     });
 
@@ -169,6 +184,7 @@ class Supervisor {
     if (id === 'screener') return this.cfg.BOT_SCREENER_ENABLED;
     if (id === 'sniper') return this.cfg.BOT_SNIPER_ENABLED;
     if (id === 'arb') return this.cfg.BOT_ARB_ENABLED;
+    if (id === 'btc') return this.cfg.BOT_BTC_ENABLED;
     return this.cfg.BOT_COPY_ENABLED;
   }
 
@@ -272,7 +288,7 @@ class Supervisor {
 
     log.info('─'.repeat(72));
     log.info(`  SOL Trader — mode=${c.MODE.toUpperCase()} executor=${c.EXECUTOR}`);
-    for (const id of ['screener', 'sniper', 'copy', 'arb'] as BotId[]) {
+    for (const id of ['screener', 'sniper', 'copy', 'arb', 'btc'] as BotId[]) {
       const on = this.enabled(id);
       log.info(`  ${BOT_NAMES[id].padEnd(11)} ${on ? 'ON ' : 'off'}${this.botSummary(id)}`);
     }

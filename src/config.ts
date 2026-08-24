@@ -429,6 +429,35 @@ const schema = z.object({
    * to compare bucket against bucket, not to catch every token.
    */
   REJECT_TRACK_SAMPLE_PCT: num(0, 100).default(15),
+
+  // === Bitcoin strategy lab =============================================
+  /**
+   * Backtests a catalogue of classic strategies over a year of hourly BTC
+   * candles, then forward paper-trades the winners. No API key: candles come
+   * from Binance's public market-data host.
+   */
+  BOT_BTC_ENABLED: bool.default('false'),
+  BTC_SYMBOL: z.string().regex(/^[A-Z0-9]{5,20}$/).default('BTCUSDT'),
+  /** How much history to backtest over. */
+  BTC_HISTORY_DAYS: num(30, 730).default(365),
+  /**
+   * Exchange taker fee, in basis points. 10 = Binance's standard 0.1%. A fact
+   * about the venue, not a preference — set it to what your exchange charges,
+   * because every backtest and forward-test number is net of it.
+   */
+  BTC_FEE_BPS: num(0, 100).default(10),
+  /** Modelled slippage per fill. BTC is deep; a couple of bps is realistic. */
+  BTC_SLIPPAGE_BPS: num(0, 100).default(2),
+  /** Whether strategies may go short. The long-only halves stay comparable. */
+  BTC_ALLOW_SHORTS: bool.default('true'),
+  /** How many of the top-ranked strategies forward paper-trade at once. */
+  BTC_TOP_STRATEGIES: num(1, 20).default(5),
+  /** Hours between full re-sweeps of the catalogue. */
+  BTC_SWEEP_HOURS: num(1, 168).default(24),
+  /** How often to poll for the newest candle. Candles close hourly. */
+  BTC_POLL_INTERVAL_MS: num(5000, 600_000).default(60_000),
+  /** Virtual USD each forward-tested strategy trades with, independently. */
+  BTC_PAPER_NOTIONAL_USD: num(10, 1_000_000).default(1000),
   /**
    * Deadline on a single position price read.
    *
@@ -790,6 +819,7 @@ const schema = z.object({
   TUNER_SNIPER_ENABLED: bool.default('true'),
   TUNER_COPY_ENABLED: bool.default('true'),
   TUNER_ARB_ENABLED: bool.default('true'),
+  TUNER_BTC_ENABLED: bool.default('true'),
   /**
    * Minimum minutes between reviews OF THE SAME BOT.
    *

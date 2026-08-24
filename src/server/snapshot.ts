@@ -4,6 +4,7 @@ import type { Position, TradeJournalEntry } from '../types.js';
 import { recentLogs, type LogEntry } from '../logger.js';
 import { rpcStats, topMethods } from '../util/rpc-throttle.js';
 import type { ArbView } from '../arb/bot.js';
+import type { BtcView } from '../btc/bot.js';
 import { pctChange } from '../util/solana.js';
 
 export interface SessionStats {
@@ -265,6 +266,7 @@ export interface BotView {
   /** Only the copy bot has one. */
   copy: CopyView | null;
   arb: ArbView | null;
+  btc: BtcView | null;
 }
 
 export interface Snapshot {
@@ -652,6 +654,7 @@ export interface BotInput {
   copy: CopyView | null;
   /** Set only for the arbitrage tab. */
   arb: ArbView | null;
+  btc: BtcView | null;
 }
 
 export interface SnapshotInput {
@@ -727,6 +730,7 @@ export function buildBotView(input: BotInput, cfg: Config, solUsd: number, now: 
     ai: input.ai,
     copy: input.copy,
     arb: input.arb,
+    btc: input.btc,
   };
 }
 

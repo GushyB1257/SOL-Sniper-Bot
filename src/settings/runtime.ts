@@ -55,7 +55,7 @@ export interface FieldSpec {
   key: string;
   label: string;
   /** Which dashboard tab this belongs to. */
-  bot: 'screener' | 'sniper' | 'copy' | 'arb' | 'shared';
+  bot: 'screener' | 'sniper' | 'copy' | 'arb' | 'btc' | 'shared';
   group: string;
   kind: FieldKind;
   help?: string;
@@ -282,6 +282,34 @@ export const FIELDS: FieldSpec[] = [
     kind: 'number', min: 0, max: 100, step: 1, help: 'Bundled launches land together. One RPC call. 0 = off.' },
 
   // --- Auto-tuning -----------------------------------------------------
+  // --- Bitcoin lab -----------------------------------------------------
+  { key: 'BTC_HISTORY_DAYS', label: 'History window', bot: 'btc', group: 'Data',
+    kind: 'number', min: 30, max: 730, step: 5,
+    help: 'Days of hourly candles the sweep backtests over. More history favours ' +
+      'strategies that survive regimes; less favours ones tuned to now.' },
+  { key: 'BTC_FEE_BPS', label: 'Exchange fee', bot: 'btc', group: 'Data',
+    kind: 'number', min: 0, max: 100, step: 1,
+    help: 'Taker fee in basis points (10 = 0.1%). Set to what your exchange charges — ' +
+      'every number on this tab is net of it.' },
+  { key: 'BTC_SLIPPAGE_BPS', label: 'Modelled slippage', bot: 'btc', group: 'Data',
+    kind: 'number', min: 0, max: 100, step: 1 },
+  { key: 'BTC_ALLOW_SHORTS', label: 'Allow shorts', bot: 'btc', group: 'Strategy',
+    kind: 'boolean',
+    help: 'Off maps every short signal to flat rather than dropping those strategies, ' +
+      'so the long-only halves stay on the leaderboard for comparison.' },
+  { key: 'BTC_TOP_STRATEGIES', label: 'Forward-test top', bot: 'btc', group: 'Strategy',
+    kind: 'number', min: 1, max: 20, step: 1,
+    help: 'How many of the top-ranked strategies paper-trade live at once.' },
+  { key: 'BTC_SWEEP_HOURS', label: 'Re-sweep every', bot: 'btc', group: 'Strategy',
+    kind: 'number', min: 1, max: 168, step: 1, help: 'Hours between full catalogue backtests.' },
+  { key: 'BTC_PAPER_NOTIONAL_USD', label: 'Paper notional', bot: 'btc', group: 'Sizing',
+    kind: 'number', min: 10, max: 1_000_000, step: 100,
+    help: 'Virtual USD each forward-tested strategy trades with, independently.' },
+  { key: 'BTC_POLL_INTERVAL_MS', label: 'Poll interval', bot: 'btc', group: 'Data',
+    kind: 'number', min: 5000, max: 600_000, step: 5000,
+    help: 'How often to check for a newly closed candle. They close hourly, so ' +
+      'faster polling only tightens how quickly a close is noticed.' },
+
   { key: 'AUTO_TUNE_ENABLED', label: 'Auto-tune strategies', bot: 'shared', group: 'Auto-tune',
     kind: 'boolean',
     help: 'Let Claude adjust strategy settings from each bot\'s own results. Never touches position size or a risk limit. Every change is measured and reverted if it does not beat its baseline.' },
@@ -301,6 +329,11 @@ export const FIELDS: FieldSpec[] = [
     kind: 'boolean',
     help: 'Auto-tune THIS bot. The master switch above gates everything; this narrows it, ' +
       'so one bot can be frozen for a clean measurement week while the others keep learning.' },
+  { key: 'TUNER_BTC_ENABLED', label: 'Auto-tune this bot', bot: 'btc', group: 'Auto-tune',
+    kind: 'boolean',
+    help: 'Present for symmetry, but the Bitcoin lab is not in the tuner\'s loop at all: ' +
+      'its own daily sweep already tests the whole catalogue against a year of data, ' +
+      'which no per-window proposer can improve on.' },
   { key: 'TUNER_INTERVAL_MINUTES', label: 'Min gap between changes', bot: 'shared', group: 'Auto-tune',
     kind: 'number', min: 1, max: 10_080, step: 5,
     help: 'A floor on how often a bot can change, not a schedule — reviews are triggered by trade count. Timed from the last change, so measuring it counts toward the gap rather than adding to it.' },

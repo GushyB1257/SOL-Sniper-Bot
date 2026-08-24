@@ -17,7 +17,7 @@ import { errMessage, sleep } from '../util/async.js';
 
 const log = logger('bot');
 
-export type BotId = 'screener' | 'sniper' | 'copy' | 'arb';
+export type BotId = 'screener' | 'sniper' | 'copy' | 'arb' | 'btc';
 
 /**
  * What the supervisor and the dashboard need from a bot.

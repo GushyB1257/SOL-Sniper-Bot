@@ -153,12 +153,14 @@ describe('what the tuner may touch', () => {
       'TUNER_SNIPER_ENABLED',
       'TUNER_COPY_ENABLED',
       'TUNER_ARB_ENABLED',
+      'TUNER_BTC_ENABLED',
       'PROGRAM_FEE_PCT',
       'ROUTER_FEE_PCT',
       'SOL_USD_FALLBACK',
       'BOT_SCREENER_ENABLED',
       'BOT_SNIPER_ENABLED',
       'BOT_COPY_ENABLED',
+      'BOT_BTC_ENABLED',
       'COPY_WALLETS',
       'MODE',
       'EXECUTOR',
@@ -205,6 +207,7 @@ describe('what the tuner may touch', () => {
       'TUNER_SNIPER_ENABLED',
       'TUNER_COPY_ENABLED',
       'TUNER_ARB_ENABLED',
+      'TUNER_BTC_ENABLED',
       // Facts about the world, not choices.
       'PROGRAM_FEE_PCT',
       'ROUTER_FEE_PCT',
@@ -213,6 +216,7 @@ describe('what the tuner may touch', () => {
       'BOT_SCREENER_ENABLED',
       'BOT_SNIPER_ENABLED',
       'BOT_COPY_ENABLED',
+      'BOT_BTC_ENABLED',
       // The user's input, not a knob.
       'COPY_WALLETS',
       // The size of the simulated bankroll, which is the denominator every
@@ -231,6 +235,20 @@ describe('what the tuner may touch', () => {
       'AFTERMATH_WINDOW_MINUTES',
       'AFTERMATH_POLL_INTERVAL_MS',
       'AFTERMATH_MAX_TOKENS',
+      // The Bitcoin lab carries its own optimizer: a daily sweep that backtests
+      // the whole strategy catalogue against a year of candles, exhaustively
+      // and for free. A proposer limited to one change per measurement window
+      // cannot add anything to that, and the fee/slippage numbers are facts
+      // about the exchange, same as PROGRAM_FEE_PCT.
+      'BTC_SYMBOL',
+      'BTC_HISTORY_DAYS',
+      'BTC_FEE_BPS',
+      'BTC_SLIPPAGE_BPS',
+      'BTC_ALLOW_SHORTS',
+      'BTC_TOP_STRATEGIES',
+      'BTC_SWEEP_HOURS',
+      'BTC_POLL_INTERVAL_MS',
+      'BTC_PAPER_NOTIONAL_USD',
       // The sample of rejected launches. Same shape of problem: it is the only
       // evidence that can show a FILTER is throwing away winners, and setting
       // the rate to 0 makes that evidence disappear without any filter getting

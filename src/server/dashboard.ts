@@ -5,6 +5,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { Config } from '../config.js';
 import type { BotId, DashboardBot } from '../bots/bot.js';
 import { ArbBot } from '../arb/bot.js';
+import { BtcBot } from '../btc/bot.js';
 import type { RuntimeSettings } from '../settings/runtime.js';
 import { FIELDS } from '../settings/runtime.js';
 import type { SolPrice } from '../util/solprice.js';
@@ -311,6 +312,7 @@ export class Dashboard {
       sniper: cfg.BOT_SNIPER_ENABLED,
       copy: cfg.BOT_COPY_ENABLED,
       arb: cfg.BOT_ARB_ENABLED,
+      btc: cfg.BOT_BTC_ENABLED,
     };
 
     return buildSnapshot({
@@ -332,6 +334,7 @@ export class Dashboard {
         store: bot.store,
         stats: bot.snapshotStats(),
         arb: bot instanceof ArbBot ? bot.view() : null,
+        btc: bot instanceof BtcBot ? bot.view() : null,
         ai: this.aiView(bot),
         copy: this.copyView(bot),
       })),
