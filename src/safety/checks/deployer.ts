@@ -65,6 +65,7 @@ export const deployerBalanceCheck: Check = {
  */
 export const deployerHistoryCheck: Check = {
   id: 'deployer_history',
+  rugCritical: true,
   severity: 'fatal',
   penalty: 100,
   timeoutMs: 100,

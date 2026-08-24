@@ -306,7 +306,14 @@ export class TradingBot {
     // Did anyone else actually buy it? The battery asks whether the token is
     // structurally sound; nothing in it asks whether the launch is going
     // anywhere, which is what the dead-entry mass is made of.
-    const confirm = await this.confirmMove(candidate, label);
+    //
+    // Skipped entirely in buy-everything mode: waiting for movement IS a
+    // filter, and the mode's whole hypothesis is that the earliest possible
+    // fill — before anyone has confirmed anything — is where the edge lives.
+    const confirm =
+      cfg.SNIPE_MODE === 'all'
+        ? { ok: true as const, detail: 'buy-everything mode: no confirmation wait', movedPct: undefined as number | undefined }
+        : await this.confirmMove(candidate, label);
     if (!confirm.ok) {
       this.stats.rejected += 1;
       this.trackReject(candidate, 'no_confirm_move');

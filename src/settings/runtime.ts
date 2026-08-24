@@ -113,6 +113,13 @@ export const FIELDS: FieldSpec[] = [
     kind: 'number', min: 1, max: 100_000, step: 1, help: 'Only used if the live price feed fails.' },
 
   // --- Sniper ----------------------------------------------------------
+  { key: 'SNIPE_MODE', label: 'Sniper mode', bot: 'sniper', group: 'Strategy',
+    kind: 'enum', options: ['filtered', 'all'],
+    help: '"filtered" runs the full battery. "all" buys EVERY fresh launch that is not ' +
+      'a rug setup: only the fail-safes run (authorities, pre-loaded dev buy, deployer ' +
+      'sold or has rug history, bundled first buys, curve freshness) and every quality ' +
+      'filter — score, holders, confirm-move, the rest — is skipped. Risk limits still ' +
+      'apply: raise max positions and the hourly spend cap if you want real volume.' },
   { key: 'MIN_SAFETY_SCORE', label: 'Min safety score', bot: 'sniper', group: 'Safety',
     kind: 'number', min: 0, max: 100, step: 5 },
   { key: 'MIN_DEV_BUY_PCT', label: 'Min dev buy', bot: 'sniper', group: 'Safety',

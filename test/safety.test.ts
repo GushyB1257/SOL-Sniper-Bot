@@ -703,3 +703,95 @@ describe('SafetyEngine cost control', () => {
     expect(v.passed).toBe(true);
   });
 });
+
+describe('SNIPE_MODE=all — buy everything that is not a rug setup', () => {
+  const check = (
+    id: string,
+    over: Partial<Check> & { passed?: boolean } = {},
+  ): Check => ({
+    id,
+    severity: 'major',
+    penalty: 30,
+    timeoutMs: 50,
+    failClosed: false,
+    cost: 'local',
+    run: async () => ({ passed: over.passed ?? true, detail: 'x' }),
+    ...over,
+  });
+
+  const allMode = (): Config => loadConfig({ ...BASE_ENV, DATA_DIR: dir, SNIPE_MODE: 'all' });
+
+  it('ignores every quality filter, however bad the score', async () => {
+    // Three failing major checks: score 10, far under any threshold. In
+    // filtered mode this is a certain rejection; in buy-everything mode these
+    // checks do not even RUN — the mode's whole hypothesis is that the
+    // earliest fill matters more than the quality read.
+    const filters = [
+      check('holder_count', { passed: false }),
+      check('socials', { passed: false }),
+      check('creator_age', { passed: false, penalty: 40 }),
+    ];
+    const engine = new SafetyEngine(allMode(), fakeConn, store, filters);
+    const v = await engine.evaluate(candidate());
+    expect(v.passed).toBe(true);
+  });
+
+  it('still vetoes on a rug fail-safe, whatever its nominal severity', async () => {
+    // curve_sanity is only "major" in filtered mode, where it costs 20 points.
+    // In buy-everything mode any failed fail-safe vetoes: the mode has no
+    // score, so it has no such thing as a survivable failure.
+    const engine = new SafetyEngine(allMode(), fakeConn, store, [
+      check('curve_sanity', { passed: false, rugCritical: true }),
+      check('holder_count', { passed: false }),
+    ]);
+    const v = await engine.evaluate(candidate());
+    expect(v.passed).toBe(false);
+    expect(v.rejectedBy).toBe('curve_sanity');
+  });
+
+  it('runs only the rug-critical checks, so each candidate is cheaper', async () => {
+    const ran: string[] = [];
+    const spy = (id: string, rugCritical: boolean): Check =>
+      check(id, {
+        rugCritical,
+        run: async () => {
+          ran.push(id);
+          return { passed: true, detail: 'x' };
+        },
+      });
+    const engine = new SafetyEngine(allMode(), fakeConn, store, [
+      spy('mint_authority', true),
+      spy('holder_count', false),
+      spy('socials', false),
+    ]);
+    await engine.evaluate(candidate());
+    expect(ran).toEqual(['mint_authority']);
+  });
+
+  it('keeps the real battery behind it: authorities still veto', async () => {
+    // End to end with the real check list: a revoked-authorities candidate is
+    // rejected by dev_buy_share when the deployer pre-loaded half the supply.
+    const engine = new SafetyEngine(allMode(), fakeConn, store);
+    const v = await engine.evaluate(candidate({ initialBuyTokens: 500_000_000 }));
+    expect(v.passed).toBe(false);
+    expect(v.rejectedBy).toBe('dev_buy_share');
+  });
+
+  it('ignores the dev-buy floor: taking nothing is not a rug setup', async () => {
+    cfg = loadConfig({ ...BASE_ENV, DATA_DIR: dir, SNIPE_MODE: 'all', MIN_DEV_BUY_PCT: '2' });
+    const r = await devBuyCheck.run(ctxFor(candidate({ initialBuyTokens: 0 })));
+    // The floor is a quality filter. In filtered mode it rejects; here the
+    // only dev-buy question is the ceiling — a pre-loaded dump.
+    expect(r.passed).toBe(true);
+  });
+
+  it('changes nothing in filtered mode', async () => {
+    const engine = new SafetyEngine(cfg, fakeConn, store, [
+      check('a', { passed: false }),
+      check('b', { passed: false, penalty: 40 }),
+    ]);
+    const v = await engine.evaluate(candidate());
+    expect(v.passed).toBe(false);
+    expect(v.rejectedBy).toBe('score_threshold');
+  });
+});

@@ -83,19 +83,29 @@ export class SafetyEngine {
       cache: new Map(),
     };
 
+    // SNIPE_MODE=all: buy everything that is not a rug setup. Only the checks
+    // marked rugCritical run — revocable authorities, a pre-loaded dev buy, a
+    // deployer who already sold or has a rug history, bundled first buys, and
+    // curve freshness (buying late voids the whole buy-at-the-start premise).
+    // The quality filters do not run at all, which also makes each candidate
+    // cheaper: at buy-everything volume the battery's RPC cost is the
+    // throughput ceiling.
+    const buyEverything = this.cfg.SNIPE_MODE === 'all';
+    const active = buyEverything ? this.checks.filter((c) => c.rugCritical) : this.checks;
+
     // Free checks first, and stop here if they have already decided. Nothing is
     // skipped that could have changed the answer: the remaining checks can only
     // subtract from the score, so a launch that cannot reach the threshold on
     // the free evidence alone cannot reach it on the paid evidence either. What
     // this saves is the four RPC calls that would have gone into confirming a
     // rejection we had already made — which at peak is most of them.
-    const free = this.checks.filter((c) => (c.cost ?? 'rpc') === 'local');
-    const paid = this.checks.filter((c) => (c.cost ?? 'rpc') !== 'local');
+    const free = active.filter((c) => (c.cost ?? 'rpc') === 'local');
+    const paid = active.filter((c) => (c.cost ?? 'rpc') !== 'local');
 
     const results = await Promise.all(free.map((c) => this.runOne(c, ctx)));
     let shortCircuited = false;
 
-    if (this.decidedBy(results) === 'reject') {
+    if (this.decidedBy(results, buyEverything) === 'reject') {
       shortCircuited = true;
     } else {
       results.push(...(await Promise.all(paid.map((c) => this.runOne(c, ctx)))));
@@ -117,21 +127,30 @@ export class SafetyEngine {
     score = Math.max(0, Math.min(100, score));
 
     const elapsedMs = Date.now() - started;
-    const passed = !fatal && score >= this.cfg.MIN_SAFETY_SCORE;
+    // In buy-everything mode ANY failed check vetoes, whatever its severity:
+    // the checks that ran are all fail-safes, and a mode with no score has no
+    // meaningful "non-fatal". In filtered mode the scored gate applies as ever.
+    const anyFailed = results.find((r) => !r.passed);
+    const passed = buyEverything
+      ? anyFailed === undefined
+      : !fatal && score >= this.cfg.MIN_SAFETY_SCORE;
 
     const verdict: SafetyVerdict = {
       score,
       passed,
       results,
-      rejectedBy: fatal?.id ?? (passed ? undefined : 'score_threshold'),
+      rejectedBy: buyEverything
+        ? anyFailed?.id
+        : (fatal?.id ?? (passed ? undefined : 'score_threshold')),
       elapsedMs,
       shortCircuited,
       metrics,
     };
 
     if (!passed) {
-      const reason = fatal
-        ? `${fatal.id}: ${fatal.detail}`
+      const failed = buyEverything ? anyFailed : fatal;
+      const reason = failed
+        ? `${failed.id}: ${failed.detail}`
         : `score ${score} < ${this.cfg.MIN_SAFETY_SCORE}`;
       log.debug(`REJECT ${candidate.symbol ?? candidate.mint.slice(0, 8)} — ${reason}`);
     }
@@ -142,7 +161,15 @@ export class SafetyEngine {
    * Whether the results so far settle it, given that every check still to run
    * can only lower the score.
    */
-  private decidedBy(results: readonly CheckResult[]): 'reject' | 'undecided' {
+  private decidedBy(
+    results: readonly CheckResult[],
+    buyEverything = false,
+  ): 'reject' | 'undecided' {
+    // Buy-everything: every check that runs is a fail-safe, so any failure
+    // settles it — and the score can never settle it, since it does not gate.
+    if (buyEverything) {
+      return results.some((r) => !r.passed) ? 'reject' : 'undecided';
+    }
     if (results.some((r) => !r.passed && r.severity === 'fatal')) return 'reject';
 
     const best = results.reduce(

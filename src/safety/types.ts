@@ -40,6 +40,13 @@ export interface Check {
   /** Points off the 100-point score when this check fails (non-fatal only). */
   readonly penalty: number;
   /**
+   * True for the checks that detect a RUG SETUP rather than judge quality —
+   * the ones SNIPE_MODE=all keeps when it throws every filter away. In that
+   * mode these are the only checks that run, and ANY failure vetoes,
+   * whatever the severity says: a mode with no score has no non-fatal.
+   */
+  readonly rugCritical?: boolean;
+  /**
    * Hard cap on the check's own work.
    *
    * The engine adds current RPC backpressure on top for checks that make

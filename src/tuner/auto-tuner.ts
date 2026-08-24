@@ -595,6 +595,25 @@ export class AutoTuner {
       if (key.startsWith('AI_') && entryMode !== 'ai' && current.AI_MANAGE_EXITS !== 'true') {
         return '  (INERT: no AI entry or exit management)';
       }
+      // Buy-everything mode runs only the rug fail-safes, so the quality
+      // filters do nothing. Changing one there wastes a whole window.
+      if (
+        current.SNIPE_MODE === 'all' &&
+        [
+          'MIN_SAFETY_SCORE',
+          'MIN_HOLDERS',
+          'MIN_CREATOR_AGE_MINUTES',
+          'MIN_DEPLOYER_BALANCE_SOL',
+          'MAX_DEPLOYER_BALANCE_SOL',
+          'MIN_DEV_BUY_PCT',
+          'MAX_TOP10_HOLDER_PCT',
+          'DUPLICATE_NAME_WINDOW_MINUTES',
+          'SNIPE_CONFIRM_MS',
+          'SNIPE_CONFIRM_MIN_GAIN_PCT',
+        ].includes(key)
+      ) {
+        return '  (INERT: SNIPE_MODE is all — only rug fail-safes run)';
+      }
       return '';
     };
 

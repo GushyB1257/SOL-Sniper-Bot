@@ -286,6 +286,11 @@ export const TUNABLES: Tunable[] = [
   //
   // 0 is a real value on the floor — the filter switched off — not a point on a
   // scale, so the zero exemption in the tuner's bounds is what lets it leave.
+  e('SNIPE_MODE', 'sniper', ['filtered', 'all'],
+    'filtered runs the full battery and the score gate. all buys EVERY fresh launch ' +
+      'that is not a rug setup — only the rug fail-safes run, every quality filter is ' +
+      'skipped. Flipping this replaces the entry strategy wholesale, so make it the ' +
+      'only change in its round.'),
   n('MIN_DEV_BUY_PCT', 'sniper', 0, 5, 60,
     'Least of supply the deployer must buy at creation for the launch to be ' +
       'considered; 0 disables. A deployer who took nothing at all has no position ' +

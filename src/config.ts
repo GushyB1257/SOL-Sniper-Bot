@@ -219,6 +219,24 @@ const schema = z.object({
   MAX_HOLD_SECONDS: num(60, 604800).default(86400),
 
   /**
+   * What the sniper demands before buying.
+   *
+   * filtered — the full battery: rug fail-safes AND the quality filters
+   *            (score threshold, holders, creator age, confirm-move, the rest).
+   * all      — buy EVERY fresh launch that is not a rug setup. Only the
+   *            fail-safes run: revocable authorities, a pre-loaded dev buy, a
+   *            deployer who already sold or has a rug history, bundled first
+   *            buys, and a curve that is still fresh (buying late voids the
+   *            whole premise of buying at the start). Everything else — score,
+   *            holders, socials, confirm-move — is skipped.
+   *
+   * 'all' exists to answer one question with real numbers: does indiscriminate
+   * earliest-possible entry make money once fees and dumps are counted? The
+   * risk limits still apply — concurrent positions, hourly spend, the daily
+   * loss limit — because "buy everything" must never mean "spend everything".
+   */
+  SNIPE_MODE: z.enum(['filtered', 'all']).default('filtered'),
+  /**
    * Reject a deployer who took LESS than this share of supply. 0 disables.
    *
    * The counterpart to MAX_DEV_BUY_PCT, and the other half of the same idea.

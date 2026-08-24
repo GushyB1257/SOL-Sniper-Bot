@@ -396,6 +396,7 @@ const CONFIG_GROUPS: Record<string, string[]> = {
     'MAX_HOLD_SECONDS',
   ],
   Safety: [
+    'SNIPE_MODE',
     'MIN_SAFETY_SCORE',
     'MIN_DEV_BUY_PCT',
     'MAX_DEV_BUY_PCT',

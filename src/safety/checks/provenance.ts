@@ -62,6 +62,7 @@ export const holderCountCheck: Check = {
  */
 export const deployerStillHoldsCheck: Check = {
   id: 'deployer_exited',
+  rugCritical: true,
   severity: 'fatal',
   penalty: 100,
   timeoutMs: 3000,
@@ -169,6 +170,7 @@ export const creatorAgeCheck: Check = {
  */
 export const launchBundleCheck: Check = {
   id: 'launch_bundle',
+  rugCritical: true,
   severity: 'fatal',
   penalty: 100,
   timeoutMs: 4000,

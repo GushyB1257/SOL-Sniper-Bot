@@ -88,6 +88,7 @@ export async function fetchMintInfo(ctx: CheckContext): Promise<MintInfo> {
  */
 export const freezeAuthorityCheck: Check = {
   id: 'freeze_authority',
+  rugCritical: true,
   severity: 'fatal',
   penalty: 100,
   timeoutMs: 2500,
@@ -113,6 +114,7 @@ export const freezeAuthorityCheck: Check = {
  */
 export const mintAuthorityCheck: Check = {
   id: 'mint_authority',
+  rugCritical: true,
   severity: 'fatal',
   penalty: 100,
   timeoutMs: 2500,

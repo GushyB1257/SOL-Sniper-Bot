@@ -23,6 +23,7 @@ const PUMP_TOTAL_SUPPLY = 1_000_000_000;
  */
 export const devBuyCheck: Check = {
   id: 'dev_buy_share',
+  rugCritical: true,
   severity: 'fatal',
   penalty: 100,
   timeoutMs: 200,
@@ -64,7 +65,10 @@ export const devBuyCheck: Check = {
         metrics,
       };
     }
-    if (min > 0 && pct < min) {
+    // The floor is a quality filter, not a rug fail-safe, so buy-everything
+    // mode ignores it. The ceiling above stays: a pre-loaded dump is a rug
+    // setup in any mode.
+    if (min > 0 && pct < min && ctx.cfg.SNIPE_MODE !== 'all') {
       return {
         passed: false,
         detail:
@@ -150,6 +154,7 @@ export const holderConcentrationCheck: Check = {
  */
 export const curveSanityCheck: Check = {
   id: 'curve_sanity',
+  rugCritical: true,
   severity: 'major',
   penalty: 20,
   timeoutMs: 100,

@@ -317,7 +317,11 @@ class Supervisor {
         `vol ${k(c.SCREEN_MIN_VOLUME_USD)}+ · ${c.SCREEN_MIN_SOCIALS} social`
       );
     }
-    if (id === 'sniper') return `  safety ≥${c.MIN_SAFETY_SCORE}/100, buys at creation`;
+    if (id === 'sniper') {
+      return c.SNIPE_MODE === 'all'
+        ? '  buys EVERY fresh launch that is not a rug setup (SNIPE_MODE=all)'
+        : `  safety ≥${c.MIN_SAFETY_SCORE}/100, buys at creation`;
+    }
     return c.COPY_WALLETS.length > 0
       ? `  ${c.COPY_WALLETS.map((w) => walletLabel(c, w.address)).join(', ')} · ` +
         `ignore buys under ${c.COPY_MIN_BUY_SOL} SOL`
